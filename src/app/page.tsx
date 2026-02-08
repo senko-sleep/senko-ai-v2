@@ -375,7 +375,7 @@ export default function Home() {
         const contextMessages = [
           {
             role: "user" as const,
-            content: `I just opened ${url}. Here is the page content:\n\nTitle: ${data.title}\n\n${data.content}\n\nSummarize the key info from this page. Be concise but cover the important stuff. Stay in character.`,
+            content: `I just opened ${url} for the user. Here is the page content:\n\nTitle: ${data.title}\n\n${data.content}\n\nWelcome the user to this page! Give a brief, friendly intro of what this site/page is about, then highlight the key info they'll find useful. Like a cute tour guide showing them around. Stay in character.`,
           },
         ];
 
@@ -409,7 +409,8 @@ export default function Home() {
     [browserInfo, location, updateConversation, addThinkingMsg, removeThinkingMsg]
   );
 
-  const openApp = useCallback(async (appName: string) => {
+  const openApp = useCallback(async (convId: string, appName: string) => {
+    const thinkId = addThinkingMsg(convId, `opening ${appName}...`);
     try {
       const res = await fetch("/api/open-app", {
         method: "POST",
@@ -417,13 +418,97 @@ export default function Home() {
         body: JSON.stringify({ app: appName }),
       });
       const data = await res.json();
-      if (!res.ok) {
-        console.warn("Failed to open app:", data.error);
-      }
+      removeThinkingMsg(convId, thinkId);
+
+      // Generate a welcome/confirmation message
+      const welcomeId = generateId();
+      updateConversation(convId, (conv) => ({
+        ...conv,
+        messages: [...conv.messages, {
+          id: welcomeId,
+          role: "assistant" as const,
+          content: "",
+          timestamp: new Date(),
+        }],
+      }));
+
+      setIsStreaming(true);
+      abortRef.current = new AbortController();
+
+      const prompt = res.ok
+        ? `I just opened "${appName}" on the user's computer. Give a brief, cute confirmation and a 1-2 sentence mini guide of what they can do with it. Stay in character.`
+        : `I tried to open "${appName}" but it failed: ${data.error}. Let the user know in a cute way and suggest alternatives.`;
+
+      streamChat(
+        [{ role: "user" as const, content: prompt }],
+        buildSystemPrompt(browserInfo, location),
+        (chunk) => {
+          updateConversation(convId, (conv) => ({
+            ...conv,
+            messages: conv.messages.map((m) =>
+              m.id === welcomeId ? { ...m, content: m.content + chunk } : m
+            ),
+          }));
+        },
+        () => { setIsStreaming(false); abortRef.current = null; },
+        () => { setIsStreaming(false); abortRef.current = null; },
+        abortRef.current.signal
+      );
     } catch {
-      console.warn("Failed to open app:", appName);
+      removeThinkingMsg(convId, thinkId);
     }
-  }, []);
+  }, [addThinkingMsg, removeThinkingMsg, updateConversation, browserInfo, location]);
+
+  const welcomeToPage = useCallback(
+    async (convId: string, url: string) => {
+      const welcomeId = generateId();
+      updateConversation(convId, (conv) => ({
+        ...conv,
+        messages: [...conv.messages, {
+          id: welcomeId,
+          role: "assistant" as const,
+          content: "",
+          timestamp: new Date(),
+        }],
+      }));
+
+      setIsStreaming(true);
+      abortRef.current = new AbortController();
+
+      let description = "";
+      if (url.includes("youtube.com/results")) {
+        const q = new URL(url).searchParams.get("search_query") || "";
+        description = `YouTube search results for "${q}"`;
+      } else if (url.includes("google.com/search")) {
+        const params = new URL(url).searchParams;
+        const q = params.get("q") || "";
+        const isImages = params.get("tbm") === "isch";
+        description = isImages ? `Google Images results for "${q}"` : `Google search results for "${q}"`;
+      } else {
+        description = url;
+      }
+
+      streamChat(
+        [{
+          role: "user" as const,
+          content: `I just opened ${description} in the user's browser. Give a brief, cute welcome/confirmation -- tell them what you just opened and give a quick 1-sentence tip about what they'll see or how to use it. Stay in character. Keep it short.`,
+        }],
+        buildSystemPrompt(browserInfo, location),
+        (chunk) => {
+          updateConversation(convId, (conv) => ({
+            ...conv,
+            messages: conv.messages.map((m) =>
+              m.id === welcomeId ? { ...m, content: m.content + chunk } : m
+            ),
+          }));
+        },
+        () => { setIsStreaming(false); abortRef.current = null; },
+        () => { setIsStreaming(false); abortRef.current = null; },
+        abortRef.current.signal
+      );
+    },
+    [browserInfo, location, updateConversation]
+  );
 
   const processActions = useCallback(
     (convId: string, messageId: string) => {
@@ -497,14 +582,22 @@ export default function Home() {
           if (action.type === "OPEN_APP") {
             const appName = action.value.replace(/:$/, "").trim();
             if (confirm(`Senko wants to open "${appName}" on your device. Allow?`)) {
-              openApp(appName);
+              openApp(convId, appName);
             }
           }
         }
 
-        // Scrape the first opened page and auto-summarize
+        // Scrape the first opened page and auto-summarize (with welcome)
         if (urlsToScrape.length > 0) {
           setTimeout(() => scrapeAndSummarize(convId, urlsToScrape[0]), 100);
+        }
+
+        // For search/results pages that don't get scraped, add a quick welcome
+        const searchUrls = actions
+          .filter((a) => a.type === "OPEN_URL" && (a.value.includes("google.com/search") || a.value.includes("youtube.com/results")))
+          .map((a) => a.value);
+        if (searchUrls.length > 0 && urlsToScrape.length === 0) {
+          setTimeout(() => welcomeToPage(convId, searchUrls[0]), 100);
         }
 
         return prev.map((c) =>
@@ -527,7 +620,7 @@ export default function Home() {
       });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [scrapeAndSummarize]
+    [scrapeAndSummarize, welcomeToPage, openApp]
   );
 
   const fetchSearchResults = useCallback(
