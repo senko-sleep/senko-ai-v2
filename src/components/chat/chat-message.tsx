@@ -6,6 +6,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { MarkdownRenderer } from "./markdown-renderer";
 import { MapEmbed } from "./map-embed";
+import { ImageCarousel } from "./image-carousel";
+import { VideoEmbed } from "./video-embed";
 import type { Message } from "@/types/chat";
 
 interface ChatMessageProps {
@@ -74,8 +76,9 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
   const isThinking = message.isThinking;
   const hasSources = message.sources && message.sources.length > 0;
   const hasImages = message.images && message.images.length > 0;
+  const hasVideos = message.videos && message.videos.length > 0;
   const hasMap = !!message.mapEmbed;
-  const hasAttachments = hasSources || hasImages || hasMap;
+  const hasAttachments = hasSources || hasImages || hasVideos || hasMap;
   const isRich = !isUser && hasRichContent(message.content);
   const isShort = message.content.length < 80 && !message.content.includes("\n");
 
@@ -169,32 +172,13 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
           </p>
         )}
 
-        {/* Images */}
-        {hasImages && (
-          <div className={cn(
-            "mt-2 gap-1.5",
-            message.images!.length === 1 ? "flex" : "grid grid-cols-2"
-          )}>
-            {message.images!.map((img, i) => (
-              <a
-                key={i}
-                href={img.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="block overflow-hidden rounded-lg border border-white/[0.06] hover:border-white/[0.12] transition-colors"
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={img.url}
-                  alt={img.alt || ""}
-                  className="h-auto max-h-48 w-full object-cover"
-                  loading="lazy"
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                />
-              </a>
-            ))}
-          </div>
-        )}
+        {/* Images (carousel for multiple) */}
+        {hasImages && <ImageCarousel images={message.images!} />}
+
+        {/* Videos */}
+        {hasVideos && message.videos!.map((video, i) => (
+          <VideoEmbed key={i} video={video} />
+        ))}
 
         {/* Sources */}
         {hasSources && (

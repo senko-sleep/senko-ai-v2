@@ -16,6 +16,13 @@ export interface MessageImage {
   alt?: string;
 }
 
+export interface VideoEmbed {
+  url: string;
+  title?: string;
+  platform: "youtube" | "other";
+  embedId?: string;
+}
+
 export interface Message {
   id: string;
   role: "user" | "assistant" | "thinking";
@@ -25,6 +32,7 @@ export interface Message {
   sources?: WebSource[];
   mapEmbed?: MapEmbed;
   images?: MessageImage[];
+  videos?: VideoEmbed[];
   tokenCount?: number;
   isThinking?: boolean;
 }

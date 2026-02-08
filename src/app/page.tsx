@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { Sidebar } from "@/components/sidebar/sidebar";
 import { ChatArea } from "@/components/chat/chat-area";
 import { useBrowserInfo } from "@/hooks/use-browser-info";
@@ -20,6 +20,30 @@ const defaultSettings: AppSettings = {
   fontSize: "medium",
   sendWithEnter: true,
 };
+
+const STORAGE_KEYS = {
+  conversations: "senko-ai-conversations",
+  settings: "senko-ai-settings",
+  activeConvId: "senko-ai-active-conv",
+};
+
+function loadFromStorage<T>(key: string, fallback: T): T {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return parsed as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveToStorage(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch { /* storage full or unavailable */ }
+}
 
 function createConversation(title: string): Conversation {
   const now = new Date();
@@ -64,8 +88,22 @@ ACTIONS - You can execute real actions on the user's device. Use these action ta
    [ACTION:SEARCH:how to bake a cake]
    [ACTION:SEARCH:latest tech news]
 
-3. Show images in the chat:
-   [ACTION:IMAGE:https://example.com/image.jpg|description of image]
+3. Show images in the chat (multiple allowed, they appear in a slider):
+   [ACTION:IMAGE:https://example.com/image1.jpg|cute cat]
+   [ACTION:IMAGE:https://example.com/image2.jpg|another cat]
+   [ACTION:IMAGE:https://example.com/image3.jpg|sleepy cat]
+
+4. Embed a video (YouTube videos play inline in chat):
+   [ACTION:VIDEO:https://www.youtube.com/watch?v=dQw4w9WgXcQ|video title]
+   [ACTION:VIDEO:https://youtu.be/dQw4w9WgXcQ|short link works too]
+
+5. Open desktop applications:
+   [ACTION:OPEN_APP:calculator:]
+   [ACTION:OPEN_APP:notepad:]
+   [ACTION:OPEN_APP:spotify:]
+   [ACTION:OPEN_APP:ms-settings:]
+   [ACTION:OPEN_APP:ms-paint:]
+   [ACTION:OPEN_APP:mailto:someone@example.com]
 
 IMPORTANT action rules:
 - When the user says "open google" -> [ACTION:OPEN_URL:https://google.com]
@@ -81,6 +119,12 @@ IMPORTANT action rules:
 - Always use full URLs with https://
 - For YouTube searches, URL-encode the query with + for spaces
 - For Google searches, URL-encode the query with + for spaces
+- When the user says "open calculator" or "open notepad" etc -> use [ACTION:OPEN_APP:calculator:] or [ACTION:OPEN_APP:notepad:]
+- When the user says "open settings" -> [ACTION:OPEN_APP:ms-settings:]
+- When the user says "open spotify" -> [ACTION:OPEN_APP:spotify:]
+- When the user asks to show multiple images, use multiple [ACTION:IMAGE:url|desc] tags -- they will appear in a nice slider
+- When the user asks to play or show a YouTube video, use [ACTION:VIDEO:youtube_url|title] to embed it playable in chat
+- YouTube video URLs opened via OPEN_URL are also auto-embedded in chat
 
 4. Open a specific search result by number:
    [ACTION:OPEN_RESULT:1]
@@ -173,18 +217,43 @@ async function streamChat(
 }
 
 export default function Home() {
-  const [conversations, setConversations] = useState<Conversation[]>([
-    createConversation("Welcome"),
-  ]);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(
-    conversations[0]?.id ?? null
+  const [conversations, setConversations] = useState<Conversation[]>(() => {
+    const saved = loadFromStorage<Conversation[]>(STORAGE_KEYS.conversations, []);
+    if (saved.length > 0) {
+      return saved.map((c) => ({
+        ...c,
+        createdAt: new Date(c.createdAt),
+        updatedAt: new Date(c.updatedAt),
+        messages: c.messages.map((m) => ({ ...m, timestamp: new Date(m.timestamp) })),
+      }));
+    }
+    return [createConversation("Welcome")];
+  });
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(() => {
+    const saved = loadFromStorage<string | null>(STORAGE_KEYS.activeConvId, null);
+    return saved || (conversations[0]?.id ?? null);
+  });
+  const [settings, setSettings] = useState<AppSettings>(() =>
+    loadFromStorage<AppSettings>(STORAGE_KEYS.settings, defaultSettings)
   );
-  const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [isStreaming, setIsStreaming] = useState(false);
   const [wasCutOff, setWasCutOff] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const lastSearchResults = useRef<{ url: string; title: string }[]>([]);
   const lastScrapedContent = useRef<{ url: string; title: string; content: string } | null>(null);
+
+  // Persist to localStorage
+  useEffect(() => {
+    saveToStorage(STORAGE_KEYS.conversations, conversations);
+  }, [conversations]);
+
+  useEffect(() => {
+    saveToStorage(STORAGE_KEYS.settings, settings);
+  }, [settings]);
+
+  useEffect(() => {
+    saveToStorage(STORAGE_KEYS.activeConvId, activeConversationId);
+  }, [activeConversationId]);
 
   const browserInfo = useBrowserInfo();
   const { location } = useLocation();
@@ -324,7 +393,7 @@ export default function Home() {
         if (!msg || msg.role !== "assistant") return prev;
 
         const content = msg.content;
-        const actionRegex = /\[ACTION:(OPEN_URL|SEARCH|IMAGE|OPEN_RESULT):([^\]]+)\]/g;
+        const actionRegex = /\[ACTION:(OPEN_URL|SEARCH|IMAGE|OPEN_RESULT|VIDEO|OPEN_APP):([^\]]+)\]/g;
         let match;
         const actions: { type: string; value: string }[] = [];
         while ((match = actionRegex.exec(content)) !== null) {
@@ -335,14 +404,21 @@ export default function Home() {
 
         const cleanContent = content.replace(/\s*\[ACTION:[^\]]+\]\s*/g, " ").trim();
         const images: { url: string; alt?: string }[] = [];
+        const videos: { url: string; title?: string; platform: "youtube" | "other"; embedId?: string }[] = [];
         const urlsToScrape: string[] = [];
 
         for (const action of actions) {
           if (action.type === "OPEN_URL") {
+            const url = action.value;
+            // Auto-detect YouTube video URLs and embed them
+            const ytMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+            if (ytMatch) {
+              videos.push({ url, platform: "youtube", embedId: ytMatch[1] });
+            }
             try {
-              window.open(action.value, "_blank", "noopener,noreferrer");
-              if (!action.value.includes("google.com/search") && !action.value.includes("youtube.com/results")) {
-                urlsToScrape.push(action.value);
+              window.open(url, "_blank", "noopener,noreferrer");
+              if (!url.includes("google.com/search") && !url.includes("youtube.com/results") && !ytMatch) {
+                urlsToScrape.push(url);
               }
             } catch {
               // skip
@@ -355,6 +431,18 @@ export default function Home() {
             const parts = action.value.split("|");
             images.push({ url: parts[0].trim(), alt: parts[1]?.trim() });
           }
+          if (action.type === "VIDEO") {
+            const parts = action.value.split("|");
+            const url = parts[0].trim();
+            const title = parts[1]?.trim();
+            const ytMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+            videos.push({
+              url,
+              title,
+              platform: ytMatch ? "youtube" : "other",
+              embedId: ytMatch?.[1],
+            });
+          }
           if (action.type === "OPEN_RESULT") {
             const idx = parseInt(action.value, 10) - 1;
             const results = lastSearchResults.current;
@@ -364,6 +452,12 @@ export default function Home() {
                 urlsToScrape.push(results[idx].url);
               } catch { /* skip */ }
             }
+          }
+          if (action.type === "OPEN_APP") {
+            // Open app via protocol handler (e.g., calculator:, notepad:, spotify:)
+            try {
+              window.open(action.value, "_self");
+            } catch { /* skip */ }
           }
         }
 
@@ -382,6 +476,7 @@ export default function Home() {
                         ...m,
                         content: cleanContent,
                         images: images.length > 0 ? [...(m.images || []), ...images] : m.images,
+                        videos: videos.length > 0 ? [...(m.videos || []), ...videos] : m.videos,
                       }
                     : m
                 ),
