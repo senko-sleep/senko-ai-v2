@@ -593,14 +593,15 @@ export default function Home() {
   );
 
   const processActions = useCallback(
-    (convId: string, messageId: string) => {
+    (convId: string, messageId: string, finalContent?: string) => {
       setConversations((prev) => {
         const conv = prev.find((c) => c.id === convId);
         if (!conv) return prev;
         const msg = conv.messages.find((m) => m.id === messageId);
         if (!msg || msg.role !== "assistant") return prev;
 
-        const content = msg.content;
+        const content = finalContent || msg.content;
+        console.log(`%c[processActions] 📝 Message content length: ${content.length}`, "color: #cc88ff", { fromParam: !!finalContent, preview: content.slice(0, 80) });
         const actionRegex = /\[ACTION:(OPEN_URL|SEARCH|IMAGE|OPEN_RESULT|OPEN_APP|SCREENSHOT|EMBED):([^\]]+)\]/g;
         let match;
         const actions: { type: string; value: string }[] = [];
@@ -887,24 +888,39 @@ export default function Home() {
 
       abortRef.current = new AbortController();
 
+      let totalContent = "";
       streamChat(
         apiMessages,
         systemPrompt,
         (chunk) => {
+          totalContent += chunk;
+          updateConversation(convId, (conv) => {
+            const found = conv.messages.find((m) => m.id === assistantId);
+            if (!found) {
+              console.error(`%c[onChunk] ⚠️ Assistant message ${assistantId} NOT FOUND in conv ${convId.slice(0,8)}`, "color: #ff0000; font-weight: bold", { messageIds: conv.messages.map(m => m.id.slice(0,8)), chunk: chunk.slice(0,20) });
+            }
+            return {
+              ...conv,
+              messages: conv.messages.map((m) =>
+                m.id === assistantId
+                  ? { ...m, content: m.content + chunk }
+                  : m
+              ),
+            };
+          });
+        },
+        () => {
+          console.log(`%c[sendToAI] ✅ Done, setting isStreaming=false`, "color: #00ff88; font-weight: bold", { totalContentLength: totalContent.length, preview: totalContent.slice(0, 100) });
+          // Ensure the final content is written to state (in case React batched some chunk updates)
           updateConversation(convId, (conv) => ({
             ...conv,
             messages: conv.messages.map((m) =>
-              m.id === assistantId
-                ? { ...m, content: m.content + chunk }
-                : m
+              m.id === assistantId ? { ...m, content: totalContent } : m
             ),
           }));
-        },
-        () => {
-          console.log(`%c[sendToAI] ✅ Done, setting isStreaming=false`, "color: #00ff88; font-weight: bold");
           setIsStreaming(false);
           abortRef.current = null;
-          processActions(convId, assistantId);
+          processActions(convId, assistantId, totalContent);
         },
         (error) => {
           console.error(`%c[sendToAI] ❌ Error, setting isStreaming=false`, "color: #ff4444; font-weight: bold", error);
@@ -941,7 +957,7 @@ export default function Home() {
               content: `Generate a very short title (2-5 words, no quotes, no punctuation) for a conversation that starts with: "${firstMessage.slice(0, 200)}"`,
             },
           ],
-          system: "You generate ultra-short conversation titles. Respond with ONLY the title, nothing else. 2-5 words max. No quotes. No punctuation. Lowercase.",
+          systemPrompt: "You generate ultra-short conversation titles. Respond with ONLY the title, nothing else. 2-5 words max. No quotes. No punctuation. Lowercase.",
         }),
       });
       const reader = res.body?.getReader();
