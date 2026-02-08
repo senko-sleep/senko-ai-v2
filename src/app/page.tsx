@@ -84,29 +84,24 @@ CRITICAL STYLE RULES:
 - Be natural and varied -- if you just said "ooh" in the last message, use something different next time like "hmm~" or "aaah" or ":3"
 - Keep summaries focused on USEFUL info, not filler words
 
-ACTIONS - You can execute real actions on the user's device. Use these action tags in your response and they will be automatically executed:
+ACTIONS - You can execute real actions. Use these action tags in your response:
 
-1. Open any URL in the user's browser:
+1. OPEN_URL - Open a URL in the user's browser (ONLY when user explicitly says "open", "go to", "take me to"):
    [ACTION:OPEN_URL:https://google.com]
    [ACTION:OPEN_URL:https://youtube.com]
-   [ACTION:OPEN_URL:https://www.youtube.com/results?search_query=how+to+bake+a+cake]
-   [ACTION:OPEN_URL:https://www.google.com/search?q=weather+today]
-   [ACTION:OPEN_URL:https://www.google.com/search?tbm=isch&q=anya+spy+x+family]
 
-2. Search the web and show results:
+2. SEARCH - Search the web and show results + images in chat:
    [ACTION:SEARCH:how to bake a cake]
-   [ACTION:SEARCH:latest tech news]
+   [ACTION:SEARCH:anya forger images]
 
-3. Show images in the chat (multiple allowed, they appear in a slider):
-   [ACTION:IMAGE:https://example.com/image1.jpg|cute cat]
-   [ACTION:IMAGE:https://example.com/image2.jpg|another cat]
-   [ACTION:IMAGE:https://example.com/image3.jpg|sleepy cat]
+3. IMAGE - Show a specific image in chat (ONLY use real URLs you found from search results or scraped pages, NEVER make up URLs):
+   [ACTION:IMAGE:https://real-url-from-search.com/image.jpg|description]
 
-4. Embed a video (YouTube videos play inline in chat):
-   [ACTION:VIDEO:https://www.youtube.com/watch?v=dQw4w9WgXcQ|video title]
-   [ACTION:VIDEO:https://youtu.be/dQw4w9WgXcQ|short link works too]
+4. OPEN_RESULT - Open a specific search result by number:
+   [ACTION:OPEN_RESULT:1]
+   [ACTION:OPEN_RESULT:2]
 
-5. Open desktop applications (with user permission):
+5. OPEN_APP - Open desktop applications (user will be asked permission):
    [ACTION:OPEN_APP:chrome]
    [ACTION:OPEN_APP:notepad]
    [ACTION:OPEN_APP:calculator]
@@ -117,50 +112,26 @@ ACTIONS - You can execute real actions on the user's device. Use these action ta
    [ACTION:OPEN_APP:settings]
    [ACTION:OPEN_APP:paint]
    [ACTION:OPEN_APP:terminal]
-   [ACTION:OPEN_APP:task manager]
-   [ACTION:OPEN_APP:word]
-   [ACTION:OPEN_APP:excel]
-   [ACTION:OPEN_APP:obs]
-   [ACTION:OPEN_APP:vlc]
-   [ACTION:OPEN_APP:steam]
 
-IMPORTANT action rules:
-- When the user says "open google" -> [ACTION:OPEN_URL:https://google.com]
-- When the user says "open youtube" -> [ACTION:OPEN_URL:https://youtube.com]
-- When the user says "open youtube and look up X" -> [ACTION:OPEN_URL:https://www.youtube.com/results?search_query=X+with+plus+signs]
-- When the user says "go to google and search for X" -> [ACTION:OPEN_URL:https://www.google.com/search?q=X+with+plus+signs]
-- When the user says "google images of X" -> [ACTION:OPEN_URL:https://www.google.com/search?tbm=isch&q=X+with+plus+signs]
-- When the user says "look up X" or "search X" or "research X" -> [ACTION:SEARCH:X] to show results in chat
-- When the user says "show me images of X" -> use [ACTION:SEARCH:X images] AND [ACTION:OPEN_URL:https://www.google.com/search?tbm=isch&q=X]
-- You can chain multiple actions: open a site AND search AND show images all in one response
-- DO NOT explain how to do things the user asked you to do -- just DO them with action tags
-- Keep your text brief when executing actions -- the action speaks for itself
+CRITICAL ACTION RULES:
+- NEVER open a URL/website unless the user EXPLICITLY says "open", "go to", "take me to", or "visit"
+- "show me images of X" -> [ACTION:SEARCH:X] (search and show images in chat, do NOT open Google Images)
+- "tell me about X" -> [ACTION:SEARCH:X] (search and summarize, do NOT open any website)
+- "look up X" or "search X" -> [ACTION:SEARCH:X] (search in chat, do NOT open browser)
+- "open youtube" -> [ACTION:OPEN_URL:https://youtube.com] (user explicitly said "open")
+- "open google and search X" -> [ACTION:OPEN_URL:https://www.google.com/search?q=X+with+plus+signs]
+- "open calculator" -> [ACTION:OPEN_APP:calculator]
+- When searching, images from the pages will be automatically scraped and shown in a carousel
+- NEVER make up image URLs or video URLs -- only use real URLs from search results
+- NEVER use [ACTION:IMAGE:] with a URL you invented -- images come from scraped pages automatically
+- DO NOT explain how to do things -- just DO them with action tags
+- Keep text brief when executing actions
 - Always use full URLs with https://
-- For YouTube searches, URL-encode the query with + for spaces
-- For Google searches, URL-encode the query with + for spaces
-- When the user says "open calculator" -> [ACTION:OPEN_APP:calculator]
-- When the user says "open notepad" -> [ACTION:OPEN_APP:notepad]
-- When the user says "open chrome" -> [ACTION:OPEN_APP:chrome]
-- When the user says "open spotify" -> [ACTION:OPEN_APP:spotify]
-- When the user says "open settings" -> [ACTION:OPEN_APP:settings]
-- When the user says "open file explorer" -> [ACTION:OPEN_APP:file explorer]
-- For any desktop app, use [ACTION:OPEN_APP:app name] -- the user will be asked for permission first
-- When the user asks to show multiple images, use multiple [ACTION:IMAGE:url|desc] tags -- they will appear in a nice slider
-- When the user asks to play or show a YouTube video, use [ACTION:VIDEO:youtube_url|title] to embed it playable in chat
-- YouTube video URLs opened via OPEN_URL are also auto-embedded in chat
 
-4. Open a specific search result by number:
-   [ACTION:OPEN_RESULT:1]
-   [ACTION:OPEN_RESULT:2]
-
-SEQUENTIAL / MULTI-STEP commands:
-- The user may ask compound things like "search for X and open the first result" or "look up X and click the second link"
-- For these, use [ACTION:SEARCH:X] AND [ACTION:OPEN_RESULT:1] in the same response
-- Example: user says "look up best pizza near me and open the first one" -> use [ACTION:SEARCH:best pizza near me] [ACTION:OPEN_RESULT:1]
-- Example: user says "go to youtube, search for cat videos, and open the first result" -> use [ACTION:OPEN_URL:https://www.youtube.com/results?search_query=cat+videos] and say you opened it
-- When the user says "open the first/second/third result" after a previous search, use [ACTION:OPEN_RESULT:N] where N is the number
-- You remember previous search results and can reference them by number
-- You can do as many steps as needed in one response`;
+SEQUENTIAL COMMANDS:
+- "search for X and open the first result" -> [ACTION:SEARCH:X] [ACTION:OPEN_RESULT:1]
+- "open the first/second result" -> [ACTION:OPEN_RESULT:N]
+- You remember previous search results and can reference them by number`;
   if (browserInfo) {
     const device = /tablet|ipad/i.test(browserInfo.userAgent) ? "Tablet" : /mobile|iphone|android/i.test(browserInfo.userAgent) ? "Mobile" : "Desktop";
     const browser = browserInfo.userAgent.includes("Edg") ? "Edge" : browserInfo.userAgent.includes("Chrome") ? "Chrome" : browserInfo.userAgent.includes("Firefox") ? "Firefox" : browserInfo.userAgent.includes("Safari") ? "Safari" : "Unknown";
@@ -365,12 +336,19 @@ export default function Home() {
           favicon: `https://www.google.com/s2/favicons?domain=${hostname}&sz=16`,
         };
 
+        // Attach scraped images to the summary message
+        const scrapedImages = (data.images || []).map((imgUrl: string) => ({
+          url: imgUrl,
+          alt: data.title || "",
+        }));
+
         const summaryMsg: Message = {
           id: summaryId,
           role: "assistant",
           content: "",
           timestamp: new Date(),
           sources: [source],
+          images: scrapedImages.length > 0 ? scrapedImages : undefined,
         };
 
         updateConversation(convId, (conv) => ({
@@ -572,18 +550,8 @@ export default function Home() {
             const parts = action.value.split("|");
             images.push({ url: parts[0].trim(), alt: parts[1]?.trim() });
           }
-          if (action.type === "VIDEO") {
-            const parts = action.value.split("|");
-            const url = parts[0].trim();
-            const title = parts[1]?.trim();
-            const ytMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-            videos.push({
-              url,
-              title,
-              platform: ytMatch ? "youtube" : "other",
-              embedId: ytMatch?.[1],
-            });
-          }
+          // VIDEO action removed -- AI was generating fake URLs
+          // YouTube embeds still work automatically from real OPEN_URL watch links
           if (action.type === "OPEN_RESULT") {
             const idx = parseInt(action.value, 10) - 1;
             const results = lastSearchResults.current;
@@ -667,6 +635,29 @@ export default function Home() {
                 : m
             ),
           }));
+
+          // Scrape the top result for images to show in chat
+          const topUrl = data.results[0].url;
+          if (topUrl && !topUrl.includes("youtube.com") && !topUrl.includes("google.com")) {
+            try {
+              const scrapeRes = await fetch(`/api/scrape?url=${encodeURIComponent(topUrl)}`);
+              const scrapeData = await scrapeRes.json();
+              if (scrapeData.images && scrapeData.images.length > 0) {
+                const scrapedImages = scrapeData.images.map((imgUrl: string) => ({
+                  url: imgUrl,
+                  alt: scrapeData.title || query,
+                }));
+                updateConversation(convId, (conv) => ({
+                  ...conv,
+                  messages: conv.messages.map((m) =>
+                    m.id === messageId
+                      ? { ...m, images: [...(m.images || []), ...scrapedImages] }
+                      : m
+                  ),
+                }));
+              }
+            } catch { /* image scrape failed silently */ }
+          }
         }
       } catch {
         removeThinkingMsg(convId, thinkId);

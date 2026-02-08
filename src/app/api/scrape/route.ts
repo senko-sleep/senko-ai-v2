@@ -35,7 +35,7 @@ export async function GET(req: NextRequest) {
     const description = metaMatch ? metaMatch[1].trim() : "";
 
     // Remove scripts, styles, nav, footer, header, aside, svg, forms
-    let cleaned = html
+    const cleaned = html
       .replace(/<script[\s\S]*?<\/script>/gi, "")
       .replace(/<style[\s\S]*?<\/style>/gi, "")
       .replace(/<nav[\s\S]*?<\/nav>/gi, "")
@@ -74,10 +74,60 @@ export async function GET(req: NextRequest) {
     // Truncate to ~3000 chars to keep context manageable
     const truncated = text.length > 3000 ? text.slice(0, 3000) + "..." : text;
 
+    // Extract images from the page
+    const imgRegex = /<img[^>]+src=["']([^"']+)["'][^>]*/gi;
+    const images: string[] = [];
+    let imgMatch;
+    while ((imgMatch = imgRegex.exec(html)) !== null && images.length < 12) {
+      let src = imgMatch[1];
+      // Skip tiny icons, tracking pixels, data URIs, svgs
+      if (
+        src.includes("data:") ||
+        src.includes(".svg") ||
+        src.includes("pixel") ||
+        src.includes("tracking") ||
+        src.includes("favicon") ||
+        src.includes("logo") && src.length < 50 ||
+        src.includes("1x1") ||
+        src.includes("spacer")
+      ) continue;
+      // Make relative URLs absolute
+      if (src.startsWith("//")) {
+        src = "https:" + src;
+      } else if (src.startsWith("/")) {
+        try {
+          const base = new URL(url);
+          src = base.origin + src;
+        } catch { continue; }
+      } else if (!src.startsWith("http")) {
+        try {
+          const base = new URL(url);
+          src = base.origin + "/" + src;
+        } catch { continue; }
+      }
+      // Only keep reasonably sized images (check for width/height hints in tag)
+      const tagStr = imgMatch[0];
+      const widthMatch = tagStr.match(/width=["']?(\d+)/i);
+      if (widthMatch && parseInt(widthMatch[1]) < 50) continue;
+      const heightMatch = tagStr.match(/height=["']?(\d+)/i);
+      if (heightMatch && parseInt(heightMatch[1]) < 50) continue;
+
+      if (!images.includes(src)) {
+        images.push(src);
+      }
+    }
+
+    // Also extract og:image
+    const ogImageMatch = html.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i);
+    if (ogImageMatch && ogImageMatch[1] && !images.includes(ogImageMatch[1])) {
+      images.unshift(ogImageMatch[1]);
+    }
+
     return Response.json({
       title,
       description,
       content: truncated,
+      images: images.slice(0, 8),
       url,
       length: text.length,
     });
