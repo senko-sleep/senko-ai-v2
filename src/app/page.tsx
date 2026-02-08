@@ -693,16 +693,48 @@ export default function Home() {
           );
         }
 
-        // Build images from dedicated image search
+        // Build images from dedicated image search + extract image sources
         let searchImages: { url: string; alt?: string }[] = [];
         if (imageData.images && imageData.images.length > 0) {
           searchImages = imageData.images.map((img: { url: string; alt: string }) => ({
             url: img.url,
             alt: img.alt || query,
           }));
+
+          // Add image source websites as additional source pills
+          const imageSources: WebSource[] = [];
+          const seenHosts = new Set(sources.map((s: WebSource) => new URL(s.url).hostname));
+          for (const img of imageData.images as { url: string; alt: string; source: string }[]) {
+            if (img.source) {
+              try {
+                const host = new URL(img.source).hostname;
+                if (!seenHosts.has(host)) {
+                  seenHosts.add(host);
+                  imageSources.push({
+                    url: img.source,
+                    title: host.replace("www.", ""),
+                    favicon: `https://www.google.com/s2/favicons?domain=${host}&sz=16`,
+                  });
+                }
+              } catch { /* skip */ }
+            } else if (img.url.startsWith("http")) {
+              try {
+                const host = new URL(img.url).hostname;
+                if (!seenHosts.has(host)) {
+                  seenHosts.add(host);
+                  imageSources.push({
+                    url: img.url,
+                    title: host.replace("www.", ""),
+                    favicon: `https://www.google.com/s2/favicons?domain=${host}&sz=16`,
+                  });
+                }
+              } catch { /* skip */ }
+            }
+          }
+          sources = [...sources, ...imageSources];
         }
 
-        // Update message once with both sources and images (no duplicates)
+        // Update message once with both sources and images
         updateConversation(convId, (conv) => ({
           ...conv,
           messages: conv.messages.map((m) =>
