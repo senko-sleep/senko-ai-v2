@@ -1,6 +1,12 @@
-// Health check is no longer needed - single unified API handles everything
+import { config } from "@/lib/config";
+
 export const runtime = "nodejs";
 
 export async function GET() {
-  return Response.json({ status: "ok" });
+  const key = config.groqApiKey;
+  return Response.json({
+    status: "ok",
+    groqKeySet: !!key,
+    groqKeyLength: key.length,
+  });
 }

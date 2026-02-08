@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { config } from "@/lib/config";
 
 export const runtime = "nodejs";
 
@@ -8,12 +9,12 @@ export const runtime = "nodejs";
 // Everything lives in this one file. No external lib imports.
 // ---------------------------------------------------------------------------
 
-const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
-const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GROQ_API_KEY = config.groqApiKey;
+const GROQ_MODEL = config.groqModel;
+const GROQ_URL = config.groqUrl;
 
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "mistral";
+const OLLAMA_URL = config.ollamaUrl;
+const OLLAMA_MODEL = config.ollamaModel;
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
