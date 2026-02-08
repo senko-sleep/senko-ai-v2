@@ -235,8 +235,8 @@ export default function Home() {
   const [wasCutOff, setWasCutOff] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
-  const lastSearchResults = useRef<{ url: string; title: string }[]>([]);
-  const lastScrapedContent = useRef<{ url: string; title: string; content: string } | null>(null);
+  const searchResultsByConv = useRef<Record<string, { url: string; title: string }[]>>({});
+  const scrapedContentByConv = useRef<Record<string, { url: string; title: string; content: string }>>({});
   const scrapingInProgress = useRef(false);
 
   // Load from localStorage after hydration (client only)
@@ -332,7 +332,7 @@ export default function Home() {
 
         if (!data.content) { scrapingInProgress.current = false; return; }
 
-        lastScrapedContent.current = {
+        scrapedContentByConv.current[convId] = {
           url,
           title: data.title || url,
           content: data.content,
@@ -601,7 +601,7 @@ export default function Home() {
           // YouTube embeds still work automatically from real OPEN_URL watch links
           if (action.type === "OPEN_RESULT") {
             const idx = parseInt(action.value, 10) - 1;
-            const results = lastSearchResults.current;
+            const results = searchResultsByConv.current[convId] || [];
             if (results[idx]) {
               try {
                 window.open(results[idx].url, "_blank", "noopener,noreferrer");
@@ -674,7 +674,7 @@ export default function Home() {
         removeThinkingMsg(convId, thinkId);
 
         if (data.results && data.results.length > 0) {
-          lastSearchResults.current = data.results.map(
+          searchResultsByConv.current[convId] = data.results.map(
             (r: { title: string; url: string }) => ({ url: r.url, title: r.title })
           );
           const sources: WebSource[] = data.results.map(
@@ -749,8 +749,9 @@ export default function Home() {
           content: m.content,
         }));
 
-      if (lastSearchResults.current.length > 0) {
-        const resultsList = lastSearchResults.current
+      const convSearchResults = searchResultsByConv.current[convId] || [];
+      if (convSearchResults.length > 0) {
+        const resultsList = convSearchResults
           .map((r, i) => `${i + 1}. ${r.title} - ${r.url}`)
           .join("\n");
         apiMessages.push({
@@ -1015,6 +1016,10 @@ export default function Home() {
         abortRef.current = null;
         setIsStreaming(false);
       }
+      // Clean up per-conversation context
+      delete searchResultsByConv.current[id];
+      delete scrapedContentByConv.current[id];
+
       setConversations((prev) => {
         const filtered = prev.filter((c) => c.id !== id);
         if (activeConversationId === id) {
