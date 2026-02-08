@@ -747,11 +747,49 @@ export default function Home() {
               : m
           ),
         }));
+
+        // Generate an insightful comment about what was found
+        const hasImages = searchImages.length > 0;
+        const topResults = (searchData.results || []).slice(0, 3);
+        const resultSummary = topResults.map((r: { title: string; snippet: string }) => `${r.title}: ${r.snippet}`).join("\n");
+
+        const commentId = generateId();
+        updateConversation(convId, (conv) => ({
+          ...conv,
+          messages: [...conv.messages, {
+            id: commentId,
+            role: "assistant" as const,
+            content: "",
+            timestamp: new Date(),
+          }],
+        }));
+
+        const contextPrompt = hasImages
+          ? `I just searched for "${query}" and found ${searchImages.length} images and these results:\n${resultSummary}\n\nGive a brief, insightful comment about what was found. Reference the actual topic -- what's interesting about it, a fun fact, or what the images show. Do NOT say generic things like "thats so cool" or "ooh". Be specific to the topic. 1-2 sentences max. Use a kaomoji.`
+          : `I just searched for "${query}" and found these results:\n${resultSummary}\n\nGive a brief, insightful comment about the results. Reference the actual topic and what's interesting. Do NOT say generic things. Be specific. 1-2 sentences max. Use a kaomoji.`;
+
+        abortRef.current = new AbortController();
+        setIsStreaming(true);
+        streamChat(
+          [{ role: "user" as const, content: contextPrompt }],
+          buildSystemPrompt(browserInfo, location),
+          (chunk) => {
+            updateConversation(convId, (conv) => ({
+              ...conv,
+              messages: conv.messages.map((m) =>
+                m.id === commentId ? { ...m, content: m.content + chunk } : m
+              ),
+            }));
+          },
+          () => { setIsStreaming(false); abortRef.current = null; },
+          () => { setIsStreaming(false); abortRef.current = null; },
+          abortRef.current.signal
+        );
       } catch {
         removeThinkingMsg(convId, thinkId);
       }
     },
-    [updateConversation, addThinkingMsg, removeThinkingMsg]
+    [updateConversation, addThinkingMsg, removeThinkingMsg, browserInfo, location]
   );
 
   const sendToAI = useCallback(
