@@ -894,48 +894,87 @@ export default function Home() {
         systemPrompt,
         (chunk) => {
           totalContent += chunk;
-          updateConversation(convId, (conv) => {
-            const found = conv.messages.find((m) => m.id === assistantId);
-            if (!found) {
-              console.error(`%c[onChunk] ⚠️ Assistant message ${assistantId} NOT FOUND in conv ${convId.slice(0,8)}`, "color: #ff0000; font-weight: bold", { messageIds: conv.messages.map(m => m.id.slice(0,8)), chunk: chunk.slice(0,20) });
-            }
-            return {
-              ...conv,
-              messages: conv.messages.map((m) =>
-                m.id === assistantId
-                  ? { ...m, content: m.content + chunk }
-                  : m
-              ),
-            };
-          });
+          setConversations((prev) =>
+            prev.map((c) => {
+              if (c.id !== convId) return c;
+              const exists = c.messages.some((m) => m.id === assistantId);
+              if (exists) {
+                return {
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === assistantId
+                      ? { ...m, content: m.content + chunk }
+                      : m
+                  ),
+                };
+              }
+              // Assistant message not in state yet (React batched the add) — insert it now
+              return {
+                ...c,
+                messages: [
+                  ...c.messages,
+                  { ...assistantMessage, content: chunk },
+                ],
+                updatedAt: new Date(),
+              };
+            })
+          );
         },
         () => {
           console.log(`%c[sendToAI] ✅ Done, setting isStreaming=false`, "color: #00ff88; font-weight: bold", { totalContentLength: totalContent.length, preview: totalContent.slice(0, 100) });
-          // Ensure the final content is written to state (in case React batched some chunk updates)
-          updateConversation(convId, (conv) => ({
-            ...conv,
-            messages: conv.messages.map((m) =>
-              m.id === assistantId ? { ...m, content: totalContent } : m
-            ),
-          }));
+          // Write final content to state (handles both: message exists or needs to be added)
+          setConversations((prev) =>
+            prev.map((c) => {
+              if (c.id !== convId) return c;
+              const exists = c.messages.some((m) => m.id === assistantId);
+              if (exists) {
+                return {
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === assistantId ? { ...m, content: totalContent } : m
+                  ),
+                };
+              }
+              return {
+                ...c,
+                messages: [
+                  ...c.messages,
+                  { ...assistantMessage, content: totalContent },
+                ],
+                updatedAt: new Date(),
+              };
+            })
+          );
           setIsStreaming(false);
           abortRef.current = null;
           processActions(convId, assistantId, totalContent);
         },
         (error) => {
           console.error(`%c[sendToAI] ❌ Error, setting isStreaming=false`, "color: #ff4444; font-weight: bold", error);
-          updateConversation(convId, (conv) => ({
-            ...conv,
-            messages: conv.messages.map((m) =>
-              m.id === assistantId
-                ? {
-                    ...m,
-                    content: m.content || "",
-                    error,
-                  }
-                : m
-            ),
-          }));
+          setConversations((prev) =>
+            prev.map((c) => {
+              if (c.id !== convId) return c;
+              const exists = c.messages.some((m) => m.id === assistantId);
+              if (exists) {
+                return {
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === assistantId
+                      ? { ...m, content: m.content || "", error }
+                      : m
+                  ),
+                };
+              }
+              return {
+                ...c,
+                messages: [
+                  ...c.messages,
+                  { ...assistantMessage, content: "", error },
+                ],
+                updatedAt: new Date(),
+              };
+            })
+          );
           setIsStreaming(false);
           abortRef.current = null;
         },
@@ -1025,15 +1064,8 @@ export default function Home() {
         generateTitle(activeConversationId, content);
       }
 
-      setTimeout(() => {
-        setConversations((prev) => {
-          const conv = prev.find((c) => c.id === activeConversationId);
-          if (conv) {
-            sendToAI(activeConversationId, conv.messages);
-          }
-          return prev;
-        });
-      }, 50);
+      // Pass updatedMessages directly — don't read from state (React batching race)
+      sendToAI(activeConversationId, updatedMessages);
     },
     [activeConversationId, isStreaming, updateConversation, sendToAI, generateTitle]
   );
