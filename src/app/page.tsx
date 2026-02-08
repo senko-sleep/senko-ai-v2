@@ -231,43 +231,54 @@ async function streamChat(
 }
 
 export default function Home() {
-  const [conversations, setConversations] = useState<Conversation[]>(() => {
-    const saved = loadFromStorage<Conversation[]>(STORAGE_KEYS.conversations, []);
-    if (saved.length > 0) {
-      return saved.map((c) => ({
+  const [conversations, setConversations] = useState<Conversation[]>([
+    createConversation("Welcome"),
+  ]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(
+    conversations[0]?.id ?? null
+  );
+  const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [wasCutOff, setWasCutOff] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const lastSearchResults = useRef<{ url: string; title: string }[]>([]);
+  const lastScrapedContent = useRef<{ url: string; title: string; content: string } | null>(null);
+
+  // Load from localStorage after hydration (client only)
+  useEffect(() => {
+    const savedConvs = loadFromStorage<Conversation[]>(STORAGE_KEYS.conversations, []);
+    if (savedConvs.length > 0) {
+      const rehydrated = savedConvs.map((c) => ({
         ...c,
         createdAt: new Date(c.createdAt),
         updatedAt: new Date(c.updatedAt),
         messages: c.messages.map((m) => ({ ...m, timestamp: new Date(m.timestamp) })),
       }));
+      setConversations(rehydrated);
+      const savedId = loadFromStorage<string | null>(STORAGE_KEYS.activeConvId, null);
+      setActiveConversationId(savedId || (rehydrated[0]?.id ?? null));
     }
-    return [createConversation("Welcome")];
-  });
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(() => {
-    const saved = loadFromStorage<string | null>(STORAGE_KEYS.activeConvId, null);
-    return saved || (conversations[0]?.id ?? null);
-  });
-  const [settings, setSettings] = useState<AppSettings>(() =>
-    loadFromStorage<AppSettings>(STORAGE_KEYS.settings, defaultSettings)
-  );
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [wasCutOff, setWasCutOff] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
-  const lastSearchResults = useRef<{ url: string; title: string }[]>([]);
-  const lastScrapedContent = useRef<{ url: string; title: string; content: string } | null>(null);
+    const savedSettings = loadFromStorage<AppSettings>(STORAGE_KEYS.settings, defaultSettings);
+    setSettings(savedSettings);
+    setHydrated(true);
+  }, []);
 
-  // Persist to localStorage
+  // Persist to localStorage (only after hydration to avoid saving defaults over real data)
   useEffect(() => {
+    if (!hydrated) return;
     saveToStorage(STORAGE_KEYS.conversations, conversations);
-  }, [conversations]);
+  }, [conversations, hydrated]);
 
   useEffect(() => {
+    if (!hydrated) return;
     saveToStorage(STORAGE_KEYS.settings, settings);
-  }, [settings]);
+  }, [settings, hydrated]);
 
   useEffect(() => {
+    if (!hydrated) return;
     saveToStorage(STORAGE_KEYS.activeConvId, activeConversationId);
-  }, [activeConversationId]);
+  }, [activeConversationId, hydrated]);
 
   const browserInfo = useBrowserInfo();
   const { location } = useLocation();
