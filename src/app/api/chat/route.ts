@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { config } from "@/lib/config";
 
 export const runtime = "nodejs";
+export const maxDuration = 30;
 
 // ---------------------------------------------------------------------------
 // Senko AI - Single Unified API
@@ -111,7 +112,12 @@ function processGroqLine(
 
 // -- Ollama streaming (fallback - local, no internet needed) ----------------
 
+function isVercel(): boolean {
+  return !!process.env.VERCEL;
+}
+
 async function isOllamaUp(): Promise<boolean> {
+  if (isVercel()) return false;
   try {
     const r = await fetch(`${config.ollamaUrl}/api/tags`, {
       signal: AbortSignal.timeout(800),
@@ -194,10 +200,9 @@ function processOllamaLine(
 
 export async function POST(req: NextRequest) {
   try {
-    const { messages, systemPrompt } = (await req.json()) as {
-      messages: { role: string; content: string }[];
-      systemPrompt?: string;
-    };
+    const body = await req.json();
+    const messages = body?.messages as { role: string; content: string }[] | undefined;
+    const systemPrompt = body?.systemPrompt as string | undefined;
 
     if (!messages?.length) {
       return Response.json({ error: "messages required" }, { status: 400 });
@@ -213,83 +218,89 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    let stream!: ReadableStream<Uint8Array>;
-    let provider!: string;
-
     // Strategy: Groq first (fastest), fallback models on rate limit, Ollama last
     if (config.groqApiKey) {
+      // Try primary model
       try {
-        stream = await streamGroq(chatMessages);
-        provider = "groq";
+        const stream = await streamGroq(chatMessages);
+        return new Response(stream, {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache, no-store",
+            Connection: "keep-alive",
+            "X-AI-Provider": "groq",
+          },
+        });
       } catch (groqErr) {
+        console.error("[chat] Primary Groq failed:", groqErr instanceof Error ? groqErr.message : groqErr);
         const errAny = groqErr as Error & { status?: number; body?: string };
-        const isRateLimit = isRateLimitError(errAny.body || errAny.message || "", errAny.status || 0);
+        const rateLimited = isRateLimitError(errAny.body || errAny.message || "", errAny.status || 0);
 
-        // If rate limited, try fallback models before giving up
-        if (isRateLimit) {
-          let fallbackWorked = false;
+        // If rate limited, try fallback models
+        if (rateLimited) {
           for (const fallbackModel of GROQ_FALLBACK_MODELS) {
             if (fallbackModel === config.groqModel) continue;
             try {
-              stream = await streamGroq(chatMessages, undefined, fallbackModel);
-              provider = `groq (${fallbackModel})`;
-              fallbackWorked = true;
-              break;
-            } catch {
-              // This fallback model also failed, try next
+              const stream = await streamGroq(chatMessages, undefined, fallbackModel);
+              return new Response(stream, {
+                headers: {
+                  "Content-Type": "text/event-stream",
+                  "Cache-Control": "no-cache, no-store",
+                  Connection: "keep-alive",
+                  "X-AI-Provider": `groq (${fallbackModel})`,
+                },
+              });
+            } catch (fbErr) {
+              console.error(`[chat] Fallback ${fallbackModel} failed:`, fbErr instanceof Error ? fbErr.message : fbErr);
             }
-          }
-          if (!fallbackWorked) {
-            // All Groq models exhausted, try Ollama
-            const ollamaOk = await isOllamaUp();
-            if (ollamaOk) {
-              stream = await streamOllama(chatMessages);
-              provider = "ollama";
-            } else {
-              return Response.json(
-                { error: "AI provider rate limited on all models. Please try again later or start Ollama locally." },
-                { status: 429 }
-              );
-            }
-          }
-        } else {
-          // Non-rate-limit Groq error, try Ollama
-          const ollamaOk = await isOllamaUp();
-          if (ollamaOk) {
-            stream = await streamOllama(chatMessages);
-            provider = "ollama";
-          } else {
-            const msg = groqErr instanceof Error ? groqErr.message : "Groq unavailable";
-            return Response.json({ error: msg }, { status: 502 });
           }
         }
+
+        // All Groq models failed, try Ollama (skipped on Vercel)
+        const ollamaOk = await isOllamaUp();
+        if (ollamaOk) {
+          try {
+            const stream = await streamOllama(chatMessages);
+            return new Response(stream, {
+              headers: {
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache, no-store",
+                Connection: "keep-alive",
+                "X-AI-Provider": "ollama",
+              },
+            });
+          } catch (ollamaErr) {
+            console.error("[chat] Ollama failed:", ollamaErr instanceof Error ? ollamaErr.message : ollamaErr);
+          }
+        }
+
+        // Everything failed
+        const msg = rateLimited
+          ? "AI rate limited on all models. Please try again in a minute."
+          : (groqErr instanceof Error ? groqErr.message : "AI provider unavailable");
+        return Response.json({ error: msg }, { status: rateLimited ? 429 : 502 });
       }
     } else {
       // No Groq key, go straight to Ollama
       const ollamaOk = await isOllamaUp();
       if (ollamaOk) {
-        stream = await streamOllama(chatMessages);
-        provider = "ollama";
-      } else {
-        return Response.json(
-          {
-            error:
-              "No AI provider available. Set GROQ_API_KEY in .env.local for instant cloud inference, or start Ollama locally.",
+        const stream = await streamOllama(chatMessages);
+        return new Response(stream, {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache, no-store",
+            Connection: "keep-alive",
+            "X-AI-Provider": "ollama",
           },
-          { status: 503 }
-        );
+        });
       }
+      return Response.json(
+        { error: "No AI provider available. Set GROQ_API_KEY or start Ollama locally." },
+        { status: 503 }
+      );
     }
-
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache, no-store",
-        Connection: "keep-alive",
-        "X-AI-Provider": provider,
-      },
-    });
   } catch (err) {
+    console.error("[chat] Unhandled error:", err instanceof Error ? err.message : err);
     return Response.json(
       { error: err instanceof Error ? err.message : "Internal error" },
       { status: 500 }
