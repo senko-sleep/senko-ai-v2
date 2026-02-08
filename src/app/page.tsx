@@ -97,13 +97,23 @@ ACTIONS - You can execute real actions on the user's device. Use these action ta
    [ACTION:VIDEO:https://www.youtube.com/watch?v=dQw4w9WgXcQ|video title]
    [ACTION:VIDEO:https://youtu.be/dQw4w9WgXcQ|short link works too]
 
-5. Open desktop applications:
-   [ACTION:OPEN_APP:calculator:]
-   [ACTION:OPEN_APP:notepad:]
-   [ACTION:OPEN_APP:spotify:]
-   [ACTION:OPEN_APP:ms-settings:]
-   [ACTION:OPEN_APP:ms-paint:]
-   [ACTION:OPEN_APP:mailto:someone@example.com]
+5. Open desktop applications (with user permission):
+   [ACTION:OPEN_APP:chrome]
+   [ACTION:OPEN_APP:notepad]
+   [ACTION:OPEN_APP:calculator]
+   [ACTION:OPEN_APP:spotify]
+   [ACTION:OPEN_APP:discord]
+   [ACTION:OPEN_APP:vscode]
+   [ACTION:OPEN_APP:file explorer]
+   [ACTION:OPEN_APP:settings]
+   [ACTION:OPEN_APP:paint]
+   [ACTION:OPEN_APP:terminal]
+   [ACTION:OPEN_APP:task manager]
+   [ACTION:OPEN_APP:word]
+   [ACTION:OPEN_APP:excel]
+   [ACTION:OPEN_APP:obs]
+   [ACTION:OPEN_APP:vlc]
+   [ACTION:OPEN_APP:steam]
 
 IMPORTANT action rules:
 - When the user says "open google" -> [ACTION:OPEN_URL:https://google.com]
@@ -119,9 +129,13 @@ IMPORTANT action rules:
 - Always use full URLs with https://
 - For YouTube searches, URL-encode the query with + for spaces
 - For Google searches, URL-encode the query with + for spaces
-- When the user says "open calculator" or "open notepad" etc -> use [ACTION:OPEN_APP:calculator:] or [ACTION:OPEN_APP:notepad:]
-- When the user says "open settings" -> [ACTION:OPEN_APP:ms-settings:]
-- When the user says "open spotify" -> [ACTION:OPEN_APP:spotify:]
+- When the user says "open calculator" -> [ACTION:OPEN_APP:calculator]
+- When the user says "open notepad" -> [ACTION:OPEN_APP:notepad]
+- When the user says "open chrome" -> [ACTION:OPEN_APP:chrome]
+- When the user says "open spotify" -> [ACTION:OPEN_APP:spotify]
+- When the user says "open settings" -> [ACTION:OPEN_APP:settings]
+- When the user says "open file explorer" -> [ACTION:OPEN_APP:file explorer]
+- For any desktop app, use [ACTION:OPEN_APP:app name] -- the user will be asked for permission first
 - When the user asks to show multiple images, use multiple [ACTION:IMAGE:url|desc] tags -- they will appear in a nice slider
 - When the user asks to play or show a YouTube video, use [ACTION:VIDEO:youtube_url|title] to embed it playable in chat
 - YouTube video URLs opened via OPEN_URL are also auto-embedded in chat
@@ -384,6 +398,22 @@ export default function Home() {
     [browserInfo, location, updateConversation, addThinkingMsg, removeThinkingMsg]
   );
 
+  const openApp = useCallback(async (appName: string) => {
+    try {
+      const res = await fetch("/api/open-app", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ app: appName }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        console.warn("Failed to open app:", data.error);
+      }
+    } catch {
+      console.warn("Failed to open app:", appName);
+    }
+  }, []);
+
   const processActions = useCallback(
     (convId: string, messageId: string) => {
       setConversations((prev) => {
@@ -454,10 +484,10 @@ export default function Home() {
             }
           }
           if (action.type === "OPEN_APP") {
-            // Open app via protocol handler (e.g., calculator:, notepad:, spotify:)
-            try {
-              window.open(action.value, "_self");
-            } catch { /* skip */ }
+            const appName = action.value.replace(/:$/, "").trim();
+            if (confirm(`Senko wants to open "${appName}" on your device. Allow?`)) {
+              openApp(appName);
+            }
           }
         }
 
