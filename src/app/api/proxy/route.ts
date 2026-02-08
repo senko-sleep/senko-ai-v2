@@ -98,11 +98,11 @@ export async function GET(req: NextRequest) {
     // Return a styled error page instead of raw text
     const errorHtml = `<!DOCTYPE html>
 <html><head><style>
-  body { font-family: system-ui, sans-serif; background: #000000; color: #00d4ff; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+  body { font-family: system-ui, sans-serif; background: #000000; color: #ff9500; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
   .box { text-align: center; padding: 2rem; }
   h2 { font-size: 1rem; margin-bottom: 0.5rem; }
   p { color: #71717a; font-size: 0.8rem; }
-  a { color: #00d4ff; text-decoration: underline; }
+  a { color: #ff9500; text-decoration: underline; }
 </style></head><body>
   <div class="box">
     <h2>Couldn't load this site inline</h2>

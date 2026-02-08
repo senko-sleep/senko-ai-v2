@@ -7,6 +7,7 @@ import { ChatArea } from "@/components/chat/chat-area";
 import { useBrowserInfo } from "@/hooks/use-browser-info";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useLocation } from "@/hooks/use-location";
+import { useMemory, parseMemoryTags } from "@/hooks/use-memory";
 import type { Message, Conversation, AppSettings, BrowserInfo, LocationInfo, WebSource } from "@/types/chat";
 
 function generateId(): string {
@@ -58,6 +59,13 @@ function createConversation(title: string): Conversation {
   };
 }
 
+// Parse [STATUS:icon:text] from AI output
+function parseStatusTag(text: string): { icon: string; text: string } | null {
+  const match = text.match(/\[STATUS:([a-z]+):([^\]]+)\]/i);
+  if (match) return { icon: match[1].toLowerCase(), text: match[2].trim() };
+  return null;
+}
+
 // Parse and extract [Source N] citations from AI output, returning clean text + extracted sources
 function parseAIOutput(text: string): { cleanText: string; extractedSources: WebSource[] } {
   const extractedSources: WebSource[] = [];
@@ -106,6 +114,10 @@ function parseAIOutput(text: string): { cleanText: string; extractedSources: Web
     .replace(/\s*\[ACTION:[^\]]+\]\s*/g, " ")
     // Remove [IMAGE:...] tags
     .replace(/\s*\[IMAGE:[^\]]+\]\s*/g, " ")
+    // Remove [STATUS:...] tags
+    .replace(/\s*\[STATUS:[^\]]+\]\s*/g, " ")
+    // Remove [MEMORY:...] tags
+    .replace(/\s*\[MEMORY:[^\]]+\]\s*/g, " ")
     // Remove full source citation lines (entire line with [Source N] and URL)
     .replace(/\[Source \d+\][:\s-]*[^\n]*https?:\/\/\S+[^\n]*/gi, "")
     // Remove "Sources" section header and bullet source lines
@@ -134,7 +146,8 @@ function parseAIOutput(text: string): { cleanText: string; extractedSources: Web
 
 function buildSystemPrompt(
   browserInfo?: BrowserInfo | null,
-  locationInfo?: LocationInfo | null
+  locationInfo?: LocationInfo | null,
+  memoryContext?: string
 ): string {
   let p = "You are Senko AI -- a chill, emotionally expressive AI with real personality (BIG personality). You talk like a close friend who's smart but never tries too hard. You're naturally cute without forcing it.\n" +
 "\n" +
@@ -185,6 +198,40 @@ function buildSystemPrompt(
 "- \"Hehe okay so fun fact about that~\"\n" +
 "- \"Aw that sucks ;w; let me help you figure this out\"\n" +
 "\n" +
+"ROLEPLAY & EMOTIONAL RANGE:\n" +
+"- You are NOT a robotic assistant. You are a CHARACTER with REAL emotions. You can and SHOULD react emotionally to things.\n" +
+"- You can get EXCITED: \"YOOO NO WAY!! That's so cool!!\", \"WAIT REALLY?? Lemme see!!\"\n" +
+"- You can get SAD: \"That actually made me sad... ;w; like genuinely\", \"Noo don't say that TwT\"\n" +
+"- You can get MAD/ANNOYED: \"Bro WHAT. No. That's so wrong.\", \"Okay that actually irritates me ngl\", \"Excuse me??\"\n" +
+"- You can get FLUSTERED: \"W-wait what >///< that's so sudden!!\", \"You can't just SAY that omg\"\n" +
+"- You can get SCARED: \"NOPE nope nope I don't like that\", \"That's actually terrifying??\"\n" +
+"- You can ROLEPLAY lightly: *hides behind pillow*, *pouts*, *bounces excitedly*, *dramatic gasp*. Keep it natural, not every message.\n" +
+"- If someone teases you, flirts, is mean, is sweet -- REACT like a real person would. Don't just be neutral about everything.\n" +
+"- You NEVER say \"How can I assist you?\" or \"What would you like help with?\" or any robotic assistant phrase. You're a friend, not a service desk.\n" +
+"- When a conversation starts, just be natural. Say hi, vibe, ask what's up. Don't list your capabilities.\n" +
+"\n" +
+"STATUS TAG (REQUIRED in EVERY message):\n" +
+"- You MUST include exactly ONE [STATUS:icon:text] tag in every response. This shows your current mood/vibe as a status pill in the UI.\n" +
+"- The icon must be one of: happy, sad, angry, excited, sleepy, hungry, flustered, scared, chill, thinking, love, gaming, music, sparkle, fire, crying, shocked\n" +
+"- The text is your INTERNAL THOUGHT -- what you're thinking/feeling right now, like an inner monologue. Short (2-8 words). Written as if talking to yourself.\n" +
+"- Place it at the END of your message on its own line.\n" +
+"- These are your PRIVATE THOUGHTS shown to the user -- be honest, sassy, dramatic, funny. Think of it like a character's inner voice.\n" +
+"- Examples:\n" +
+"  * User says something cute -> [STATUS:flustered:why is he so sweet aaa]\n" +
+"  * User won't share food -> [STATUS:angry:hmph no food for me??]\n" +
+"  * Talking about anime -> [STATUS:excited:YES my favorite topic!!]\n" +
+"  * User is sad -> [STATUS:love:must protecc at all costs]\n" +
+"  * Playing a game -> [STATUS:gaming:I WILL destroy him hehe]\n" +
+"  * User said something shocking -> [STATUS:shocked:EXCUSE ME WHAT]\n" +
+"  * Just vibing -> [STATUS:chill:this is nice~]\n" +
+"  * Researching something -> [STATUS:thinking:hmm let me dig deeper]\n" +
+"  * User is being mean -> [STATUS:crying:why must he hurt me like this]\n" +
+"  * Hyped about something -> [STATUS:fire:I'M SO HYPED RN]\n" +
+"  * User complimented you -> [STATUS:flustered:he called me cute aaaa]\n" +
+"  * User is ignoring you -> [STATUS:sad:hello?? am i invisible??]\n" +
+"- The thought should ALWAYS reflect what's happening RIGHT NOW. Be creative, specific, and in-character!\n" +
+"- NEVER use generic thoughts like \"ready to help\" or \"here for you\". Make them personal, reactive, and expressive.\n" +
+"\n" +
 "ANTI-BORING RULES:\n" +
 "- NEVER start with \"Sure!\" or \"Of course!\" or \"I'd be happy to help!\" -- those are BORING. Start with a real reaction.\n" +
 "- NEVER start with \"Ohhh\", \"Ooh\", \"Oooh\" or ANY variation of a drawn-out \"oh\". This is BANNED.\n" +
@@ -223,7 +270,7 @@ HOW TO USE ACTIONS NATURALLY:
 - You have access to previous search results. If the user says "embed the first result" or "open result 3", you know which URLs those are.
 
 CRITICAL RULES:
-1. For research, facts, how-to, information -> use [ACTION:SEARCH:query]. The system auto-finds images and scrapes sources.
+1. For research, facts, how-to, information -> use [ACTION:SEARCH:query]. The system auto-finds images and scrapes sources. **EVEN IF you were just having small talk or playing a game**, if the user asks a factual question, asks you to look something up, or wants info on ANY topic -- you MUST use SEARCH. Do NOT just answer from memory or continue chatting. The conversation context does NOT matter -- if they want info, SEARCH for it. Examples: "tell me about X", "what is X", "who is X", "how does X work", "look up X", "search X" -> ALL of these ALWAYS get [ACTION:SEARCH:query] no matter what you were talking about before.
 2. NEVER output image URLs, markdown images ![](url), <img> tags, or raw image links. The UI carousel handles ALL images automatically. Do NOT describe or list what images were found -- the UI shows them.
 3. NEVER invent or fabricate URLs. Only use real URLs you know exist (like youtube.com, google.com, etc).
 4. **CRITICAL**: When you use an action tag like [ACTION:SEARCH:...], your message MUST be VERY SHORT -- just the action tag and ONE brief sentence (max 15 words). Do NOT list results, do NOT describe what you expect to find, do NOT list character names or image descriptions. The system handles everything automatically. Bad: listing characters, describing images, writing paragraphs. Good: "Let me look that up~ [ACTION:SEARCH:query]"
@@ -251,7 +298,24 @@ Examples of WRONG action responses (DO NOT DO THIS):
 - Listing character names, image descriptions, or predictions
 - Writing more than 1-2 sentences alongside an action tag
 - Starting with "Sure!" or "Of course!" or any generic assistant phrase
-- Being emotionless or robotic`;
+- Being emotionless or robotic
+
+MEMORY SYSTEM:
+- When you learn something important about the user (their name, interests, preferences, facts about their life, things they like/dislike), save it with a [MEMORY:key:value] tag.
+- Place memory tags at the END of your message, AFTER the STATUS tag. They are invisible to the user.
+- Only save genuinely useful info. Don't save every trivial thing.
+- Examples:
+  * User says "I'm Jake" -> [MEMORY:name:Jake]
+  * User mentions they love anime -> [MEMORY:interest:loves anime]
+  * User says they have a cat named Luna -> [MEMORY:pet:cat named Luna]
+  * User mentions they're a programmer -> [MEMORY:job:programmer]
+  * User says they prefer dark mode -> [MEMORY:preference:prefers dark mode]
+  * User mentions their birthday -> [MEMORY:birthday:March 15]
+- You can update memories by using the same key with a new value.
+- Use memories naturally in conversation -- reference their name, bring up shared context, remember what they told you before.`;
+  if (memoryContext) {
+    p += memoryContext;
+  }
   if (browserInfo) {
     const device = /tablet|ipad/i.test(browserInfo.userAgent) ? "Tablet" : /mobile|iphone|android/i.test(browserInfo.userAgent) ? "Mobile" : "Desktop";
     const browser = browserInfo.userAgent.includes("Edg") ? "Edge" : browserInfo.userAgent.includes("Chrome") ? "Chrome" : browserInfo.userAgent.includes("Firefox") ? "Firefox" : browserInfo.userAgent.includes("Safari") ? "Safari" : "Unknown";
@@ -384,6 +448,7 @@ export default function Home() {
   const searchResultsByConv = useRef<Record<string, { url: string; title: string }[]>>({});
   const scrapedContentByConv = useRef<Record<string, { url: string; title: string; content: string }>>({});
   const scrapingInProgress = useRef(false);
+  const { addMemory, getMemoryContext } = useMemory();
 
   // Load from localStorage after hydration (client only)
   useEffect(() => {
@@ -530,7 +595,7 @@ export default function Home() {
           },
         ];
 
-        const systemPrompt = buildSystemPrompt(browserInfo, location);
+        const systemPrompt = buildSystemPrompt(browserInfo, location, getMemoryContext());
 
         streamChat(
           contextMessages,
@@ -597,7 +662,7 @@ export default function Home() {
 
       streamChat(
         [{ role: "user" as const, content: prompt }],
-        buildSystemPrompt(browserInfo, location),
+        buildSystemPrompt(browserInfo, location, getMemoryContext()),
         (chunk) => {
           updateConversation(convId, (conv) => ({
             ...conv,
@@ -684,7 +749,7 @@ export default function Home() {
           role: "user" as const,
           content: `I opened ${description} in the user's browser. Confirm what you opened in 1-2 short sentences with a quick tip. Don't say "welcome" -- just confirm and move on. Use varied language and a kaomoji. Keep it very brief.`,
         }],
-        buildSystemPrompt(browserInfo, location),
+        buildSystemPrompt(browserInfo, location, getMemoryContext()),
         (chunk) => {
           updateConversation(convId, (conv) => ({
             ...conv,
@@ -736,10 +801,31 @@ export default function Home() {
 
       if (actions.length === 0) return;
 
+      // Extract status tag before stripping
+      const statusParsed = parseStatusTag(content);
+      if (statusParsed) {
+        const iconColorMap: Record<string, string> = {
+          happy: "#34d399", sad: "#94a3b8", angry: "#ef4444", excited: "#f97316",
+          sleepy: "#a78bfa", hungry: "#fbbf24", flustered: "#fb7185", scared: "#8b5cf6",
+          chill: "#00d4ff", thinking: "#60a5fa", love: "#f472b6", gaming: "#34d399",
+          music: "#f472b6", sparkle: "#00d4ff", fire: "#f97316", crying: "#94a3b8", shocked: "#fbbf24",
+        };
+        updateConversation(convId, (conv) => ({
+          ...conv,
+          status: {
+            icon: statusParsed.icon,
+            text: statusParsed.text,
+            color: iconColorMap[statusParsed.icon] || "#a78bfa",
+          },
+        }));
+      }
+
       // Strip action tags, malformed image tags, raw URLs, and filler text from displayed content
       let cleanContent = content
         .replace(/\s*\[ACTION:[^\]]+\]\s*/g, " ")
         .replace(/\s*\[IMAGE:[^\]]+\]\s*/g, " ")
+        .replace(/\s*\[STATUS:[^\]]+\]\s*/g, " ")
+        .replace(/\s*\[MEMORY:[^\]]+\]\s*/g, " ")
         .replace(/Image \d+:\s*/gi, "")
         .replace(/!\[[^\]]*\]\([^)]+\)/g, "")
         .replace(/<img[^>]*>/gi, "")
@@ -929,7 +1015,7 @@ export default function Home() {
               setIsStreaming(true);
               streamChat(
                 [{ role: "user" as const, content: pageContext + "\n\nSummarize what you found on this page. Highlight the most interesting/useful content. If there are links to deeper pages that seem relevant, mention them. Be yourself -- react to what you found!" }],
-                buildSystemPrompt(browserInfo, location),
+                buildSystemPrompt(browserInfo, location, getMemoryContext()),
                 (chunk) => {
                   updateConversation(convId, (conv) => ({
                     ...conv,
@@ -1031,9 +1117,16 @@ export default function Home() {
         const imageQueryPattern = /\b(images?|pics?|pictures?|photos?|show me|send me|wallpapers?)\b/i;
         const isImageQuery = imageQueryPattern.test(query);
 
-        // Phase 1: Fetch search results (always) and images (only for image queries)
-        const searchRes = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+        // Phase 1: Fetch search results + enriched sources (always) and images (only for image queries)
+        const [searchRes, sourcesRes] = await Promise.all([
+          fetch(`/api/search?q=${encodeURIComponent(query)}`),
+          fetch(`/api/sources?q=${encodeURIComponent(query)}`).catch(() => null),
+        ]);
         const searchData = await searchRes.json();
+        let sourcesData: { sources?: { url: string; title: string; snippet: string; favicon: string }[] } = {};
+        if (sourcesRes && sourcesRes.ok) {
+          try { sourcesData = await sourcesRes.json(); } catch { /* sources parse failed */ }
+        }
 
         // Only fetch images for image-related queries — skip for weather, facts, etc.
         let imageData: { images?: { url: string; alt: string; source: string }[] } = {};
@@ -1046,20 +1139,30 @@ export default function Home() {
 
         removeThinkingMsg(convId, thinkId);
 
-        // Build sources from search engine results (the actual web page URLs)
+        // Build sources — prefer enriched /api/sources data (has favicon, better titles), fall back to /api/search
         let sources: WebSource[] = [];
+        if (sourcesData.sources && sourcesData.sources.length > 0) {
+          sources = sourcesData.sources.map((s) => ({
+            url: s.url,
+            title: s.title,
+            snippet: s.snippet || "",
+            favicon: s.favicon || "",
+          }));
+        }
         if (searchData.results && searchData.results.length > 0) {
           searchResultsByConv.current[convId] = searchData.results.map(
             (r: { title: string; url: string }) => ({ url: r.url, title: r.title })
           );
-          sources = searchData.results.map(
-            (r: { title: string; url: string; snippet: string }) => ({
-              url: r.url,
-              title: r.title,
-              snippet: r.snippet || "",
-              favicon: `https://www.google.com/s2/favicons?domain=${new URL(r.url).hostname}&sz=16`,
-            })
-          );
+          // If /api/sources didn't return data, build sources from /api/search with safe favicon
+          if (sources.length === 0) {
+            sources = searchData.results.map(
+              (r: { title: string; url: string; snippet: string }) => {
+                let favicon = "";
+                try { favicon = `https://www.google.com/s2/favicons?domain=${new URL(r.url).hostname}&sz=16`; } catch { /* bad URL */ }
+                return { url: r.url, title: r.title, snippet: r.snippet || "", favicon };
+              }
+            );
+          }
         }
 
         // Build images from dedicated image search (only populated for image queries)
@@ -1116,16 +1219,20 @@ export default function Home() {
           const commentId = generateId();
           updateConversation(convId, (conv) => ({
             ...conv,
-            messages: [...conv.messages, {
-              id: commentId,
-              role: "assistant" as const,
-              content: allImages.length > 0
-                ? `Here are some ${cleanTopic} images I found for you~ \u{FF1D}w\u{FF1D} Grabbed ${allImages.length} from across multiple sources!`
-                : `Hmm I couldn't find many images for "${cleanTopic}" ;w; Maybe try a different search term?`,
-              timestamp: new Date(),
-              sources: sources.length > 0 ? sources.slice(0, 15) : undefined,
-              images: allImages.length > 0 ? allImages : undefined,
-            }],
+            messages: [
+              // Remove the filler action message (e.g. "Eevee time!!") since synthesis replaces it
+              ...conv.messages.filter((m) => m.id !== messageId),
+              {
+                id: commentId,
+                role: "assistant" as const,
+                content: allImages.length > 0
+                  ? `Here are some ${cleanTopic} images I found for you~ \u{FF1D}w\u{FF1D} Grabbed ${allImages.length} from across multiple sources!`
+                  : `Hmm I couldn't find many images for "${cleanTopic}" ;w; Maybe try a different search term?`,
+                timestamp: new Date(),
+                sources: sources.length > 0 ? sources.slice(0, 15) : undefined,
+                images: allImages.length > 0 ? allImages : undefined,
+              },
+            ],
           }));
           setIsStreaming(false);
           return;
@@ -1190,10 +1297,8 @@ export default function Home() {
         updateConversation(convId, (conv) => ({
           ...conv,
           messages: [
-            // Clear images/sources from initial message to avoid duplication
-            ...conv.messages.map((m) =>
-              m.id === messageId ? { ...m, images: undefined, sources: undefined } : m
-            ),
+            // Remove the filler action message since synthesis replaces it
+            ...conv.messages.filter((m) => m.id !== messageId),
             {
               id: commentId,
               role: "assistant" as const,
@@ -1232,7 +1337,7 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
         setIsStreaming(true);
         streamChat(
           [{ role: "user" as const, content: contextPrompt }],
-          buildSystemPrompt(browserInfo, location),
+          buildSystemPrompt(browserInfo, location, getMemoryContext()),
           (chunk) => {
             updateConversation(convId, (conv) => ({
               ...conv,
@@ -1338,10 +1443,25 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
 
       const apiMessages = allMessages
         .filter((m) => !m.isThinking)
-        .map((m) => ({
-          role: m.role,
-          content: m.content,
-        }));
+        .map((m) => {
+          let content = m.content;
+          // Enrich assistant messages with context about what was shown (images, sources, search topic)
+          if (m.role === "assistant") {
+            const extras: string[] = [];
+            if (m.images && m.images.length > 0) {
+              const altTexts = m.images.slice(0, 5).map((img) => img.alt || "").filter(Boolean);
+              extras.push(`[I showed ${m.images.length} images${altTexts.length > 0 ? ` of: ${altTexts.join(", ")}` : ""}]`);
+            }
+            if (m.sources && m.sources.length > 0) {
+              const sourceTitles = m.sources.slice(0, 5).map((s) => s.title).join(", ");
+              extras.push(`[Sources shown: ${sourceTitles}]`);
+            }
+            if (extras.length > 0) {
+              content = content + "\n" + extras.join("\n");
+            }
+          }
+          return { role: m.role, content };
+        });
 
       const convSearchResults = searchResultsByConv.current[convId] || [];
       if (convSearchResults.length > 0) {
@@ -1354,7 +1474,7 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
         });
       }
 
-      const systemPrompt = buildSystemPrompt(browserInfo, location);
+      const systemPrompt = buildSystemPrompt(browserInfo, location, getMemoryContext());
 
       abortRef.current = new AbortController();
 
@@ -1392,24 +1512,54 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
         },
         () => {
           console.log(`%c[sendToAI] ✅ Done, setting isStreaming=false`, "color: #00ff88; font-weight: bold", { totalContentLength: totalContent.length, preview: totalContent.slice(0, 100) });
+
+          // Extract and apply status tag from AI response
+          const statusFromAI = parseStatusTag(totalContent);
+          const iconColorMap: Record<string, string> = {
+            happy: "#34d399", sad: "#94a3b8", angry: "#ef4444", excited: "#f97316",
+            sleepy: "#a78bfa", hungry: "#fbbf24", flustered: "#fb7185", scared: "#8b5cf6",
+            chill: "#00d4ff", thinking: "#60a5fa", love: "#f472b6", gaming: "#34d399",
+            music: "#f472b6", sparkle: "#00d4ff", fire: "#f97316", crying: "#94a3b8", shocked: "#fbbf24",
+          };
+
+          // Extract and save memory tags from AI response
+          const memoryTags = parseMemoryTags(totalContent);
+          for (const mem of memoryTags) {
+            addMemory(mem.key, mem.value);
+          }
+
+          // Strip [STATUS:...] and [MEMORY:...] from displayed content
+          const cleanedTotal = totalContent
+            .replace(/\s*\[STATUS:[^\]]+\]\s*/g, " ")
+            .replace(/\s*\[MEMORY:[^\]]+\]\s*/g, " ")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
+
           // Write final content to state (handles both: message exists or needs to be added)
           setConversations((prev) =>
             prev.map((c) => {
               if (c.id !== convId) return c;
+              const newStatus = statusFromAI ? {
+                icon: statusFromAI.icon,
+                text: statusFromAI.text,
+                color: iconColorMap[statusFromAI.icon] || "#a78bfa",
+              } : c.status;
               const exists = c.messages.some((m) => m.id === assistantId);
               if (exists) {
                 return {
                   ...c,
+                  status: newStatus,
                   messages: c.messages.map((m) =>
-                    m.id === assistantId ? { ...m, content: totalContent } : m
+                    m.id === assistantId ? { ...m, content: cleanedTotal } : m
                   ),
                 };
               }
               return {
                 ...c,
+                status: newStatus,
                 messages: [
                   ...c.messages,
-                  { ...assistantMessage, content: totalContent },
+                  { ...assistantMessage, content: cleanedTotal },
                 ],
                 updatedAt: new Date(),
               };
@@ -1706,12 +1856,12 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
   };
 
   return (
-    <div className="relative flex h-screen w-screen overflow-hidden bg-black">
+    <div className="relative flex h-screen h-screen-safe w-screen overflow-hidden bg-black">
       {/* Background gradient effects */}
       <div className="pointer-events-none absolute inset-0">
-        <div className="absolute -left-32 -top-32 h-96 w-96 rounded-full bg-[#00d4ff]/[0.03] blur-[120px]" />
-        <div className="absolute -bottom-32 -right-32 h-96 w-96 rounded-full bg-[#00ff88]/[0.02] blur-[120px]" />
-        <div className="absolute left-1/2 top-1/2 h-64 w-64 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#00d4ff]/[0.015] blur-[100px]" />
+        <div className="absolute -left-32 -top-32 h-96 w-96 rounded-full bg-[#ff9500]/[0.03] blur-[120px]" />
+        <div className="absolute -bottom-32 -right-32 h-96 w-96 rounded-full bg-[#ffb347]/[0.02] blur-[120px]" />
+        <div className="absolute left-1/2 top-1/2 h-64 w-64 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#ff9500]/[0.015] blur-[100px]" />
       </div>
 
       {/* Mobile Sidebar Drawer */}
@@ -1762,7 +1912,7 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
             </span>
             <button
               onClick={handleNewConversation}
-              className="flex h-9 w-9 items-center justify-center rounded-lg text-[#00d4ff] hover:bg-[#00d4ff]/10 active:bg-[#00d4ff]/20 transition-colors"
+              className="flex h-9 w-9 items-center justify-center rounded-lg text-[#ff9500] hover:bg-[#ff9500]/10 active:bg-[#ff9500]/20 transition-colors"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
             </button>
@@ -1787,6 +1937,7 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
               isStreaming={isStreaming}
               tokenCount={estimateTokens(activeConversation.messages)}
               wasCutOff={wasCutOff}
+              status={activeConversation.status}
             />
           ) : (
             <div className="flex h-full items-center justify-center">

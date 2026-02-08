@@ -1,11 +1,37 @@
 "use client";
 
 import { useRef, useEffect } from "react";
-import { Bot, Square, ArrowDown } from "lucide-react";
+import {
+  Bot, Square, ArrowDown,
+  Smile, Frown, Angry, PartyPopper, Moon, Utensils,
+  Heart, Skull, Coffee, Brain, Gamepad2, Music,
+  Sparkles, Flame, Droplets, Zap,
+  type LucideIcon,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ChatMessage } from "./chat-message";
 import { ChatInput } from "./chat-input";
-import type { Message } from "@/types/chat";
+import type { Message, SenkoStatus } from "@/types/chat";
+
+const STATUS_ICON_MAP: Record<string, LucideIcon> = {
+  happy: Smile,
+  sad: Frown,
+  angry: Angry,
+  excited: PartyPopper,
+  sleepy: Moon,
+  hungry: Utensils,
+  flustered: Heart,
+  scared: Skull,
+  chill: Coffee,
+  thinking: Brain,
+  love: Heart,
+  gaming: Gamepad2,
+  music: Music,
+  sparkle: Sparkles,
+  fire: Flame,
+  crying: Droplets,
+  shocked: Zap,
+};
 
 interface ChatAreaProps {
   messages: Message[];
@@ -19,7 +45,34 @@ interface ChatAreaProps {
   isStreaming?: boolean;
   tokenCount?: number;
   wasCutOff?: boolean;
+  status?: SenkoStatus;
 }
+
+function StatusPill({ status }: { status: SenkoStatus }) {
+  const IconComponent = STATUS_ICON_MAP[status.icon] || Sparkles;
+  return (
+    <div
+      className="flex items-center gap-2 rounded-full px-3.5 py-1.5 border transition-all duration-500"
+      style={{
+        backgroundColor: `${status.color}08`,
+        borderColor: `${status.color}20`,
+      }}
+    >
+      <IconComponent
+        className="h-3.5 w-3.5 shrink-0"
+        style={{ color: status.color }}
+      />
+      <span
+        className="text-[11px] italic"
+        style={{ color: `${status.color}cc` }}
+      >
+        {status.text}
+      </span>
+    </div>
+  );
+}
+
+const DEFAULT_STATUS: SenkoStatus = { icon: "chill", text: "just vibin~", color: "#00d4ff" };
 
 export function ChatArea({
   messages,
@@ -33,6 +86,7 @@ export function ChatArea({
   isStreaming = false,
   tokenCount = 0,
   wasCutOff = false,
+  status,
 }: ChatAreaProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isAtBottom = useRef(true);
@@ -57,6 +111,7 @@ export function ChatArea({
   };
 
   const showContinue = !isStreaming && wasCutOff;
+  const currentStatus = status || DEFAULT_STATUS;
 
   return (
     <div className="flex h-full flex-col">
@@ -78,23 +133,25 @@ export function ChatArea({
           {messages.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 px-4 sm:gap-4">
               <div className="glass-panel depth-shadow flex h-14 w-14 items-center justify-center rounded-2xl sm:h-16 sm:w-16">
-                <Bot className="h-7 w-7 text-[#00d4ff] sm:h-8 sm:w-8" />
+                <Bot className="h-7 w-7 text-[#ff9500] sm:h-8 sm:w-8" />
               </div>
               <div className="text-center">
                 <h2 className="text-base font-semibold text-white sm:text-lg">
-                  Senko AI
+                  Hii~ I&apos;m Senko!
                 </h2>
                 <p className="mt-1 max-w-sm text-xs text-zinc-500 sm:text-sm">
-                  Agentic AI with browser integration, web search,
-                  and real-time capabilities.
+                  Talk to me about anything~ I can search stuff, vibe,
+                  play games, or just hang out ^w^
                 </p>
               </div>
+              {/* Sub-status pill */}
+              <StatusPill status={currentStatus} />
               <div className="mt-2 grid w-full max-w-md grid-cols-1 gap-2 sm:mt-4 sm:grid-cols-2">
                 {[
-                  "What can you help me with?",
-                  "Search the web for latest news",
-                  "What device am I using?",
-                  "Show me where I am on a map",
+                  "Tell me something interesting",
+                  "Let's play a game!",
+                  "I had the worst day ever...",
+                  "Look up the latest anime news",
                 ].map((suggestion) => (
                   <button
                     key={suggestion}
@@ -108,6 +165,12 @@ export function ChatArea({
             </div>
           ) : (
             <div className="mx-auto max-w-4xl px-2 py-3 sm:px-0 sm:py-4">
+              {/* Dynamic status pill - shown during conversation */}
+              {status && (
+                <div className="flex justify-center mb-2">
+                  <StatusPill status={status} />
+                </div>
+              )}
               {messages.map((message) => (
                 <ChatMessage
                   key={message.id}
@@ -155,7 +218,7 @@ export function ChatArea({
             <Button
               size="sm"
               onClick={onContinueGeneration}
-              className="h-7 gap-1.5 rounded-lg bg-[#00d4ff]/10 px-3 text-xs text-[#00d4ff] hover:bg-[#00d4ff]/20 border border-[#00d4ff]/20"
+              className="h-7 gap-1.5 rounded-lg bg-[#ff9500]/10 px-3 text-xs text-[#ff9500] hover:bg-[#ff9500]/20 border border-[#ff9500]/20"
             >
               Continue generating
             </Button>

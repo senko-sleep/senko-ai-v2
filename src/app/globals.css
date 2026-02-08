@@ -61,36 +61,36 @@
   --card-foreground: #ffffff;
   --popover: rgba(8, 8, 8, 0.98);
   --popover-foreground: #ffffff;
-  --primary: #00d4ff;
+  --primary: #ff9500;
   --primary-foreground: #000000;
   --secondary: rgba(255, 255, 255, 0.08);
   --secondary-foreground: #ffffff;
   --muted: rgba(255, 255, 255, 0.05);
   --muted-foreground: #888888;
-  --accent: rgba(0, 212, 255, 0.15);
-  --accent-foreground: #00d4ff;
+  --accent: rgba(255, 149, 0, 0.15);
+  --accent-foreground: #ff9500;
   --destructive: #ff4444;
   --border: rgba(255, 255, 255, 0.10);
   --input: rgba(255, 255, 255, 0.10);
-  --ring: rgba(0, 212, 255, 0.4);
-  --chart-1: #00d4ff;
-  --chart-2: #00ff88;
+  --ring: rgba(255, 149, 0, 0.4);
+  --chart-1: #ff9500;
+  --chart-2: #ffb347;
   --chart-3: #fbbf24;
   --chart-4: #ff6b9d;
   --chart-5: #a78bfa;
   --sidebar: rgba(5, 5, 5, 0.8);
   --sidebar-foreground: #ffffff;
-  --sidebar-primary: #00d4ff;
+  --sidebar-primary: #ff9500;
   --sidebar-primary-foreground: #000000;
-  --sidebar-accent: rgba(0, 212, 255, 0.1);
-  --sidebar-accent-foreground: #00d4ff;
+  --sidebar-accent: rgba(255, 149, 0, 0.1);
+  --sidebar-accent-foreground: #ff9500;
   --sidebar-border: rgba(255, 255, 255, 0.08);
-  --sidebar-ring: rgba(0, 212, 255, 0.3);
+  --sidebar-ring: rgba(255, 149, 0, 0.3);
   --glass: rgba(255, 255, 255, 0.03);
   --glass-border: rgba(255, 255, 255, 0.08);
   --glass-hover: rgba(255, 255, 255, 0.07);
-  --senko-accent: #00d4ff;
-  --senko-accent-dim: rgba(0, 212, 255, 0.2);
+  --senko-accent: #ff9500;
+  --senko-accent-dim: rgba(255, 149, 0, 0.2);
   --senko-surface: rgba(8, 8, 8, 0.6);
 }
 
@@ -126,8 +126,8 @@
 }
 
 .glass-input:focus {
-  border-color: rgba(0, 212, 255, 0.5);
-  box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.12);
+  border-color: rgba(255, 149, 0, 0.5);
+  box-shadow: 0 0 0 2px rgba(255, 149, 0, 0.12);
 }
 
 .depth-shadow {
@@ -145,7 +145,7 @@
 }
 
 .glow-accent {
-  box-shadow: 0 0 20px rgba(0, 212, 255, 0.15);
+  box-shadow: 0 0 20px rgba(255, 149, 0, 0.15);
 }
 
 .scrollbar-thin::-webkit-scrollbar {
@@ -190,9 +190,9 @@
   background: linear-gradient(
     90deg,
     transparent 0%,
-    rgba(0, 212, 255, 0.06) 25%,
-    rgba(0, 255, 136, 0.08) 50%,
-    rgba(0, 212, 255, 0.06) 75%,
+    rgba(255, 149, 0, 0.06) 25%,
+    rgba(255, 179, 71, 0.08) 50%,
+    rgba(255, 149, 0, 0.06) 75%,
     transparent 100%
   );
   background-size: 200% 100%;
@@ -200,7 +200,7 @@
 }
 
 .thinking-glow {
-  box-shadow: 0 0 12px rgba(0, 212, 255, 0.08), 0 0 4px rgba(0, 255, 136, 0.06);
+  box-shadow: 0 0 12px rgba(255, 149, 0, 0.08), 0 0 4px rgba(255, 179, 71, 0.06);
 }
 
 /* Hide scrollbar for horizontal scroll on mobile */
@@ -210,4 +210,17 @@
 }
 .scrollbar-none::-webkit-scrollbar {
   display: none;
+}
+
+/* Mobile viewport height fix - use dvh where supported */
+@supports (height: 100dvh) {
+  .h-screen-safe {
+    height: 100dvh !important;
+  }
+}
+@supports not (height: 100dvh) {
+  .h-screen-safe {
+    height: calc(100vh - env(safe-area-inset-top) - env(safe-area-inset-bottom)) !important;
+    height: -webkit-fill-available !important;
+  }
 }

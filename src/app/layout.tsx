@@ -14,7 +14,33 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Senko AI",
-  description: "Agentic AI Assistant",
+  description: "Agentic AI assistant with web search, browser integration, live embeds, and real-time capabilities. Search the web, open apps, take screenshots, and more — all from chat.",
+  metadataBase: new URL("https://senko-ai.vercel.app"),
+  openGraph: {
+    title: "Senko AI",
+    description: "Agentic AI assistant with web search, browser integration, live embeds, and real-time capabilities.",
+    siteName: "Senko AI",
+    type: "website",
+    locale: "en_US",
+    url: "https://senko-ai.vercel.app",
+    images: [
+      {
+        url: "/og-image.svg",
+        width: 1200,
+        height: 630,
+        alt: "Senko AI - Agentic AI Assistant",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Senko AI",
+    description: "Agentic AI assistant with web search, browser integration, live embeds, and real-time capabilities.",
+    images: ["/og-image.svg"],
+  },
+  icons: {
+    icon: "/favicon.ico",
+  },
 };
 
 export default function RootLayout({

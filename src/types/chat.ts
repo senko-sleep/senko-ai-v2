@@ -45,12 +45,19 @@ export interface Message {
   error?: string;
 }
 
+export interface SenkoStatus {
+  icon: string;
+  text: string;
+  color: string;
+}
+
 export interface Conversation {
   id: string;
   title: string;
   messages: Message[];
   createdAt: Date;
   updatedAt: Date;
+  status?: SenkoStatus;
 }
 
 export interface BrowserInfo {

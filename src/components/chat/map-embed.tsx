@@ -43,7 +43,7 @@ export function MapEmbed({ map }: MapEmbedProps) {
       setTimeout(() => m.invalidateSize(), 200);
 
       const icon = L.divIcon({
-        html: `<div style="background:#00d4ff;width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 8px rgba(0,212,255,0.5)"></div>`,
+        html: `<div style="background:#ff9500;width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 8px rgba(255,149,0,0.5)"></div>`,
         className: "",
         iconSize: [12, 12],
         iconAnchor: [6, 6],
@@ -84,7 +84,7 @@ export function MapEmbed({ map }: MapEmbedProps) {
           href={mapsUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-1 text-[10px] text-[#00d4ff] hover:text-[#66e5ff]"
+          className="flex items-center gap-1 text-[10px] text-[#ff9500] hover:text-[#ffcc80]"
         >
           Open in Maps
           <ExternalLink className="h-2.5 w-2.5" />

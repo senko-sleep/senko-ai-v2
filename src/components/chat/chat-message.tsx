@@ -88,17 +88,17 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
   if (isThinking) {
     return (
       <div className="flex w-full px-2 py-1 justify-start sm:px-4">
-        <div className="thinking-shimmer thinking-glow rounded-2xl rounded-bl-sm border border-[#00d4ff]/[0.12] px-3 py-2 w-fit max-w-[85%] sm:px-4 sm:py-2.5 sm:max-w-[70%]">
+        <div className="thinking-shimmer thinking-glow rounded-2xl rounded-bl-sm border border-[#ff9500]/[0.12] px-3 py-2 w-fit max-w-[85%] sm:px-4 sm:py-2.5 sm:max-w-[70%]">
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">
-              <span className="thinking-dot inline-block h-[5px] w-[5px] rounded-full bg-[#00d4ff]" style={{ animationDelay: "0ms" }} />
-              <span className="thinking-dot inline-block h-[5px] w-[5px] rounded-full bg-[#00ff88]" style={{ animationDelay: "0.2s" }} />
-              <span className="thinking-dot inline-block h-[5px] w-[5px] rounded-full bg-[#00d4ff]" style={{ animationDelay: "0.4s" }} />
+              <span className="thinking-dot inline-block h-[5px] w-[5px] rounded-full bg-[#ff9500]" style={{ animationDelay: "0ms" }} />
+              <span className="thinking-dot inline-block h-[5px] w-[5px] rounded-full bg-[#ffb347]" style={{ animationDelay: "0.2s" }} />
+              <span className="thinking-dot inline-block h-[5px] w-[5px] rounded-full bg-[#ff9500]" style={{ animationDelay: "0.4s" }} />
             </span>
             {message.content ? (
-              <span className="text-[11px] text-[#00d4ff]/80 font-medium tracking-wide">{message.content}</span>
+              <span className="text-[11px] text-[#ff9500]/80 font-medium tracking-wide">{message.content}</span>
             ) : (
-              <span className="text-[11px] text-[#00d4ff]/80 font-medium tracking-wide">thinking...</span>
+              <span className="text-[11px] text-[#ff9500]/80 font-medium tracking-wide">thinking...</span>
             )}
           </div>
         </div>
@@ -111,7 +111,7 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
     return (
       <div className="flex w-full px-2 py-0.5 justify-end group sm:px-4">
         <div className={cn(
-          "relative w-fit rounded-2xl rounded-br-sm px-3 py-1.5 bg-[#00d4ff]/[0.06] border border-[#00d4ff]/[0.15]",
+          "relative w-fit rounded-2xl rounded-br-sm px-3 py-1.5 bg-[#ff9500]/[0.06] border border-[#ff9500]/[0.15]",
           isShort ? "max-w-[50%]" : "max-w-[60%]"
         )}>
           {isEditing ? (
@@ -125,7 +125,7 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
                 rows={2}
               />
               <div className="flex gap-1">
-                <button onClick={handleSave} className="rounded px-2 py-0.5 text-[10px] font-medium text-[#00d4ff] bg-[#00d4ff]/15 hover:bg-[#00d4ff]/25 transition-colors">
+                <button onClick={handleSave} className="rounded px-2 py-0.5 text-[10px] font-medium text-[#ff9500] bg-[#ff9500]/15 hover:bg-[#ff9500]/25 transition-colors">
                   <Check className="inline h-2.5 w-2.5 mr-0.5" />Save
                 </button>
                 <button onClick={handleCancel} className="rounded px-2 py-0.5 text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors">
@@ -147,7 +147,7 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
                 <Pencil className="h-2.5 w-2.5" />
               </button>
               <button onClick={handleCopy} className="rounded p-0.5 text-zinc-600 hover:text-zinc-400 transition-colors">
-                {copied ? <Check className="h-2.5 w-2.5 text-[#00d4ff]" /> : <Copy className="h-2.5 w-2.5" />}
+                {copied ? <Check className="h-2.5 w-2.5 text-[#ff9500]" /> : <Copy className="h-2.5 w-2.5" />}
               </button>
             </div>
           )}
@@ -219,7 +219,7 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
         {hasSources && (
           <div className="border-t border-white/[0.06] px-3 py-2 sm:px-4 sm:py-2.5">
             <div className="flex items-center gap-1.5 mb-1.5 sm:mb-2">
-              <Globe className="h-3 w-3 text-[#00d4ff]/60" />
+              <Globe className="h-3 w-3 text-[#ff9500]/60" />
               <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-400">Sources</span>
               <span className="text-[9px] text-zinc-500 ml-auto">{message.sources!.length}</span>
             </div>
@@ -231,7 +231,7 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={(e) => { if (onOpenLink) { e.preventDefault(); onOpenLink(source.url); } }}
-                  className="group/source flex items-center gap-1.5 rounded-full bg-white/[0.04] px-2.5 py-1 text-[11px] text-zinc-300 transition-all hover:bg-[#00d4ff]/[0.08] hover:text-white border border-white/[0.06] hover:border-[#00d4ff]/25 max-w-[200px] sm:max-w-[220px] shrink-0 sm:shrink active:bg-[#00d4ff]/[0.12]"
+                  className="group/source flex items-center gap-1.5 rounded-full bg-white/[0.04] px-2.5 py-1 text-[11px] text-zinc-300 transition-all hover:bg-[#ff9500]/[0.08] hover:text-white border border-white/[0.06] hover:border-[#ff9500]/25 max-w-[200px] sm:max-w-[220px] shrink-0 sm:shrink active:bg-[#ff9500]/[0.12]"
                   title={source.snippet || source.title}
                 >
                   {(source.favicon || getFaviconUrl(source.url)) ? (
@@ -263,7 +263,7 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
         {/* Action bar */}
         <div className="absolute -bottom-5 left-1 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
           <button onClick={handleCopy} className="rounded-md p-1 text-zinc-600 hover:text-zinc-400 hover:bg-white/[0.04] transition-colors">
-            {copied ? <Check className="h-3 w-3 text-[#00d4ff]" /> : <Copy className="h-3 w-3" />}
+            {copied ? <Check className="h-3 w-3 text-[#ff9500]" /> : <Copy className="h-3 w-3" />}
           </button>
           {onRegenerate && (
             <button onClick={() => onRegenerate(message.id)} className="rounded-md p-1 text-zinc-600 hover:text-zinc-400 hover:bg-white/[0.04] transition-colors">
@@ -273,9 +273,9 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
         </div>
       </div>
 
-      {/* Images - displayed OUTSIDE the message bubble as full-width attachments */}
+      {/* Images - full chat width */}
       {hasImages && (
-        <div className="w-full max-w-[95%] sm:max-w-[85%] mt-1.5">
+        <div className="w-full mt-1.5">
           <ImageCarousel images={message.images!} />
         </div>
       )}

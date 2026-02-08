@@ -50,7 +50,7 @@ export function ChatInput({
   };
 
   return (
-    <div className="border-t border-white/[0.06] bg-[rgba(0,0,0,0.7)] px-2 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-4 sm:py-3">
+    <div className="border-t border-white/[0.06] bg-[rgba(0,0,0,0.95)] px-2 py-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-4 sm:py-3 shrink-0">
       <div className="glass-panel depth-shadow mx-auto flex max-w-4xl items-end gap-1.5 rounded-2xl p-1.5 sm:gap-2 sm:p-2">
         {/* Attach button - hidden on mobile */}
         <div className="hidden sm:block">
@@ -111,7 +111,7 @@ export function ChatInput({
                   size="sm"
                   onClick={handleSend}
                   disabled={!content.trim() || disabled}
-                  className="mb-0.5 h-9 w-9 shrink-0 rounded-xl bg-[#00d4ff] p-0 text-black hover:bg-[#00b8d9] disabled:opacity-30 sm:h-8 sm:w-8 sm:rounded-lg"
+                  className="mb-0.5 h-9 w-9 shrink-0 rounded-xl bg-[#ff9500] p-0 text-black hover:bg-[#e08600] disabled:opacity-30 sm:h-8 sm:w-8 sm:rounded-lg"
                 >
                   <Send className="h-4 w-4" />
                 </Button>
@@ -125,7 +125,7 @@ export function ChatInput({
       </div>
 
       <p className="mt-1 text-center text-[10px] text-zinc-600 hidden sm:block">
-        Senko AI is an agentic assistant. Verify important information.
+        Senko can search the web, open apps, and more~ but double-check important stuff!
       </p>
     </div>
   );

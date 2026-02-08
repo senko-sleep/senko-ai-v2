@@ -226,7 +226,7 @@ export function SettingsPanel({
               size="sm"
               onClick={requestLocation}
               disabled={locationLoading}
-              className="mt-1 h-7 w-full gap-1.5 rounded-lg bg-[#00d4ff]/15 text-xs text-[#00d4ff] hover:bg-[#00d4ff]/25"
+              className="mt-1 h-7 w-full gap-1.5 rounded-lg bg-[#ff9500]/15 text-xs text-[#ff9500] hover:bg-[#ff9500]/25"
             >
               <MapPin className="h-3 w-3" />
               {locationLoading
@@ -273,7 +273,7 @@ export function SettingsPanel({
                       size="sm"
                       variant="ghost"
                       onClick={() => requestPermission(perm.name)}
-                      className="h-5 rounded px-1.5 text-[10px] text-[#00d4ff] hover:bg-[#00d4ff]/10"
+                      className="h-5 rounded px-1.5 text-[10px] text-[#ff9500] hover:bg-[#ff9500]/10"
                     >
                       Request
                     </Button>
@@ -318,7 +318,7 @@ export function SettingsPanel({
                     onClick={() => updateSetting("fontSize", size)}
                     className={`h-6 flex-1 rounded-md text-[10px] capitalize ${
                       settings.fontSize === size
-                        ? "bg-[#00d4ff]/15 text-[#00d4ff]"
+                        ? "bg-[#ff9500]/15 text-[#ff9500]"
                         : "text-zinc-500 hover:bg-white/5 hover:text-zinc-400"
                     }`}
                   >

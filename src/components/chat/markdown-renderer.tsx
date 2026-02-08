@@ -83,11 +83,11 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
           return <p className="mb-2 last:mb-0 leading-relaxed text-white/95">{children}</p>;
         },
         ul({ children }) {
-          return <ul className="mb-2 ml-4 list-disc space-y-1 marker:text-[#00d4ff]/60">{children}</ul>;
+          return <ul className="mb-2 ml-4 list-disc space-y-1 marker:text-[#ff9500]/60">{children}</ul>;
         },
         ol({ children }) {
           return (
-            <ol className="mb-2 ml-4 list-decimal space-y-1 marker:text-[#00d4ff]/60">{children}</ol>
+            <ol className="mb-2 ml-4 list-decimal space-y-1 marker:text-[#ff9500]/60">{children}</ol>
           );
         },
         li({ children }) {
@@ -95,21 +95,21 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
         },
         h1({ children }) {
           return (
-            <h1 className="mb-2 mt-4 text-lg font-bold text-[#00d4ff] first:mt-0">
+            <h1 className="mb-2 mt-4 text-lg font-bold text-[#ff9500] first:mt-0">
               {children}
             </h1>
           );
         },
         h2({ children }) {
           return (
-            <h2 className="mb-2 mt-3 text-base font-semibold text-[#00d4ff] first:mt-0">
+            <h2 className="mb-2 mt-3 text-base font-semibold text-[#ff9500] first:mt-0">
               {children}
             </h2>
           );
         },
         h3({ children }) {
           return (
-            <h3 className="mb-1.5 mt-2.5 text-sm font-semibold text-[#00ff88] first:mt-0">
+            <h3 className="mb-1.5 mt-2.5 text-sm font-semibold text-[#ffb347] first:mt-0">
               {children}
             </h3>
           );
@@ -124,7 +124,7 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
         },
         blockquote({ children }) {
           return (
-            <blockquote className="my-2 border-l-2 border-[#00d4ff]/50 pl-3 text-zinc-300 bg-[#00d4ff]/[0.04] rounded-r-lg py-1 pr-2">
+            <blockquote className="my-2 border-l-2 border-[#ff9500]/50 pl-3 text-zinc-300 bg-[#ff9500]/[0.04] rounded-r-lg py-1 pr-2">
               {children}
             </blockquote>
           );
@@ -135,7 +135,7 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
               href={href}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-0.5 text-[#00d4ff] underline decoration-[#00d4ff]/30 underline-offset-2 transition-colors hover:text-[#66e5ff] hover:decoration-[#00d4ff]/60"
+              className="inline-flex items-center gap-0.5 text-[#ff9500] underline decoration-[#ff9500]/30 underline-offset-2 transition-colors hover:text-[#ffcc80] hover:decoration-[#ff9500]/60"
             >
               {children}
               <ExternalLink className="inline h-3 w-3" />

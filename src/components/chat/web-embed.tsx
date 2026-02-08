@@ -106,7 +106,7 @@ export function WebEmbed({ embed }: WebEmbedProps) {
         {!loaded && (
           <div className="absolute inset-0 flex items-center justify-center bg-black z-10">
             <div className="flex items-center gap-2 text-zinc-500 text-xs">
-              <div className="h-3 w-3 border-2 border-zinc-600 border-t-[#00d4ff] rounded-full animate-spin" />
+              <div className="h-3 w-3 border-2 border-zinc-600 border-t-[#ff9500] rounded-full animate-spin" />
               loading {hostname || "site"}...
             </div>
           </div>
@@ -114,13 +114,13 @@ export function WebEmbed({ embed }: WebEmbedProps) {
         {error && (
           <div className="absolute inset-0 flex items-center justify-center bg-black z-10">
             <div className="text-center">
-              <AlertTriangle className="h-5 w-5 text-[#00d4ff]/60 mx-auto mb-2" />
+              <AlertTriangle className="h-5 w-5 text-[#ff9500]/60 mx-auto mb-2" />
               <p className="text-xs text-zinc-500 mb-1">This site can&apos;t be embedded</p>
               <a
                 href={embed.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-[11px] text-[#00d4ff] hover:text-[#66e5ff] underline underline-offset-2"
+                className="text-[11px] text-[#ff9500] hover:text-[#ffcc80] underline underline-offset-2"
               >
                 Open in browser →
               </a>

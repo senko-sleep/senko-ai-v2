@@ -74,7 +74,7 @@ export function ImageCarousel({ images }: ImageCarouselProps) {
                 : cn(
                     "flex-shrink-0 snap-center rounded-lg",
                     i === current
-                      ? "border-[#00d4ff]/30"
+                      ? "border-[#ff9500]/30"
                       : "border-white/[0.06] hover:border-white/[0.12]"
                   )
             )}
@@ -126,7 +126,7 @@ export function ImageCarousel({ images }: ImageCarouselProps) {
               className={cn(
                 "h-1 rounded-full transition-all",
                 i === current
-                  ? "w-3 bg-[#00d4ff]/60"
+                  ? "w-3 bg-[#ff9500]/60"
                   : "w-1 bg-white/10 hover:bg-white/20"
               )}
             />

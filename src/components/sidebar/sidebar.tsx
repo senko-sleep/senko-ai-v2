@@ -69,8 +69,8 @@ export function Sidebar({
           {/* Mobile header */}
           <div className="flex items-center justify-between border-b border-white/[0.06] px-4 py-3">
             <div className="flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#00d4ff]/15">
-                <Bot className="h-4.5 w-4.5 text-[#00d4ff]" />
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#ff9500]/15">
+                <Bot className="h-4.5 w-4.5 text-[#ff9500]" />
               </div>
               <span className="text-sm font-semibold text-zinc-200">Senko AI</span>
             </div>
@@ -93,7 +93,7 @@ export function Sidebar({
               className={cn(
                 "h-8 flex-1 gap-1.5 rounded-lg text-xs",
                 activeTab === "history"
-                  ? "bg-[#00d4ff]/10 text-[#00d4ff]"
+                  ? "bg-[#ff9500]/10 text-[#ff9500]"
                   : "text-zinc-500 hover:bg-white/5 hover:text-zinc-400"
               )}
             >
@@ -107,7 +107,7 @@ export function Sidebar({
               className={cn(
                 "h-8 flex-1 gap-1.5 rounded-lg text-xs",
                 activeTab === "settings"
-                  ? "bg-[#00d4ff]/10 text-[#00d4ff]"
+                  ? "bg-[#ff9500]/10 text-[#ff9500]"
                   : "text-zinc-500 hover:bg-white/5 hover:text-zinc-400"
               )}
             >
@@ -150,8 +150,8 @@ export function Sidebar({
       <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-3">
         {!collapsed && (
           <div className="flex flex-1 items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#00d4ff]/15">
-              <Bot className="h-4 w-4 text-[#00d4ff]" />
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#ff9500]/15">
+              <Bot className="h-4 w-4 text-[#ff9500]" />
             </div>
             <span className="text-sm font-semibold text-zinc-200">
               Senko AI
@@ -182,7 +182,7 @@ export function Sidebar({
             className={cn(
               "h-7 flex-1 gap-1.5 rounded-lg text-xs",
               activeTab === "history"
-                ? "bg-[#00d4ff]/10 text-[#00d4ff]"
+                ? "bg-[#ff9500]/10 text-[#ff9500]"
                 : "text-zinc-500 hover:bg-white/5 hover:text-zinc-400"
             )}
           >
@@ -196,7 +196,7 @@ export function Sidebar({
             className={cn(
               "h-7 flex-1 gap-1.5 rounded-lg text-xs",
               activeTab === "settings"
-                ? "bg-[#00d4ff]/10 text-[#00d4ff]"
+                ? "bg-[#ff9500]/10 text-[#ff9500]"
                 : "text-zinc-500 hover:bg-white/5 hover:text-zinc-400"
             )}
           >
@@ -219,7 +219,7 @@ export function Sidebar({
             className={cn(
               "h-8 w-8 rounded-lg p-0",
               activeTab === "history"
-                ? "bg-[#00d4ff]/10 text-[#00d4ff]"
+                ? "bg-[#ff9500]/10 text-[#ff9500]"
                 : "text-zinc-500 hover:bg-white/5 hover:text-zinc-400"
             )}
           >
@@ -235,7 +235,7 @@ export function Sidebar({
             className={cn(
               "h-8 w-8 rounded-lg p-0",
               activeTab === "settings"
-                ? "bg-[#00d4ff]/10 text-[#00d4ff]"
+                ? "bg-[#ff9500]/10 text-[#ff9500]"
                 : "text-zinc-500 hover:bg-white/5 hover:text-zinc-400"
             )}
           >
