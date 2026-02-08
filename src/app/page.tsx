@@ -646,6 +646,48 @@ export default function Home() {
     [browserInfo, location, updateConversation, processActions]
   );
 
+  const generateTitle = useCallback(async (convId: string, firstMessage: string) => {
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [
+            {
+              role: "user",
+              content: `Generate a very short title (2-5 words, no quotes, no punctuation) for a conversation that starts with: "${firstMessage.slice(0, 200)}"`,
+            },
+          ],
+          system: "You generate ultra-short conversation titles. Respond with ONLY the title, nothing else. 2-5 words max. No quotes. No punctuation. Lowercase.",
+        }),
+      });
+      const reader = res.body?.getReader();
+      if (!reader) return;
+      const decoder = new TextDecoder();
+      let title = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const text = decoder.decode(value, { stream: true });
+        const lines = text.split("\n\n");
+        for (const line of lines) {
+          const trimmed = line.replace(/^data: /, "").trim();
+          if (!trimmed || trimmed === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(trimmed);
+            if (parsed.content) title += parsed.content;
+          } catch { /* skip */ }
+        }
+      }
+      title = title.replace(/["'.!?]/g, "").trim().slice(0, 50);
+      if (title) {
+        updateConversation(convId, (conv) => ({ ...conv, title }));
+      }
+    } catch {
+      // title generation failed, keep default
+    }
+  }, [updateConversation]);
+
   const handleSendMessage = useCallback(
     (content: string) => {
       if (!activeConversationId || isStreaming) return;
@@ -658,17 +700,22 @@ export default function Home() {
       };
 
       let updatedMessages: Message[] = [];
+      let isFirst = false;
 
       updateConversation(activeConversationId, (conv) => {
-        const isFirstMessage = conv.messages.length === 0;
+        isFirst = conv.messages.length === 0;
         updatedMessages = [...conv.messages, userMessage];
         return {
           ...conv,
-          title: isFirstMessage ? content.slice(0, 40) : conv.title,
+          title: isFirst ? content.slice(0, 30) + "..." : conv.title,
           messages: updatedMessages,
           updatedAt: new Date(),
         };
       });
+
+      if (isFirst) {
+        generateTitle(activeConversationId, content);
+      }
 
       setTimeout(() => {
         setConversations((prev) => {
@@ -680,7 +727,7 @@ export default function Home() {
         });
       }, 50);
     },
-    [activeConversationId, isStreaming, updateConversation, sendToAI]
+    [activeConversationId, isStreaming, updateConversation, sendToAI, generateTitle]
   );
 
   const handleEditMessage = useCallback(
