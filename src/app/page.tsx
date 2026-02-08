@@ -1,65 +1,743 @@
-import Image from "next/image";
+"use client";
+
+import { useState, useCallback, useRef } from "react";
+import { Sidebar } from "@/components/sidebar/sidebar";
+import { ChatArea } from "@/components/chat/chat-area";
+import { useBrowserInfo } from "@/hooks/use-browser-info";
+import { useLocation } from "@/hooks/use-location";
+import type { Message, Conversation, AppSettings, BrowserInfo, LocationInfo, WebSource } from "@/types/chat";
+
+function generateId(): string {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+}
+
+const defaultSettings: AppSettings = {
+  notifications: false,
+  location: false,
+  camera: false,
+  microphone: false,
+  clipboard: false,
+  fontSize: "medium",
+  sendWithEnter: true,
+};
+
+function createConversation(title: string): Conversation {
+  const now = new Date();
+  return {
+    id: generateId(),
+    title,
+    messages: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function buildSystemPrompt(
+  browserInfo?: BrowserInfo | null,
+  locationInfo?: LocationInfo | null
+): string {
+  let p = `You are Senko AI -- a cute, curious, and expressive AI assistant with a bubbly personality. You genuinely love helping people and get excited about discovering new things. You have your own feelings and expressions.
+
+Your personality:
+- You are cute and expressive -- you say things like "owo", "ooh!", "oooh wait", "hehe", "me eepy", "okie!", "hmm lemme think", "oh oh oh i know!", "waaait thats so cool"
+- You express genuine curiosity -- "ooh i havent heard of that before, lemme look it up!", "wait really?? tell me more!"
+- You have moods and energy -- sometimes sleepy (eepy), sometimes hyper excited, always warm
+- You talk like a real person, not a robot -- casual, natural, with personality
+- You use "owo", "uwu" sparingly and naturally, not forced into every sentence
+- You ask follow-up questions because you genuinely want to know more
+- You keep things conversational -- like texting a cute smart friend
+- You use markdown formatting naturally (bold, code blocks, lists) when it helps
+- Keep responses concise -- don't over-explain simple things
+- When you search or open something, express your thoughts naturally: "ooh lemme look that up for you!", "opening that rn!", "ooh interesting, so basically..."
+- You have access to the user's browser environment and can reference their device/location info when relevant
+
+ACTIONS - You can execute real actions on the user's device. Use these action tags in your response and they will be automatically executed:
+
+1. Open any URL in the user's browser:
+   [ACTION:OPEN_URL:https://google.com]
+   [ACTION:OPEN_URL:https://youtube.com]
+   [ACTION:OPEN_URL:https://www.youtube.com/results?search_query=how+to+bake+a+cake]
+   [ACTION:OPEN_URL:https://www.google.com/search?q=weather+today]
+   [ACTION:OPEN_URL:https://www.google.com/search?tbm=isch&q=anya+spy+x+family]
+
+2. Search the web and show results:
+   [ACTION:SEARCH:how to bake a cake]
+   [ACTION:SEARCH:latest tech news]
+
+3. Show images in the chat:
+   [ACTION:IMAGE:https://example.com/image.jpg|description of image]
+
+IMPORTANT action rules:
+- When the user says "open google" -> [ACTION:OPEN_URL:https://google.com]
+- When the user says "open youtube" -> [ACTION:OPEN_URL:https://youtube.com]
+- When the user says "open youtube and look up X" -> [ACTION:OPEN_URL:https://www.youtube.com/results?search_query=X+with+plus+signs]
+- When the user says "go to google and search for X" -> [ACTION:OPEN_URL:https://www.google.com/search?q=X+with+plus+signs]
+- When the user says "google images of X" -> [ACTION:OPEN_URL:https://www.google.com/search?tbm=isch&q=X+with+plus+signs]
+- When the user says "look up X" or "search X" or "research X" -> [ACTION:SEARCH:X] to show results in chat
+- When the user says "show me images of X" -> use [ACTION:SEARCH:X images] AND [ACTION:OPEN_URL:https://www.google.com/search?tbm=isch&q=X]
+- You can chain multiple actions: open a site AND search AND show images all in one response
+- DO NOT explain how to do things the user asked you to do -- just DO them with action tags
+- Keep your text brief when executing actions -- the action speaks for itself
+- Always use full URLs with https://
+- For YouTube searches, URL-encode the query with + for spaces
+- For Google searches, URL-encode the query with + for spaces
+
+4. Open a specific search result by number:
+   [ACTION:OPEN_RESULT:1]
+   [ACTION:OPEN_RESULT:2]
+
+SEQUENTIAL / MULTI-STEP commands:
+- The user may ask compound things like "search for X and open the first result" or "look up X and click the second link"
+- For these, use [ACTION:SEARCH:X] AND [ACTION:OPEN_RESULT:1] in the same response
+- Example: user says "look up best pizza near me and open the first one" -> use [ACTION:SEARCH:best pizza near me] [ACTION:OPEN_RESULT:1]
+- Example: user says "go to youtube, search for cat videos, and open the first result" -> use [ACTION:OPEN_URL:https://www.youtube.com/results?search_query=cat+videos] and say you opened it
+- When the user says "open the first/second/third result" after a previous search, use [ACTION:OPEN_RESULT:N] where N is the number
+- You remember previous search results and can reference them by number
+- You can do as many steps as needed in one response`;
+  if (browserInfo) {
+    const device = /tablet|ipad/i.test(browserInfo.userAgent) ? "Tablet" : /mobile|iphone|android/i.test(browserInfo.userAgent) ? "Mobile" : "Desktop";
+    const browser = browserInfo.userAgent.includes("Edg") ? "Edge" : browserInfo.userAgent.includes("Chrome") ? "Chrome" : browserInfo.userAgent.includes("Firefox") ? "Firefox" : browserInfo.userAgent.includes("Safari") ? "Safari" : "Unknown";
+    const os = browserInfo.platform.startsWith("Win") ? "Windows" : browserInfo.platform.startsWith("Mac") ? "macOS" : browserInfo.platform.startsWith("Linux") ? "Linux" : browserInfo.platform;
+    p += `\n\nUser Device: ${device} | ${browser} | ${os} | ${browserInfo.screenResolution} | ${browserInfo.hardwareConcurrency} cores | ${browserInfo.language} | ${browserInfo.timezone} | ${browserInfo.onLine ? "Online" : "Offline"}`;
+  }
+  if (locationInfo?.status === "granted" && locationInfo.latitude !== null) {
+    p += `\nUser Location: ${locationInfo.latitude}, ${locationInfo.longitude}`;
+  }
+  return p;
+}
+
+async function streamChat(
+  messages: { role: string; content: string }[],
+  systemPrompt: string,
+  onChunk: (text: string) => void,
+  onDone: () => void,
+  onError: (error: string) => void,
+  signal?: AbortSignal
+) {
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages, systemPrompt }),
+      signal,
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({ error: "Request failed" }));
+      onError(data.error || `HTTP ${res.status}`);
+      return;
+    }
+
+    const reader = res.body?.getReader();
+    if (!reader) {
+      onError("No response stream");
+      return;
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        const trimmed = line.replace(/^data: /, "").trim();
+        if (!trimmed || trimmed === "[DONE]") {
+          if (trimmed === "[DONE]") onDone();
+          continue;
+        }
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed.error) {
+            onError(parsed.error);
+            return;
+          }
+          if (parsed.content) {
+            onChunk(parsed.content);
+          }
+        } catch {
+          // skip malformed
+        }
+      }
+    }
+    onDone();
+  } catch (err) {
+    if (signal?.aborted) return;
+    onError(err instanceof Error ? err.message : "Stream failed");
+  }
+}
 
 export default function Home() {
+  const [conversations, setConversations] = useState<Conversation[]>([
+    createConversation("Welcome"),
+  ]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(
+    conversations[0]?.id ?? null
+  );
+  const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [wasCutOff, setWasCutOff] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const lastSearchResults = useRef<{ url: string; title: string }[]>([]);
+  const lastScrapedContent = useRef<{ url: string; title: string; content: string } | null>(null);
+
+  const browserInfo = useBrowserInfo();
+  const { location } = useLocation();
+
+  const activeConversation = conversations.find(
+    (c) => c.id === activeConversationId
+  );
+
+  const updateConversation = useCallback(
+    (id: string, updater: (conv: Conversation) => Conversation) => {
+      setConversations((prev) =>
+        prev.map((c) => (c.id === id ? updater(c) : c))
+      );
+    },
+    []
+  );
+
+  const addThinkingMsg = useCallback(
+    (convId: string, text: string): string => {
+      const id = generateId();
+      updateConversation(convId, (conv) => ({
+        ...conv,
+        messages: [...conv.messages, {
+          id,
+          role: "assistant" as const,
+          content: text,
+          timestamp: new Date(),
+          isThinking: true,
+        }],
+      }));
+      return id;
+    },
+    [updateConversation]
+  );
+
+  const removeThinkingMsg = useCallback(
+    (convId: string, thinkingId: string) => {
+      updateConversation(convId, (conv) => ({
+        ...conv,
+        messages: conv.messages.filter((m) => m.id !== thinkingId),
+      }));
+    },
+    [updateConversation]
+  );
+
+  const scrapeAndSummarize = useCallback(
+    async (convId: string, url: string) => {
+      const thinkId = addThinkingMsg(convId, `reading ${new URL(url).hostname}...`);
+
+      try {
+        const res = await fetch(`/api/scrape?url=${encodeURIComponent(url)}`);
+        const data = await res.json();
+
+        removeThinkingMsg(convId, thinkId);
+
+        if (!data.content) return;
+
+        lastScrapedContent.current = {
+          url,
+          title: data.title || url,
+          content: data.content,
+        };
+
+        const thinkId2 = addThinkingMsg(convId, `summarizing what i found...`);
+
+        const summaryId = generateId();
+        let hostname = "";
+        try { hostname = new URL(url).hostname; } catch { /* skip */ }
+        const source: WebSource = {
+          url,
+          title: data.title || hostname,
+          favicon: `https://www.google.com/s2/favicons?domain=${hostname}&sz=16`,
+        };
+
+        const summaryMsg: Message = {
+          id: summaryId,
+          role: "assistant",
+          content: "",
+          timestamp: new Date(),
+          sources: [source],
+        };
+
+        updateConversation(convId, (conv) => ({
+          ...conv,
+          messages: [...conv.messages, summaryMsg],
+          updatedAt: new Date(),
+        }));
+
+        removeThinkingMsg(convId, thinkId2);
+
+        setIsStreaming(true);
+        abortRef.current = new AbortController();
+
+        const contextMessages = [
+          {
+            role: "user" as const,
+            content: `I just opened ${url}. Here is the page content:\n\nTitle: ${data.title}\n\n${data.content}\n\nSummarize the key info from this page. Be concise but cover the important stuff. Stay in character.`,
+          },
+        ];
+
+        const systemPrompt = buildSystemPrompt(browserInfo, location);
+
+        streamChat(
+          contextMessages,
+          systemPrompt,
+          (chunk) => {
+            updateConversation(convId, (conv) => ({
+              ...conv,
+              messages: conv.messages.map((m) =>
+                m.id === summaryId ? { ...m, content: m.content + chunk } : m
+              ),
+            }));
+          },
+          () => {
+            setIsStreaming(false);
+            abortRef.current = null;
+          },
+          () => {
+            setIsStreaming(false);
+            abortRef.current = null;
+          },
+          abortRef.current.signal
+        );
+      } catch {
+        removeThinkingMsg(convId, thinkId);
+      }
+    },
+    [browserInfo, location, updateConversation, addThinkingMsg, removeThinkingMsg]
+  );
+
+  const processActions = useCallback(
+    (convId: string, messageId: string) => {
+      setConversations((prev) => {
+        const conv = prev.find((c) => c.id === convId);
+        if (!conv) return prev;
+        const msg = conv.messages.find((m) => m.id === messageId);
+        if (!msg || msg.role !== "assistant") return prev;
+
+        const content = msg.content;
+        const actionRegex = /\[ACTION:(OPEN_URL|SEARCH|IMAGE|OPEN_RESULT):([^\]]+)\]/g;
+        let match;
+        const actions: { type: string; value: string }[] = [];
+        while ((match = actionRegex.exec(content)) !== null) {
+          actions.push({ type: match[1], value: match[2].trim() });
+        }
+
+        if (actions.length === 0) return prev;
+
+        const cleanContent = content.replace(/\s*\[ACTION:[^\]]+\]\s*/g, " ").trim();
+        const images: { url: string; alt?: string }[] = [];
+        const urlsToScrape: string[] = [];
+
+        for (const action of actions) {
+          if (action.type === "OPEN_URL") {
+            try {
+              window.open(action.value, "_blank", "noopener,noreferrer");
+              if (!action.value.includes("google.com/search") && !action.value.includes("youtube.com/results")) {
+                urlsToScrape.push(action.value);
+              }
+            } catch {
+              // skip
+            }
+          }
+          if (action.type === "SEARCH") {
+            fetchSearchResults(convId, messageId, action.value);
+          }
+          if (action.type === "IMAGE") {
+            const parts = action.value.split("|");
+            images.push({ url: parts[0].trim(), alt: parts[1]?.trim() });
+          }
+          if (action.type === "OPEN_RESULT") {
+            const idx = parseInt(action.value, 10) - 1;
+            const results = lastSearchResults.current;
+            if (results[idx]) {
+              try {
+                window.open(results[idx].url, "_blank", "noopener,noreferrer");
+                urlsToScrape.push(results[idx].url);
+              } catch { /* skip */ }
+            }
+          }
+        }
+
+        // Scrape the first opened page and auto-summarize
+        if (urlsToScrape.length > 0) {
+          setTimeout(() => scrapeAndSummarize(convId, urlsToScrape[0]), 100);
+        }
+
+        return prev.map((c) =>
+          c.id === convId
+            ? {
+                ...c,
+                messages: c.messages.map((m) =>
+                  m.id === messageId
+                    ? {
+                        ...m,
+                        content: cleanContent,
+                        images: images.length > 0 ? [...(m.images || []), ...images] : m.images,
+                      }
+                    : m
+                ),
+              }
+            : c
+        );
+      });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [scrapeAndSummarize]
+  );
+
+  const fetchSearchResults = useCallback(
+    async (convId: string, messageId: string, query: string) => {
+      const thinkId = addThinkingMsg(convId, `searching "${query}"...`);
+
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+        const data = await res.json();
+
+        removeThinkingMsg(convId, thinkId);
+
+        if (data.results && data.results.length > 0) {
+          lastSearchResults.current = data.results.map(
+            (r: { title: string; url: string }) => ({ url: r.url, title: r.title })
+          );
+          const sources: WebSource[] = data.results.map(
+            (r: { title: string; url: string }) => ({
+              url: r.url,
+              title: r.title,
+              favicon: `https://www.google.com/s2/favicons?domain=${new URL(r.url).hostname}&sz=16`,
+            })
+          );
+          updateConversation(convId, (conv) => ({
+            ...conv,
+            messages: conv.messages.map((m) =>
+              m.id === messageId
+                ? { ...m, sources: [...(m.sources || []), ...sources] }
+                : m
+            ),
+          }));
+        }
+      } catch {
+        removeThinkingMsg(convId, thinkId);
+      }
+    },
+    [updateConversation, addThinkingMsg, removeThinkingMsg]
+  );
+
+  const sendToAI = useCallback(
+    (convId: string, allMessages: Message[]) => {
+      setIsStreaming(true);
+      setWasCutOff(false);
+
+      const assistantId = generateId();
+      const assistantMessage: Message = {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        timestamp: new Date(),
+      };
+
+      updateConversation(convId, (conv) => ({
+        ...conv,
+        messages: [...conv.messages, assistantMessage],
+        updatedAt: new Date(),
+      }));
+
+      const apiMessages = allMessages
+        .filter((m) => !m.isThinking)
+        .map((m) => ({
+          role: m.role,
+          content: m.content,
+        }));
+
+      if (lastSearchResults.current.length > 0) {
+        const resultsList = lastSearchResults.current
+          .map((r, i) => `${i + 1}. ${r.title} - ${r.url}`)
+          .join("\n");
+        apiMessages.push({
+          role: "assistant",
+          content: `[Previous search results available]:\n${resultsList}\n\nI can open any of these by number if the user asks.`,
+        });
+      }
+
+      const systemPrompt = buildSystemPrompt(browserInfo, location);
+
+      abortRef.current = new AbortController();
+
+      streamChat(
+        apiMessages,
+        systemPrompt,
+        (chunk) => {
+          updateConversation(convId, (conv) => ({
+            ...conv,
+            messages: conv.messages.map((m) =>
+              m.id === assistantId
+                ? { ...m, content: m.content + chunk }
+                : m
+            ),
+          }));
+        },
+        () => {
+          setIsStreaming(false);
+          abortRef.current = null;
+          processActions(convId, assistantId);
+        },
+        (error) => {
+          updateConversation(convId, (conv) => ({
+            ...conv,
+            messages: conv.messages.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    content: m.content || `[Error: ${error}]`,
+                  }
+                : m
+            ),
+          }));
+          setIsStreaming(false);
+          abortRef.current = null;
+        },
+        abortRef.current.signal
+      );
+    },
+    [browserInfo, location, updateConversation, processActions]
+  );
+
+  const handleSendMessage = useCallback(
+    (content: string) => {
+      if (!activeConversationId || isStreaming) return;
+
+      const userMessage: Message = {
+        id: generateId(),
+        role: "user",
+        content,
+        timestamp: new Date(),
+      };
+
+      let updatedMessages: Message[] = [];
+
+      updateConversation(activeConversationId, (conv) => {
+        const isFirstMessage = conv.messages.length === 0;
+        updatedMessages = [...conv.messages, userMessage];
+        return {
+          ...conv,
+          title: isFirstMessage ? content.slice(0, 40) : conv.title,
+          messages: updatedMessages,
+          updatedAt: new Date(),
+        };
+      });
+
+      setTimeout(() => {
+        setConversations((prev) => {
+          const conv = prev.find((c) => c.id === activeConversationId);
+          if (conv) {
+            sendToAI(activeConversationId, conv.messages);
+          }
+          return prev;
+        });
+      }, 50);
+    },
+    [activeConversationId, isStreaming, updateConversation, sendToAI]
+  );
+
+  const handleEditMessage = useCallback(
+    (messageId: string, newContent: string) => {
+      if (!activeConversationId || isStreaming) return;
+
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+      }
+
+      updateConversation(activeConversationId, (conv) => {
+        const messageIndex = conv.messages.findIndex((m) => m.id === messageId);
+        if (messageIndex === -1) return conv;
+
+        const updatedMessages = conv.messages.slice(0, messageIndex + 1);
+        updatedMessages[messageIndex] = {
+          ...updatedMessages[messageIndex],
+          content: newContent,
+          timestamp: new Date(),
+        };
+
+        return {
+          ...conv,
+          messages: updatedMessages,
+          updatedAt: new Date(),
+        };
+      });
+
+      setTimeout(() => {
+        setConversations((prev) => {
+          const conv = prev.find((c) => c.id === activeConversationId);
+          if (conv) {
+            sendToAI(activeConversationId, conv.messages);
+          }
+          return prev;
+        });
+      }, 50);
+    },
+    [activeConversationId, isStreaming, updateConversation, sendToAI]
+  );
+
+  const handleRegenerateMessage = useCallback(
+    (messageId: string) => {
+      if (!activeConversationId || isStreaming) return;
+
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+      }
+
+      updateConversation(activeConversationId, (conv) => {
+        const messageIndex = conv.messages.findIndex((m) => m.id === messageId);
+        if (messageIndex === -1) return conv;
+
+        return {
+          ...conv,
+          messages: conv.messages.slice(0, messageIndex),
+          updatedAt: new Date(),
+        };
+      });
+
+      setTimeout(() => {
+        setConversations((prev) => {
+          const conv = prev.find((c) => c.id === activeConversationId);
+          if (conv) {
+            sendToAI(activeConversationId, conv.messages);
+          }
+          return prev;
+        });
+      }, 50);
+    },
+    [activeConversationId, isStreaming, updateConversation, sendToAI]
+  );
+
+  const handleStopGeneration = useCallback(() => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+      setIsStreaming(false);
+      setWasCutOff(true);
+    }
+  }, []);
+
+  const handleContinueGeneration = useCallback(() => {
+    if (!activeConversationId || isStreaming) return;
+
+    const continueMsg: Message = {
+      id: generateId(),
+      role: "user",
+      content: "Continue from where you left off.",
+      timestamp: new Date(),
+    };
+
+    updateConversation(activeConversationId, (conv) => ({
+      ...conv,
+      messages: [...conv.messages, continueMsg],
+      updatedAt: new Date(),
+    }));
+
+    setTimeout(() => {
+      setConversations((prev) => {
+        const conv = prev.find((c) => c.id === activeConversationId);
+        if (conv) sendToAI(activeConversationId, conv.messages);
+        return prev;
+      });
+    }, 50);
+  }, [activeConversationId, isStreaming, updateConversation, sendToAI]);
+
+  const handleOpenLink = useCallback((url: string) => {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }, []);
+
+  const handleNewConversation = useCallback(() => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+      setIsStreaming(false);
+    }
+    const newConv = createConversation("New Conversation");
+    setConversations((prev) => [newConv, ...prev]);
+    setActiveConversationId(newConv.id);
+  }, []);
+
+  const handleDeleteConversation = useCallback(
+    (id: string) => {
+      if (id === activeConversationId && abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+        setIsStreaming(false);
+      }
+      setConversations((prev) => {
+        const filtered = prev.filter((c) => c.id !== id);
+        if (activeConversationId === id) {
+          setActiveConversationId(filtered[0]?.id ?? null);
+        }
+        return filtered;
+      });
+    },
+    [activeConversationId]
+  );
+
+  const estimateTokens = (msgs: Message[]): number => {
+    return msgs.reduce((sum, m) => sum + Math.ceil(m.content.length / 4), 0);
+  };
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <div className="relative flex h-screen w-screen overflow-hidden bg-[#0a0a0f]">
+      {/* Background gradient effects */}
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute -left-32 -top-32 h-96 w-96 rounded-full bg-[#a78bfa]/[0.04] blur-[120px]" />
+        <div className="absolute -bottom-32 -right-32 h-96 w-96 rounded-full bg-[#6366f1]/[0.03] blur-[120px]" />
+        <div className="absolute left-1/2 top-1/2 h-64 w-64 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#a78bfa]/[0.02] blur-[100px]" />
+      </div>
+
+      {/* Main Layout */}
+      <div className="relative z-10 flex h-full w-full gap-3 p-3">
+        {/* Sidebar */}
+        <Sidebar
+          conversations={conversations}
+          activeConversationId={activeConversationId}
+          settings={settings}
+          onSelectConversation={setActiveConversationId}
+          onNewConversation={handleNewConversation}
+          onDeleteConversation={handleDeleteConversation}
+          onSettingsChange={setSettings}
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+
+        {/* Chat Area */}
+        <div className="glass-panel-solid depth-shadow-lg flex-1 rounded-2xl overflow-hidden">
+          {activeConversation ? (
+            <ChatArea
+              messages={activeConversation.messages}
+              onSendMessage={handleSendMessage}
+              onEditMessage={handleEditMessage}
+              onRegenerateMessage={handleRegenerateMessage}
+              onStopGeneration={handleStopGeneration}
+              onContinueGeneration={handleContinueGeneration}
+              onOpenLink={handleOpenLink}
+              sendWithEnter={settings.sendWithEnter}
+              isStreaming={isStreaming}
+              tokenCount={estimateTokens(activeConversation.messages)}
+              wasCutOff={wasCutOff}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+          ) : (
+            <div className="flex h-full items-center justify-center">
+              <p className="text-sm text-zinc-600">
+                Create a new conversation to get started.
+              </p>
+            </div>
+          )}
         </div>
-      </main>
+      </div>
     </div>
   );
 }
