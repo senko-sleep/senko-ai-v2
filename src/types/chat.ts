@@ -51,6 +51,15 @@ export interface SenkoStatus {
   color: string;
 }
 
+export interface SenkoTab {
+  id: string;
+  url: string;
+  title: string;
+  favicon: string;
+  active: boolean;
+  openedAt: number;
+}
+
 export interface Conversation {
   id: string;
   title: string;
@@ -58,6 +67,7 @@ export interface Conversation {
   createdAt: Date;
   updatedAt: Date;
   status?: SenkoStatus;
+  tabs?: SenkoTab[];
 }
 
 export interface BrowserInfo {

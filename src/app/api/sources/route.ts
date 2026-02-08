@@ -17,11 +17,15 @@ function makeFavicon(url: string): string {
 
 function decodeDDGUrl(raw: string): string {
   try {
-    const decoded = decodeURIComponent(raw);
+    // DDG hrefs contain &amp; HTML entities that need decoding first
+    const clean = raw.replace(/&amp;/g, "&");
+    const decoded = decodeURIComponent(clean);
     if (decoded.startsWith("/") || decoded.startsWith("//")) {
       const uddg = new URL(`https://duckduckgo.com${decoded}`);
       return uddg.searchParams.get("uddg") || raw;
     }
+    // If it's already a full URL
+    if (decoded.startsWith("http")) return decoded;
   } catch { /* use raw */ }
   return raw;
 }
@@ -93,27 +97,49 @@ function extractBingResults(html: string): SourceResult[] {
 
   // Split by b_algo list items and extract from each block
   const blocks = html.split(/<li class="b_algo"/i);
+  console.log(`[sources/bing] Found ${blocks.length - 1} b_algo blocks`);
   for (let i = 1; i < blocks.length && results.length < 10; i++) {
     const block = blocks[i];
 
-    // Extract real URL from <cite> tag (Bing wraps links in bing.com/ck/a redirects)
+    // Extract URL: prefer href from <h2><a> (most reliable), then any non-bing href, then cite
     let url = "";
-    const citeMatch = block.match(/<cite[^>]*>(.*?)<\/cite>/i);
-    if (citeMatch) {
-      url = citeMatch[1].replace(/<[^>]*>/g, "").replace(/\s/g, "").trim();
-      if (!url.startsWith("http")) url = "https://" + url;
+    // Primary: get href from the title link inside <h2>
+    const titleLinkMatch = block.match(/<h2[^>]*>[\s\S]*?<a[^>]*href="([^"]+)"[^>]*>/i);
+    if (titleLinkMatch) {
+      url = titleLinkMatch[1].replace(/&amp;/g, "&");
     }
-    // Fallback: try to find a direct non-bing href
+    // If it's a bing redirect, try to extract the real URL from the 'u' param
+    if (url.includes("bing.com/ck/a")) {
+      try {
+        const bingUrl = new URL(url.startsWith("//") ? "https:" + url : url);
+        const realUrl = bingUrl.searchParams.get("u");
+        if (realUrl) {
+          // Bing encodes with a1- prefix sometimes
+          url = realUrl.startsWith("a1") ? decodeURIComponent(realUrl.slice(2)) : decodeURIComponent(realUrl);
+        }
+      } catch { /* keep original */ }
+    }
+    // Fallback: any non-bing href
     if (!url || url.includes("bing.com")) {
       const hrefMatch = block.match(/href="(https?:\/\/(?!www\.bing\.com)[^"]+)"/i);
       if (hrefMatch) url = hrefMatch[1].replace(/&amp;/g, "&");
+    }
+    // Last resort: cite tag (display URL with › separators)
+    if (!url || url.includes("bing.com")) {
+      const citeMatch = block.match(/<cite[^>]*>(.*?)<\/cite>/i);
+      if (citeMatch) {
+        url = citeMatch[1].replace(/<[^>]*>/g, "").replace(/\s/g, "").replace(/›/g, "/").trim();
+        if (!url.startsWith("http")) url = "https://" + url;
+      }
     }
 
     // Extract title from <h2> > <a> (strip all nested HTML)
     let title = "";
     const h2Match = block.match(/<h2[^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/i);
     if (h2Match) {
-      title = h2Match[1].replace(/<[^>]*>/g, "").trim();
+      title = h2Match[1].replace(/<[^>]*>/g, "").replace(/&#\d+;/g, (m) => {
+        try { return String.fromCharCode(parseInt(m.slice(2, -1))); } catch { return m; }
+      }).replace(/&amp;/g, "&").trim();
     }
 
     // Extract snippet from <p> or .b_caption
@@ -123,11 +149,107 @@ function extractBingResults(html: string): SourceResult[] {
       snippet = snippetMatch[1].replace(/<[^>]*>/g, "").trim();
     }
 
+    console.log(`[sources/bing] Block ${i}: url=${url.slice(0, 60)} title=${title.slice(0, 40)}`);
     if (title && url && url.startsWith("http") && !url.includes("bing.com")) {
       results.push({ title, url, snippet, favicon: makeFavicon(url) });
     }
   }
 
+  return results;
+}
+
+// Full browser-like headers to avoid datacenter IP blocking
+const BROWSER_HEADERS = {
+  "User-Agent": UA,
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Accept-Encoding": "identity",
+  "Cache-Control": "no-cache",
+  "Pragma": "no-cache",
+  "Sec-Fetch-Dest": "document",
+  "Sec-Fetch-Mode": "navigate",
+  "Sec-Fetch-Site": "none",
+  "Sec-Fetch-User": "?1",
+  "Upgrade-Insecure-Requests": "1",
+};
+
+// DuckDuckGo Instant Answer API (JSON, very reliable from servers)
+async function fetchDDGInstant(query: string): Promise<SourceResult[]> {
+  try {
+    const res = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`, {
+      headers: { "User-Agent": UA },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const results: SourceResult[] = [];
+    // Related topics contain URLs
+    const topics = [...(data.RelatedTopics || []), ...(data.Results || [])];
+    for (const topic of topics) {
+      if (topic.FirstURL && topic.Text && results.length < 10) {
+        results.push({
+          url: topic.FirstURL,
+          title: topic.Text.slice(0, 100),
+          snippet: topic.Text,
+          favicon: makeFavicon(topic.FirstURL),
+        });
+      }
+      // Handle sub-topics (grouped results)
+      if (topic.Topics) {
+        for (const sub of topic.Topics) {
+          if (sub.FirstURL && sub.Text && results.length < 10) {
+            results.push({
+              url: sub.FirstURL,
+              title: sub.Text.slice(0, 100),
+              snippet: sub.Text,
+              favicon: makeFavicon(sub.FirstURL),
+            });
+          }
+        }
+      }
+    }
+    // Also add the abstract source if available
+    if (data.AbstractURL && data.AbstractSource && results.length < 10) {
+      results.push({
+        url: data.AbstractURL,
+        title: data.AbstractSource + " - " + (data.Heading || query),
+        snippet: data.AbstractText || "",
+        favicon: makeFavicon(data.AbstractURL),
+      });
+    }
+    return results;
+  } catch (e) {
+    console.log(`[sources/ddg-api] Error: ${e instanceof Error ? e.message : e}`);
+    return [];
+  }
+}
+
+// DuckDuckGo Lite (simpler HTML, less likely to be blocked)
+function extractDDGLiteResults(html: string): SourceResult[] {
+  const results: SourceResult[] = [];
+  // DDG Lite uses <a class="result-link" href="...">
+  const linkRegex = /<a[^>]*class="result-link"[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gi;
+  let match;
+  while ((match = linkRegex.exec(html)) !== null && results.length < 10) {
+    const url = decodeDDGUrl(match[1]);
+    const title = match[2].replace(/<[^>]*>/g, "").trim();
+    if (title && url.startsWith("http")) {
+      results.push({ title, url, snippet: "", favicon: makeFavicon(url) });
+    }
+  }
+  // Fallback: any link with uddg param
+  if (results.length === 0) {
+    const uddgRegex = /href="[^"]*uddg=([^"&]+)[^"]*"[^>]*>(.*?)<\/a>/gi;
+    while ((match = uddgRegex.exec(html)) !== null && results.length < 10) {
+      try {
+        const url = decodeURIComponent(match[1]);
+        const title = match[2].replace(/<[^>]*>/g, "").trim();
+        if (title && url.startsWith("http")) {
+          results.push({ title, url, snippet: "", favicon: makeFavicon(url) });
+        }
+      } catch { /* skip */ }
+    }
+  }
   return results;
 }
 
@@ -140,41 +262,88 @@ export async function GET(req: NextRequest) {
 
   const encoded = encodeURIComponent(query);
 
+  console.log(`[sources] Query: "${query}"`);
+
   // Run ALL strategies in parallel for speed
-  const [ddgResults, googleResults, bingResults] = await Promise.all([
+  const [ddgResults, ddgLiteResults, ddgApiResults, googleResults, bingResults] = await Promise.all([
+    // DDG HTML (full)
     (async (): Promise<SourceResult[]> => {
       try {
         const res = await fetch(`https://html.duckduckgo.com/html/?q=${encoded}`, {
-          headers: { "User-Agent": UA },
-          signal: AbortSignal.timeout(5000),
+          headers: BROWSER_HEADERS,
+          signal: AbortSignal.timeout(6000),
         });
-        return res.ok ? extractDDGResults(await res.text()) : [];
-      } catch { return []; }
+        console.log(`[sources/ddg] Status: ${res.status}`);
+        if (!res.ok) return [];
+        const html = await res.text();
+        console.log(`[sources/ddg] HTML length: ${html.length}, has result__a: ${html.includes("result__a")}`);
+        return extractDDGResults(html);
+      } catch (e) {
+        console.log(`[sources/ddg] Error: ${e instanceof Error ? e.message : e}`);
+        return [];
+      }
     })(),
+    // DDG Lite (fallback, simpler page)
+    (async (): Promise<SourceResult[]> => {
+      try {
+        const res = await fetch(`https://lite.duckduckgo.com/lite/?q=${encoded}`, {
+          headers: BROWSER_HEADERS,
+          signal: AbortSignal.timeout(6000),
+        });
+        console.log(`[sources/ddg-lite] Status: ${res.status}`);
+        if (!res.ok) return [];
+        const html = await res.text();
+        console.log(`[sources/ddg-lite] HTML length: ${html.length}`);
+        return extractDDGLiteResults(html);
+      } catch (e) {
+        console.log(`[sources/ddg-lite] Error: ${e instanceof Error ? e.message : e}`);
+        return [];
+      }
+    })(),
+    // DDG Instant Answer API (JSON, most reliable)
+    fetchDDGInstant(query),
+    // Google
     (async (): Promise<SourceResult[]> => {
       try {
         const res = await fetch(`https://www.google.com/search?q=${encoded}&hl=en&num=10`, {
-          headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml", "Accept-Language": "en-US,en;q=0.9" },
+          headers: BROWSER_HEADERS,
           signal: AbortSignal.timeout(6000),
         });
-        return res.ok ? extractGoogleResults(await res.text()) : [];
-      } catch { return []; }
+        console.log(`[sources/google] Status: ${res.status}`);
+        if (!res.ok) return [];
+        const html = await res.text();
+        console.log(`[sources/google] HTML length: ${html.length}`);
+        return extractGoogleResults(html);
+      } catch (e) {
+        console.log(`[sources/google] Error: ${e instanceof Error ? e.message : e}`);
+        return [];
+      }
     })(),
+    // Bing
     (async (): Promise<SourceResult[]> => {
       try {
         const res = await fetch(`https://www.bing.com/search?q=${encoded}`, {
-          headers: { "User-Agent": UA, "Accept-Language": "en-US,en;q=0.9" },
+          headers: BROWSER_HEADERS,
           signal: AbortSignal.timeout(6000),
         });
-        return res.ok ? extractBingResults(await res.text()) : [];
-      } catch { return []; }
+        console.log(`[sources/bing] Status: ${res.status}`);
+        if (!res.ok) return [];
+        const html = await res.text();
+        console.log(`[sources/bing] HTML length: ${html.length}`);
+        return extractBingResults(html);
+      } catch (e) {
+        console.log(`[sources/bing] Error: ${e instanceof Error ? e.message : e}`);
+        return [];
+      }
     })(),
   ]);
 
-  // Merge: prefer DDG (best quality), then Google, then Bing. Dedup by hostname+path.
+  console.log(`[sources] DDG: ${ddgResults.length}, DDG-Lite: ${ddgLiteResults.length}, DDG-API: ${ddgApiResults.length}, Google: ${googleResults.length}, Bing: ${bingResults.length}`);
+
+  // Merge: prefer DDG HTML > Bing > DDG Lite > DDG API > Google. Dedup by hostname+path.
   const seen = new Set<string>();
   const results: SourceResult[] = [];
-  for (const source of [...ddgResults, ...googleResults, ...bingResults]) {
+  for (const source of [...ddgResults, ...bingResults, ...ddgLiteResults, ...ddgApiResults, ...googleResults]) {
     try {
       const key = new URL(source.url).hostname + new URL(source.url).pathname;
       if (!seen.has(key)) {
@@ -187,5 +356,6 @@ export async function GET(req: NextRequest) {
     if (results.length >= 10) break;
   }
 
+  console.log(`[sources] Final: ${results.length} results`);
   return Response.json({ sources: results, query });
 }

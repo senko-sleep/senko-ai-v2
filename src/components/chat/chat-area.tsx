@@ -2,7 +2,7 @@
 
 import { useRef, useEffect } from "react";
 import {
-  Bot, Square, ArrowDown,
+  Bot, Square, ArrowDown, X, Globe,
   Smile, Frown, Angry, PartyPopper, Moon, Utensils,
   Heart, Skull, Coffee, Brain, Gamepad2, Music,
   Sparkles, Flame, Droplets, Zap,
@@ -11,7 +11,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { ChatMessage } from "./chat-message";
 import { ChatInput } from "./chat-input";
-import type { Message, SenkoStatus } from "@/types/chat";
+import type { Message, SenkoStatus, SenkoTab } from "@/types/chat";
 
 const STATUS_ICON_MAP: Record<string, LucideIcon> = {
   happy: Smile,
@@ -46,6 +46,47 @@ interface ChatAreaProps {
   tokenCount?: number;
   wasCutOff?: boolean;
   status?: SenkoStatus;
+  tabs?: SenkoTab[];
+  onCloseTab?: (tabId: string) => void;
+  onSwitchTab?: (tabId: string) => void;
+}
+
+function TabBar({ tabs, onClose, onSwitch }: { tabs: SenkoTab[]; onClose?: (id: string) => void; onSwitch?: (id: string) => void }) {
+  if (tabs.length === 0) return null;
+  return (
+    <div className="flex items-center gap-1 overflow-x-auto scrollbar-none py-1 px-2">
+      {tabs.map((tab) => (
+        <div
+          key={tab.id}
+          onClick={() => onSwitch?.(tab.id)}
+          className={`group/tab flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] cursor-pointer transition-all shrink-0 max-w-[180px] border ${
+            tab.active
+              ? "bg-[#ff9500]/[0.08] border-[#ff9500]/20 text-white"
+              : "bg-white/[0.03] border-white/[0.06] text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-300"
+          }`}
+        >
+          {tab.favicon ? (
+            /* eslint-disable-next-line @next/next/no-img-element */
+            <img
+              src={tab.favicon}
+              alt=""
+              className="h-3 w-3 rounded-sm shrink-0"
+              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+            />
+          ) : (
+            <Globe className="h-3 w-3 shrink-0 text-zinc-500" />
+          )}
+          <span className="truncate">{tab.title}</span>
+          <button
+            onClick={(e) => { e.stopPropagation(); onClose?.(tab.id); }}
+            className="ml-auto rounded p-0.5 opacity-0 group-hover/tab:opacity-100 hover:bg-white/[0.08] transition-all shrink-0"
+          >
+            <X className="h-2.5 w-2.5" />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function StatusPill({ status }: { status: SenkoStatus }) {
@@ -87,6 +128,9 @@ export function ChatArea({
   tokenCount = 0,
   wasCutOff = false,
   status,
+  tabs = [],
+  onCloseTab,
+  onSwitchTab,
 }: ChatAreaProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isAtBottom = useRef(true);
@@ -125,6 +169,22 @@ export function ChatArea({
       )}
 
       <div className="relative flex-1 overflow-hidden">
+        {/* Fixed status pill + tab bar overlay - always visible at top during conversation */}
+        {messages.length > 0 && (
+          <div className="absolute top-0 left-0 right-0 z-10 pointer-events-none bg-gradient-to-b from-black/80 via-black/40 to-transparent pb-6">
+            <div className="flex justify-center py-2">
+              <div className="pointer-events-auto">
+                <StatusPill status={currentStatus} />
+              </div>
+            </div>
+            {tabs.length > 0 && (
+              <div className="pointer-events-auto">
+                <TabBar tabs={tabs} onClose={onCloseTab} onSwitch={onSwitchTab} />
+              </div>
+            )}
+          </div>
+        )}
+
         <div
           ref={scrollRef}
           onScroll={handleScroll}
@@ -165,12 +225,6 @@ export function ChatArea({
             </div>
           ) : (
             <div className="mx-auto max-w-4xl px-2 py-3 sm:px-0 sm:py-4">
-              {/* Dynamic status pill - shown during conversation */}
-              {status && (
-                <div className="flex justify-center mb-2">
-                  <StatusPill status={status} />
-                </div>
-              )}
               {messages.map((message) => (
                 <ChatMessage
                   key={message.id}

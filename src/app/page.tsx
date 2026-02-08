@@ -8,7 +8,7 @@ import { useBrowserInfo } from "@/hooks/use-browser-info";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useLocation } from "@/hooks/use-location";
 import { useMemory, parseMemoryTags } from "@/hooks/use-memory";
-import type { Message, Conversation, AppSettings, BrowserInfo, LocationInfo, WebSource } from "@/types/chat";
+import type { Message, Conversation, AppSettings, BrowserInfo, LocationInfo, WebSource, SenkoTab } from "@/types/chat";
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
@@ -252,6 +252,20 @@ Available actions:
   [ACTION:READ_URL:url] - Fetch and read a webpage's content, links, images, and metadata. Use this to deeply read a source page, navigate into links, or scan a site for information. Returns structured data you can use to answer questions.
   [ACTION:SCREENSHOT:url] - Screenshot a website and show it in chat.
   [ACTION:EMBED:url|title] - Embed a live website in chat as an interactive iframe. Great for showing sites inline without leaving the chat.
+  [ACTION:CLOSE_TAB:N or name] - Close an open tab by number (1-indexed) or by name/URL substring. The UI shows a tab bar of all pages you've opened.
+  [ACTION:SWITCH_TAB:N or name] - Switch the active tab to a different one by number or name/URL substring.
+  [ACTION:LIST_TABS:any] - List all currently open tabs. Use when user asks "what tabs are open" or similar.
+  [ACTION:CLICK_IN_TAB:link text] - Find and click a link on the currently active tab's page. Searches the page for a link matching the text and opens it.
+
+TAB MANAGEMENT:
+- Every time you open a URL (OPEN_URL, OPEN_RESULT, EMBED), it gets tracked as an open tab in the UI.
+- The user can see their open tabs in a tab bar at the top of the chat.
+- Users can ask you to close tabs, switch between them, list them, or click links within them.
+- When the user says "close that tab" or "close youtube" -> use CLOSE_TAB
+- When the user says "go back to the first tab" or "switch to reddit" -> use SWITCH_TAB
+- When the user says "what tabs do I have open" -> use LIST_TABS
+- When the user says "click on [link text] in that page" -> use CLICK_IN_TAB
+- Tab numbers are 1-indexed (first tab = 1, second = 2, etc.)
 
 HOW TO USE ACTIONS NATURALLY:
 - Just place the action tag in your message and write a brief, natural response around it. Don't overthink it.
@@ -501,6 +515,61 @@ export default function Home() {
       );
     },
     []
+  );
+
+  const addTab = useCallback(
+    (convId: string, url: string, title?: string) => {
+      let favicon = "";
+      try { favicon = `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}&sz=16`; } catch { /* skip */ }
+      const tab: SenkoTab = {
+        id: generateId(),
+        url,
+        title: title || (() => { try { return new URL(url).hostname; } catch { return url; } })(),
+        favicon,
+        active: true,
+        openedAt: Date.now(),
+      };
+      updateConversation(convId, (conv) => ({
+        ...conv,
+        tabs: [...(conv.tabs || []).map((t) => ({ ...t, active: false })), tab],
+      }));
+      return tab.id;
+    },
+    [updateConversation]
+  );
+
+  const removeTab = useCallback(
+    (convId: string, tabId: string) => {
+      updateConversation(convId, (conv) => {
+        const filtered = (conv.tabs || []).filter((t) => t.id !== tabId);
+        // If we removed the active tab, activate the last one
+        if (filtered.length > 0 && !filtered.some((t) => t.active)) {
+          filtered[filtered.length - 1].active = true;
+        }
+        return { ...conv, tabs: filtered };
+      });
+    },
+    [updateConversation]
+  );
+
+  const switchTab = useCallback(
+    (convId: string, tabId: string) => {
+      updateConversation(convId, (conv) => ({
+        ...conv,
+        tabs: (conv.tabs || []).map((t) => ({ ...t, active: t.id === tabId })),
+      }));
+    },
+    [updateConversation]
+  );
+
+  const getTabsList = useCallback(
+    (convId: string): string => {
+      const conv = conversations.find((c) => c.id === convId);
+      const tabs = conv?.tabs || [];
+      if (tabs.length === 0) return "No tabs open.";
+      return tabs.map((t, i) => `${i + 1}. ${t.active ? "[ACTIVE] " : ""}${t.title} - ${t.url}`).join("\n");
+    },
+    [conversations]
   );
 
   const addThinkingMsg = useCallback(
@@ -780,7 +849,7 @@ export default function Home() {
       const content = contentToParse;
       console.log(`%c[processActions] \u{1F4DD} Message content length: ${content.length}`, "color: #cc88ff", { fromParam: !!finalContent, preview: content.slice(0, 80) });
       // Match both [ACTION:TYPE:value] and malformed [TYPE:value] patterns
-      const actionRegex = /\[ACTION:(OPEN_URL|SEARCH|IMAGE|OPEN_RESULT|OPEN_APP|SCREENSHOT|EMBED|SCRAPE_IMAGES|READ_URL):([^\]]+)\]/g;
+      const actionRegex = /\[ACTION:(OPEN_URL|SEARCH|IMAGE|OPEN_RESULT|OPEN_APP|SCREENSHOT|EMBED|SCRAPE_IMAGES|READ_URL|CLOSE_TAB|SWITCH_TAB|LIST_TABS|CLICK_IN_TAB):([^\]]+)\]/g;
       let match;
       const actions: { type: string; value: string }[] = [];
       while ((match = actionRegex.exec(content)) !== null) {
@@ -834,14 +903,16 @@ export default function Home() {
         .replace(/https?:\/\/(?:www\.)?bing\.com\/\S*/gi, "")
         .replace(/\n{3,}/g, "\n\n")
         .trim();
-      // For ANY action, aggressively strip filler -- the action IS the response, not the text around it
-      if (cleanContent.length > 150) {
+      // Only aggressively strip filler for navigation actions (not SEARCH -- search needs the conversational text while results load)
+      const hasNavAction = actions.some((a) => ["OPEN_URL", "EMBED", "OPEN_RESULT", "OPEN_APP", "SCREENSHOT"].includes(a.type));
+      const hasOnlySearch = actions.every((a) => ["SEARCH", "SCRAPE_IMAGES", "IMAGE", "READ_URL", "CLOSE_TAB", "SWITCH_TAB", "LIST_TABS", "CLICK_IN_TAB"].includes(a.type));
+      if (hasNavAction && !hasOnlySearch && cleanContent.length > 150) {
         // Keep only the first meaningful sentence
         const firstLine = cleanContent.split(/\n/)[0].trim();
         cleanContent = firstLine.length > 10 ? firstLine : cleanContent.slice(0, 120).trim();
       }
-      // If the remaining text is just filler about opening/searching, clear it entirely
-      if (/^(got it|okay|sure|let me|i('ll| will)|opening|searching|looking|here)/i.test(cleanContent) && cleanContent.length < 200) {
+      // If the remaining text is just filler about opening (not searching), clear it entirely
+      if (hasNavAction && /^(got it|okay|sure|let me|i('ll| will)|opening|here)/i.test(cleanContent) && cleanContent.length < 200) {
         cleanContent = "";
       }
       const images: { url: string; alt?: string }[] = [];
@@ -869,6 +940,7 @@ export default function Home() {
           try {
             window.open(url, "_blank", "noopener,noreferrer");
             console.log(`%c[BROWSE] ✅ Window opened`, "color: #00ff88", url);
+            addTab(convId, url);
             if (!url.includes("google.com/search") && !url.includes("youtube.com/results") && !ytId) {
               console.log(`%c[BROWSE] 📄 Queuing page for scrape`, "color: #88ccff", url);
               urlsToScrape.push(url);
@@ -895,6 +967,7 @@ export default function Home() {
           if (results[idx]) {
             try {
               window.open(results[idx].url, "_blank", "noopener,noreferrer");
+              addTab(convId, results[idx].url, results[idx].title);
               urlsToScrape.push(results[idx].url);
               console.log(`%c[BROWSE] ✅ Opened result`, "color: #00ff88", results[idx].url);
             } catch (e) { console.error(`%c[BROWSE] ❌ Failed`, "color: #ff4444", e); }
@@ -1064,6 +1137,86 @@ export default function Home() {
             videos.push({ url: embedUrl, platform: "youtube", embedId: ytId, title: embedTitle });
           } else {
             webEmbeds.push({ url: embedUrl, title: embedTitle });
+          }
+          addTab(convId, embedUrl, embedTitle);
+        }
+        if (action.type === "CLOSE_TAB") {
+          const val = action.value.trim();
+          const conv = conversations.find((c) => c.id === convId);
+          const tabs = conv?.tabs || [];
+          // Match by number (1-indexed) or by URL/title substring
+          const idx = parseInt(val, 10);
+          let tabToClose: SenkoTab | undefined;
+          if (!isNaN(idx) && idx >= 1 && idx <= tabs.length) {
+            tabToClose = tabs[idx - 1];
+          } else {
+            tabToClose = tabs.find((t) => t.url.includes(val) || t.title.toLowerCase().includes(val.toLowerCase()));
+          }
+          if (tabToClose) {
+            removeTab(convId, tabToClose.id);
+            console.log(`%c[TAB] ❌ Closed tab`, "color: #ff6666", tabToClose.title);
+          }
+        }
+        if (action.type === "SWITCH_TAB") {
+          const val = action.value.trim();
+          const conv = conversations.find((c) => c.id === convId);
+          const tabs = conv?.tabs || [];
+          const idx = parseInt(val, 10);
+          let tabToSwitch: SenkoTab | undefined;
+          if (!isNaN(idx) && idx >= 1 && idx <= tabs.length) {
+            tabToSwitch = tabs[idx - 1];
+          } else {
+            tabToSwitch = tabs.find((t) => t.url.includes(val) || t.title.toLowerCase().includes(val.toLowerCase()));
+          }
+          if (tabToSwitch) {
+            switchTab(convId, tabToSwitch.id);
+            console.log(`%c[TAB] 🔄 Switched to tab`, "color: #00ccff", tabToSwitch.title);
+          }
+        }
+        if (action.type === "LIST_TABS") {
+          const tabsList = getTabsList(convId);
+          console.log(`%c[TAB] 📋 Listing tabs`, "color: #88ccff", tabsList);
+          // Append tab list to the message content
+          updateConversation(convId, (conv) => ({
+            ...conv,
+            messages: conv.messages.map((m) =>
+              m.id === messageId ? { ...m, content: (m.content ? m.content + "\n\n" : "") + "**Open Tabs:**\n" + tabsList } : m
+            ),
+          }));
+        }
+        if (action.type === "CLICK_IN_TAB") {
+          // Read the active tab's page content and find the link to click
+          const conv = conversations.find((c) => c.id === convId);
+          const activeTab = (conv?.tabs || []).find((t) => t.active);
+          if (activeTab) {
+            const linkText = action.value.trim();
+            console.log(`%c[TAB] 🖱️ Clicking link in tab`, "color: #ff9900", { tab: activeTab.title, link: linkText });
+            (async () => {
+              const thinkId = addThinkingMsg(convId, `finding "${linkText}" on ${activeTab.title}...`);
+              try {
+                const res = await fetch(`/api/url?url=${encodeURIComponent(activeTab.url)}&maxContent=8000`);
+                const data = await res.json();
+                removeThinkingMsg(convId, thinkId);
+                const links: { url: string; text: string }[] = data.links || [];
+                // Find the best matching link
+                const match = links.find((l) => l.text.toLowerCase().includes(linkText.toLowerCase())) ||
+                  links.find((l) => l.url.toLowerCase().includes(linkText.toLowerCase()));
+                if (match) {
+                  window.open(match.url, "_blank", "noopener,noreferrer");
+                  addTab(convId, match.url, match.text || linkText);
+                  console.log(`%c[TAB] ✅ Clicked link`, "color: #00ff88", match);
+                } else {
+                  updateConversation(convId, (conv2) => ({
+                    ...conv2,
+                    messages: conv2.messages.map((m) =>
+                      m.id === messageId ? { ...m, content: (m.content ? m.content + "\n\n" : "") + `*couldn't find a link matching "${linkText}" on that page ;w;*` } : m
+                    ),
+                  }));
+                }
+              } catch {
+                removeThinkingMsg(convId, thinkId);
+              }
+            })();
           }
         }
       }
@@ -1818,6 +1971,14 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
     window.open(url, "_blank", "noopener,noreferrer");
   }, []);
 
+  const handleCloseTab = useCallback((tabId: string) => {
+    if (activeConversationId) removeTab(activeConversationId, tabId);
+  }, [activeConversationId, removeTab]);
+
+  const handleSwitchTab = useCallback((tabId: string) => {
+    if (activeConversationId) switchTab(activeConversationId, tabId);
+  }, [activeConversationId, switchTab]);
+
   const handleNewConversation = useCallback(() => {
     if (abortRef.current) {
       abortRef.current.abort();
@@ -1938,6 +2099,9 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
               tokenCount={estimateTokens(activeConversation.messages)}
               wasCutOff={wasCutOff}
               status={activeConversation.status}
+              tabs={activeConversation.tabs || []}
+              onCloseTab={handleCloseTab}
+              onSwitchTab={handleSwitchTab}
             />
           ) : (
             <div className="flex h-full items-center justify-center">
