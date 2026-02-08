@@ -12,6 +12,7 @@
     "@types/leaflet": "^1.9.21",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "duck-duck-scrape": "^2.2.7",
     "leaflet": "^1.9.4",
     "lucide-react": "^0.563.0",
     "next": "16.1.6",
