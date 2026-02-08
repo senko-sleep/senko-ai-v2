@@ -63,7 +63,7 @@ export function ImageCarousel({ images }: ImageCarouselProps) {
             className={cn(
               "flex-shrink-0 snap-center overflow-hidden rounded-lg border transition-all",
               i === current
-                ? "border-[#a78bfa]/30"
+                ? "border-[#00d4ff]/30"
                 : "border-white/[0.06] hover:border-white/[0.12]"
             )}
             onClick={(e) => { e.preventDefault(); scrollTo(i); }}
@@ -109,7 +109,7 @@ export function ImageCarousel({ images }: ImageCarouselProps) {
               className={cn(
                 "h-1 rounded-full transition-all",
                 i === current
-                  ? "w-3 bg-[#a78bfa]/60"
+                  ? "w-3 bg-[#00d4ff]/60"
                   : "w-1 bg-white/10 hover:bg-white/20"
               )}
             />

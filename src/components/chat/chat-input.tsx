@@ -50,37 +50,10 @@ export function ChatInput({
   };
 
   return (
-    <div className="border-t border-white/[0.06] bg-[rgba(10,10,15,0.6)] px-4 py-3">
-      <div className="glass-panel depth-shadow mx-auto flex max-w-4xl items-end gap-2 rounded-2xl p-2">
-        <TooltipProvider delayDuration={300}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="mb-0.5 h-8 w-8 shrink-0 rounded-lg p-0 text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
-              >
-                <Paperclip className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="top" className="glass-panel-solid text-xs">
-              Attach file
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-
-        <Textarea
-          ref={textareaRef}
-          value={content}
-          onChange={handleInput}
-          onKeyDown={handleKeyDown}
-          placeholder="Message Senko AI..."
-          disabled={disabled}
-          className="min-h-[36px] max-h-[200px] flex-1 resize-none border-0 bg-transparent px-2 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus-visible:ring-0 focus-visible:ring-offset-0"
-          rows={1}
-        />
-
-        <div className="flex items-end gap-1">
+    <div className="border-t border-white/[0.06] bg-[rgba(0,0,0,0.7)] px-2 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-4 sm:py-3">
+      <div className="glass-panel depth-shadow mx-auto flex max-w-4xl items-end gap-1.5 rounded-2xl p-1.5 sm:gap-2 sm:p-2">
+        {/* Attach button - hidden on mobile */}
+        <div className="hidden sm:block">
           <TooltipProvider delayDuration={300}>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -89,14 +62,47 @@ export function ChatInput({
                   variant="ghost"
                   className="mb-0.5 h-8 w-8 shrink-0 rounded-lg p-0 text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
                 >
-                  <Mic className="h-4 w-4" />
+                  <Paperclip className="h-4 w-4" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="top" className="glass-panel-solid text-xs">
-                Voice input
+                Attach file
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
+        </div>
+
+        <Textarea
+          ref={textareaRef}
+          value={content}
+          onChange={handleInput}
+          onKeyDown={handleKeyDown}
+          placeholder="Message Senko AI..."
+          disabled={disabled}
+          className="min-h-[36px] max-h-[200px] flex-1 resize-none border-0 bg-transparent px-2 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus-visible:ring-0 focus-visible:ring-offset-0 sm:text-sm"
+          rows={1}
+        />
+
+        <div className="flex items-end gap-1">
+          {/* Mic button - hidden on mobile */}
+          <div className="hidden sm:block">
+            <TooltipProvider delayDuration={300}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="mb-0.5 h-8 w-8 shrink-0 rounded-lg p-0 text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
+                  >
+                    <Mic className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="glass-panel-solid text-xs">
+                  Voice input
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </div>
 
           <TooltipProvider delayDuration={300}>
             <Tooltip>
@@ -105,7 +111,7 @@ export function ChatInput({
                   size="sm"
                   onClick={handleSend}
                   disabled={!content.trim() || disabled}
-                  className="mb-0.5 h-8 w-8 shrink-0 rounded-lg bg-[#a78bfa] p-0 text-white hover:bg-[#8b5cf6] disabled:opacity-30"
+                  className="mb-0.5 h-9 w-9 shrink-0 rounded-xl bg-[#00d4ff] p-0 text-black hover:bg-[#00b8d9] disabled:opacity-30 sm:h-8 sm:w-8 sm:rounded-lg"
                 >
                   <Send className="h-4 w-4" />
                 </Button>
@@ -118,7 +124,7 @@ export function ChatInput({
         </div>
       </div>
 
-      <p className="mt-1.5 text-center text-[10px] text-zinc-600">
+      <p className="mt-1 text-center text-[10px] text-zinc-600 hidden sm:block">
         Senko AI is an agentic assistant. Verify important information.
       </p>
     </div>

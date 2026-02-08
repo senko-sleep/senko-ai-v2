@@ -2,6 +2,7 @@ export interface WebSource {
   url: string;
   title: string;
   favicon?: string;
+  snippet?: string;
 }
 
 export interface MapEmbed {

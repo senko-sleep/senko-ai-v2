@@ -51,7 +51,7 @@ function CodeBlock({
         </button>
       </div>
       <pre className="scrollbar-thin overflow-x-auto bg-[rgba(0,0,0,0.3)] p-3">
-        <code className="text-[13px] leading-relaxed text-zinc-300">{code}</code>
+        <code className="text-[13px] leading-relaxed text-[#e0e0e0]">{code}</code>
       </pre>
     </div>
   );
@@ -67,7 +67,7 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
           if (isInline) {
             return (
               <code
-                className="rounded bg-white/[0.08] px-1.5 py-0.5 text-[13px] text-[#c4b5fd]"
+                className="rounded bg-[#ff9500]/[0.10] px-1.5 py-0.5 text-[13px] text-[#ffb347] font-mono"
                 {...props}
               >
                 {children}
@@ -80,43 +80,43 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
           return <>{children}</>;
         },
         p({ children }) {
-          return <p className="mb-2 last:mb-0 leading-relaxed">{children}</p>;
+          return <p className="mb-2 last:mb-0 leading-relaxed text-white/95">{children}</p>;
         },
         ul({ children }) {
-          return <ul className="mb-2 ml-4 list-disc space-y-1">{children}</ul>;
+          return <ul className="mb-2 ml-4 list-disc space-y-1 marker:text-[#00d4ff]/60">{children}</ul>;
         },
         ol({ children }) {
           return (
-            <ol className="mb-2 ml-4 list-decimal space-y-1">{children}</ol>
+            <ol className="mb-2 ml-4 list-decimal space-y-1 marker:text-[#00d4ff]/60">{children}</ol>
           );
         },
         li({ children }) {
-          return <li className="leading-relaxed">{children}</li>;
+          return <li className="leading-relaxed text-white/90">{children}</li>;
         },
         h1({ children }) {
           return (
-            <h1 className="mb-2 mt-4 text-lg font-bold text-zinc-100 first:mt-0">
+            <h1 className="mb-2 mt-4 text-lg font-bold text-[#00d4ff] first:mt-0">
               {children}
             </h1>
           );
         },
         h2({ children }) {
           return (
-            <h2 className="mb-2 mt-3 text-base font-semibold text-zinc-100 first:mt-0">
+            <h2 className="mb-2 mt-3 text-base font-semibold text-[#00d4ff] first:mt-0">
               {children}
             </h2>
           );
         },
         h3({ children }) {
           return (
-            <h3 className="mb-1.5 mt-2.5 text-sm font-semibold text-zinc-200 first:mt-0">
+            <h3 className="mb-1.5 mt-2.5 text-sm font-semibold text-[#00ff88] first:mt-0">
               {children}
             </h3>
           );
         },
         strong({ children }) {
           return (
-            <strong className="font-semibold text-zinc-100">{children}</strong>
+            <strong className="font-semibold text-white">{children}</strong>
           );
         },
         em({ children }) {
@@ -124,7 +124,7 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
         },
         blockquote({ children }) {
           return (
-            <blockquote className="my-2 border-l-2 border-[#a78bfa]/40 pl-3 text-zinc-400">
+            <blockquote className="my-2 border-l-2 border-[#00d4ff]/50 pl-3 text-zinc-300 bg-[#00d4ff]/[0.04] rounded-r-lg py-1 pr-2">
               {children}
             </blockquote>
           );
@@ -135,15 +135,19 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
               href={href}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-0.5 text-[#a78bfa] underline decoration-[#a78bfa]/30 underline-offset-2 transition-colors hover:text-[#c4b5fd] hover:decoration-[#a78bfa]/60"
+              className="inline-flex items-center gap-0.5 text-[#00d4ff] underline decoration-[#00d4ff]/30 underline-offset-2 transition-colors hover:text-[#66e5ff] hover:decoration-[#00d4ff]/60"
             >
               {children}
               <ExternalLink className="inline h-3 w-3" />
             </a>
           );
         },
+        img() {
+          // Block all raw image output from AI - images are shown via the ImageCarousel UI only
+          return null;
+        },
         hr() {
-          return <hr className="my-3 border-white/[0.06]" />;
+          return <hr className="my-3 border-white/[0.08]" />;
         },
         table({ children }) {
           return (
@@ -168,7 +172,7 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
         },
         td({ children }) {
           return (
-            <td className="px-3 py-1.5 text-zinc-300">{children}</td>
+            <td className="px-3 py-1.5 text-white/90">{children}</td>
           );
         },
         tr({ children }) {

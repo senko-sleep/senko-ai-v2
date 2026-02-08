@@ -54,7 +54,7 @@ export function HistoryPanel({
         <Button
           size="sm"
           onClick={onNewConversation}
-          className="h-7 gap-1.5 rounded-lg bg-[#a78bfa]/15 px-2.5 text-xs text-[#c4b5fd] hover:bg-[#a78bfa]/25"
+          className="h-7 gap-1.5 rounded-lg bg-[#00d4ff]/15 px-2.5 text-xs text-[#00d4ff] hover:bg-[#00d4ff]/25"
         >
           <Plus className="h-3 w-3" />
           New
@@ -90,7 +90,7 @@ export function HistoryPanel({
                 className={cn(
                   "group flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors",
                   activeConversationId === conversation.id
-                    ? "bg-[#a78bfa]/10 text-zinc-200"
+                    ? "bg-[#00d4ff]/10 text-white"
                     : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-300"
                 )}
               >

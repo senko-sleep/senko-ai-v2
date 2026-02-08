@@ -71,8 +71,8 @@ export async function GET(req: NextRequest) {
       .replace(/\n{3,}/g, "\n\n")
       .trim();
 
-    // Truncate to ~3000 chars to keep context manageable
-    const truncated = text.length > 3000 ? text.slice(0, 3000) + "..." : text;
+    // Truncate to ~5000 chars to keep context manageable while allowing deeper research
+    const truncated = text.length > 5000 ? text.slice(0, 5000) + "..." : text;
 
     // Extract images from the page
     const imgRegex = /<img[^>]+src=["']([^"']+)["'][^>]*/gi;

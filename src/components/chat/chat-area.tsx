@@ -60,9 +60,9 @@ export function ChatArea({
 
   return (
     <div className="flex h-full flex-col">
-      {/* Token counter bar */}
+      {/* Token counter bar - hidden on mobile */}
       {tokenCount > 0 && (
-        <div className="flex items-center justify-end border-b border-white/[0.04] px-4 py-1">
+        <div className="hidden sm:flex items-center justify-end border-b border-white/[0.04] px-4 py-1">
           <span className="text-[10px] text-zinc-600">
             Context: {tokenCount.toLocaleString()} tokens
           </span>
@@ -76,20 +76,20 @@ export function ChatArea({
           className="scrollbar-thin h-full overflow-y-auto"
         >
           {messages.length === 0 ? (
-            <div className="flex h-full flex-col items-center justify-center gap-4 px-4">
-              <div className="glass-panel depth-shadow flex h-16 w-16 items-center justify-center rounded-2xl">
-                <Bot className="h-8 w-8 text-[#a78bfa]" />
+            <div className="flex h-full flex-col items-center justify-center gap-3 px-4 sm:gap-4">
+              <div className="glass-panel depth-shadow flex h-14 w-14 items-center justify-center rounded-2xl sm:h-16 sm:w-16">
+                <Bot className="h-7 w-7 text-[#00d4ff] sm:h-8 sm:w-8" />
               </div>
               <div className="text-center">
-                <h2 className="text-lg font-semibold text-zinc-200">
+                <h2 className="text-base font-semibold text-white sm:text-lg">
                   Senko AI
                 </h2>
-                <p className="mt-1 max-w-sm text-sm text-zinc-500">
+                <p className="mt-1 max-w-sm text-xs text-zinc-500 sm:text-sm">
                   Agentic AI with browser integration, web search,
                   and real-time capabilities.
                 </p>
               </div>
-              <div className="mt-4 grid grid-cols-2 gap-2">
+              <div className="mt-2 grid w-full max-w-md grid-cols-1 gap-2 sm:mt-4 sm:grid-cols-2">
                 {[
                   "What can you help me with?",
                   "Search the web for latest news",
@@ -99,7 +99,7 @@ export function ChatArea({
                   <button
                     key={suggestion}
                     onClick={() => onSendMessage(suggestion)}
-                    className="glass-panel rounded-xl px-3 py-2.5 text-left text-xs text-zinc-400 transition-colors hover:bg-white/[0.06] hover:text-zinc-300"
+                    className="glass-panel rounded-xl px-3 py-2.5 text-left text-xs text-zinc-400 transition-colors hover:bg-white/[0.06] hover:text-zinc-300 active:bg-white/[0.08]"
                   >
                     {suggestion}
                   </button>
@@ -107,7 +107,7 @@ export function ChatArea({
               </div>
             </div>
           ) : (
-            <div className="mx-auto max-w-4xl py-4">
+            <div className="mx-auto max-w-4xl px-2 py-3 sm:px-0 sm:py-4">
               {messages.map((message) => (
                 <ChatMessage
                   key={message.id}
@@ -145,7 +145,7 @@ export function ChatArea({
             <Button
               size="sm"
               onClick={onStopGeneration}
-              className="h-7 gap-1.5 rounded-lg bg-red-500/10 px-3 text-xs text-red-400 hover:bg-red-500/20 border border-red-500/20"
+              className="h-7 gap-1.5 rounded-lg bg-red-500/10 px-3 text-xs text-red-400 hover:bg-red-500/20 border border-red-500/25"
             >
               <Square className="h-3 w-3" />
               Stop generating
@@ -155,7 +155,7 @@ export function ChatArea({
             <Button
               size="sm"
               onClick={onContinueGeneration}
-              className="h-7 gap-1.5 rounded-lg bg-[#a78bfa]/10 px-3 text-xs text-[#c4b5fd] hover:bg-[#a78bfa]/20 border border-[#a78bfa]/20"
+              className="h-7 gap-1.5 rounded-lg bg-[#00d4ff]/10 px-3 text-xs text-[#00d4ff] hover:bg-[#00d4ff]/20 border border-[#00d4ff]/20"
             >
               Continue generating
             </Button>

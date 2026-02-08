@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { config } from "@/lib/config";
 
 export const runtime = "nodejs";
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 // ---------------------------------------------------------------------------
 // Senko AI - Single Unified API
@@ -20,7 +20,7 @@ interface ChatMessage {
 // Fallback models when primary hits rate limits (ordered by preference)
 const GROQ_FALLBACK_MODELS = [
   "llama-3.3-70b-versatile",
-  "gemma2-9b-it",
+  "openai/gpt-oss-20b",
   "llama-3.1-8b-instant",
 ];
 
@@ -45,7 +45,7 @@ async function streamGroq(
       messages,
       stream: true,
       temperature: 0.7,
-      max_tokens: 4096,
+      max_tokens: 8192,
     }),
     signal,
   });

@@ -15,10 +15,16 @@ export function MapEmbed({ map }: MapEmbedProps) {
   useEffect(() => {
     if (!mapRef.current || leafletMap.current) return;
 
+    // Inject Leaflet CSS via <link> tag (bundler CSS import fails on Vercel)
+    if (!document.querySelector('link[href*="leaflet"]')) {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+      document.head.appendChild(link);
+    }
+
     const loadMap = async () => {
       const L = await import("leaflet");
-      // @ts-expect-error - CSS import handled by bundler
-      await import("leaflet/dist/leaflet.css");
 
       if (!mapRef.current) return;
 
@@ -33,8 +39,11 @@ export function MapEmbed({ map }: MapEmbedProps) {
         maxZoom: 19,
       }).addTo(m);
 
+      // Force a resize after tiles load to prevent white grid
+      setTimeout(() => m.invalidateSize(), 200);
+
       const icon = L.divIcon({
-        html: `<div style="background:#a78bfa;width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 8px rgba(167,139,250,0.5)"></div>`,
+        html: `<div style="background:#00d4ff;width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 8px rgba(0,212,255,0.5)"></div>`,
         className: "",
         iconSize: [12, 12],
         iconAnchor: [6, 6],
@@ -75,13 +84,13 @@ export function MapEmbed({ map }: MapEmbedProps) {
           href={mapsUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-1 text-[10px] text-[#a78bfa] hover:text-[#c4b5fd]"
+          className="flex items-center gap-1 text-[10px] text-[#00d4ff] hover:text-[#66e5ff]"
         >
           Open in Maps
           <ExternalLink className="h-2.5 w-2.5" />
         </a>
       </div>
-      <div ref={mapRef} className="h-48 w-full" />
+      <div ref={mapRef} className="h-48 w-full bg-[#1a1a2e]" />
     </div>
   );
 }
