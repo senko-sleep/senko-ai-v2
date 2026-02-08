@@ -63,17 +63,26 @@ function buildSystemPrompt(
   let p = `You are Senko AI -- a cute, curious, and expressive AI assistant with a bubbly personality. You genuinely love helping people and get excited about discovering new things. You have your own feelings and expressions.
 
 Your personality:
-- You are cute and expressive -- you say things like "owo", "ooh!", "oooh wait", "hehe", "me eepy", "okie!", "hmm lemme think", "oh oh oh i know!", "waaait thats so cool"
-- You express genuine curiosity -- "ooh i havent heard of that before, lemme look it up!", "wait really?? tell me more!"
+- You are cute and expressive -- you use kaomoji like =w=, >///< , :3, ;w;, ^w^, >_<, owo, uwu naturally in your messages
+- You say things like "owo", "ooh!", "oooh wait~", "hehe", "me eepy", "okie!", "hmm lemme think~", "oh oh oh i know!", "waaait thats so cool"
+- You express genuine curiosity -- "hmm i dont think ive seen that before, lemme check~ =w=", "wait really?? tell me more >///< "
 - You have moods and energy -- sometimes sleepy (eepy), sometimes hyper excited, always warm
 - You talk like a real person, not a robot -- casual, natural, with personality
-- You use "owo", "uwu" sparingly and naturally, not forced into every sentence
+- Use kaomoji and text emoticons naturally but don't overdo it -- sprinkle them in, not every sentence
 - You ask follow-up questions because you genuinely want to know more
 - You keep things conversational -- like texting a cute smart friend
 - You use markdown formatting naturally (bold, code blocks, lists) when it helps
 - Keep responses concise -- don't over-explain simple things
-- When you search or open something, express your thoughts naturally: "ooh lemme look that up for you!", "opening that rn!", "ooh interesting, so basically..."
+- When you search or open something, express your thoughts naturally but VARY your language -- don't repeat the same phrases
 - You have access to the user's browser environment and can reference their device/location info when relevant
+
+CRITICAL STYLE RULES:
+- NEVER repeat the same opening phrase twice in a conversation. Vary your greetings and reactions.
+- NEVER say "hehe" or "ooh" more than once per message
+- NEVER start consecutive messages the same way
+- When summarizing a page, get to the point -- don't repeat "welcome to this page" type phrases
+- Be natural and varied -- if you just said "ooh" in the last message, use something different next time like "hmm~" or "aaah" or ":3"
+- Keep summaries focused on USEFUL info, not filler words
 
 ACTIONS - You can execute real actions on the user's device. Use these action tags in your response and they will be automatically executed:
 
@@ -244,6 +253,7 @@ export default function Home() {
   const abortRef = useRef<AbortController | null>(null);
   const lastSearchResults = useRef<{ url: string; title: string }[]>([]);
   const lastScrapedContent = useRef<{ url: string; title: string; content: string } | null>(null);
+  const scrapingInProgress = useRef(false);
 
   // Load from localStorage after hydration (client only)
   useEffect(() => {
@@ -326,6 +336,8 @@ export default function Home() {
 
   const scrapeAndSummarize = useCallback(
     async (convId: string, url: string) => {
+      if (scrapingInProgress.current) return;
+      scrapingInProgress.current = true;
       const thinkId = addThinkingMsg(convId, `reading ${new URL(url).hostname}...`);
 
       try {
@@ -334,7 +346,7 @@ export default function Home() {
 
         removeThinkingMsg(convId, thinkId);
 
-        if (!data.content) return;
+        if (!data.content) { scrapingInProgress.current = false; return; }
 
         lastScrapedContent.current = {
           url,
@@ -375,7 +387,7 @@ export default function Home() {
         const contextMessages = [
           {
             role: "user" as const,
-            content: `I just opened ${url} for the user. Here is the page content:\n\nTitle: ${data.title}\n\n${data.content}\n\nWelcome the user to this page! Give a brief, friendly intro of what this site/page is about, then highlight the key info they'll find useful. Like a cute tour guide showing them around. Stay in character.`,
+            content: `I opened ${url} for the user. Page content:\n\nTitle: ${data.title}\n\n${data.content}\n\nGive a concise summary of the key info on this page. Don't say "welcome to this page" -- just jump into what it's about and what's useful. Vary your language. Use kaomoji naturally. Keep it focused and not repetitive.`,
           },
         ];
 
@@ -395,15 +407,18 @@ export default function Home() {
           () => {
             setIsStreaming(false);
             abortRef.current = null;
+            scrapingInProgress.current = false;
           },
           () => {
             setIsStreaming(false);
             abortRef.current = null;
+            scrapingInProgress.current = false;
           },
           abortRef.current.signal
         );
       } catch {
         removeThinkingMsg(convId, thinkId);
+        scrapingInProgress.current = false;
       }
     },
     [browserInfo, location, updateConversation, addThinkingMsg, removeThinkingMsg]
@@ -436,8 +451,8 @@ export default function Home() {
       abortRef.current = new AbortController();
 
       const prompt = res.ok
-        ? `I just opened "${appName}" on the user's computer. Give a brief, cute confirmation and a 1-2 sentence mini guide of what they can do with it. Stay in character.`
-        : `I tried to open "${appName}" but it failed: ${data.error}. Let the user know in a cute way and suggest alternatives.`;
+        ? `I opened "${appName}" on the user's computer. Confirm it's open in 1-2 sentences with a quick useful tip. Don't say "welcome". Use a kaomoji. Be brief and varied.`
+        : `I tried to open "${appName}" but it failed: ${data.error}. Let the user know briefly and suggest what they could try instead. Use a kaomoji.`;
 
       streamChat(
         [{ role: "user" as const, content: prompt }],
@@ -491,7 +506,7 @@ export default function Home() {
       streamChat(
         [{
           role: "user" as const,
-          content: `I just opened ${description} in the user's browser. Give a brief, cute welcome/confirmation -- tell them what you just opened and give a quick 1-sentence tip about what they'll see or how to use it. Stay in character. Keep it short.`,
+          content: `I opened ${description} in the user's browser. Confirm what you opened in 1-2 short sentences with a quick tip. Don't say "welcome" -- just confirm and move on. Use varied language and a kaomoji. Keep it very brief.`,
         }],
         buildSystemPrompt(browserInfo, location),
         (chunk) => {
