@@ -668,54 +668,53 @@ export default function Home() {
       const thinkId = addThinkingMsg(convId, `searching "${query}"...`);
 
       try {
-        const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
-        const data = await res.json();
+        // Fetch search results and images in parallel
+        const [searchRes, imageRes] = await Promise.all([
+          fetch(`/api/search?q=${encodeURIComponent(query)}`),
+          fetch(`/api/images?q=${encodeURIComponent(query)}`),
+        ]);
+        const searchData = await searchRes.json();
+        const imageData = await imageRes.json();
 
         removeThinkingMsg(convId, thinkId);
 
-        if (data.results && data.results.length > 0) {
-          searchResultsByConv.current[convId] = data.results.map(
+        // Build sources (only set once, not append)
+        let sources: WebSource[] = [];
+        if (searchData.results && searchData.results.length > 0) {
+          searchResultsByConv.current[convId] = searchData.results.map(
             (r: { title: string; url: string }) => ({ url: r.url, title: r.title })
           );
-          const sources: WebSource[] = data.results.map(
+          sources = searchData.results.map(
             (r: { title: string; url: string }) => ({
               url: r.url,
               title: r.title,
               favicon: `https://www.google.com/s2/favicons?domain=${new URL(r.url).hostname}&sz=16`,
             })
           );
-          updateConversation(convId, (conv) => ({
-            ...conv,
-            messages: conv.messages.map((m) =>
-              m.id === messageId
-                ? { ...m, sources: [...(m.sources || []), ...sources] }
-                : m
-            ),
-          }));
-
-          // Scrape the top result for images to show in chat
-          const topUrl = data.results[0].url;
-          if (topUrl && !topUrl.includes("youtube.com") && !topUrl.includes("google.com")) {
-            try {
-              const scrapeRes = await fetch(`/api/scrape?url=${encodeURIComponent(topUrl)}`);
-              const scrapeData = await scrapeRes.json();
-              if (scrapeData.images && scrapeData.images.length > 0) {
-                const scrapedImages = scrapeData.images.map((imgUrl: string) => ({
-                  url: imgUrl,
-                  alt: scrapeData.title || query,
-                }));
-                updateConversation(convId, (conv) => ({
-                  ...conv,
-                  messages: conv.messages.map((m) =>
-                    m.id === messageId
-                      ? { ...m, images: [...(m.images || []), ...scrapedImages] }
-                      : m
-                  ),
-                }));
-              }
-            } catch { /* image scrape failed silently */ }
-          }
         }
+
+        // Build images from dedicated image search
+        let searchImages: { url: string; alt?: string }[] = [];
+        if (imageData.images && imageData.images.length > 0) {
+          searchImages = imageData.images.map((img: { url: string; alt: string }) => ({
+            url: img.url,
+            alt: img.alt || query,
+          }));
+        }
+
+        // Update message once with both sources and images (no duplicates)
+        updateConversation(convId, (conv) => ({
+          ...conv,
+          messages: conv.messages.map((m) =>
+            m.id === messageId
+              ? {
+                  ...m,
+                  sources: sources.length > 0 ? sources : m.sources,
+                  images: searchImages.length > 0 ? searchImages : m.images,
+                }
+              : m
+          ),
+        }));
       } catch {
         removeThinkingMsg(convId, thinkId);
       }
