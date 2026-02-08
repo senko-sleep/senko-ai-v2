@@ -1,62 +1,69 @@
-# Senko AI - Setup
+# Senko AI v2 - Setup Guide
 
 ## Architecture
 
-One single API endpoint handles everything: `/api/chat`
-
 ```
-Browser  -->  /api/chat  -->  Groq (primary, ~500 tok/s, instant)
-                         -->  Ollama (fallback, local, offline)
+Browser  -->  /api/chat    -->  Groq (primary, ~500 tok/s)
+                           -->  Ollama (fallback, local)
+         -->  /api/search  -->  DuckDuckGo (web search)
+         -->  /api/scrape  -->  Page content extraction
 ```
 
-No separate services to manage. No secondary components. One route does it all.
+The frontend parses AI responses for action tags (`[ACTION:OPEN_URL:...]`, `[ACTION:SEARCH:...]`, etc.) and executes them automatically.
 
-## Quick Start
+## Setup
+
+### 1. Install Dependencies
+
+```bash
+npm install
+```
+
+### 2. Configure AI Provider
+
+Create `.env.local`:
+
+```env
+# Primary - Groq cloud inference (recommended, instant speed)
+GROQ_API_KEY=gsk_your_key_here
+GROQ_MODEL=llama-3.3-70b-versatile
+
+# Fallback - Local Ollama (optional, offline mode)
+OLLAMA_URL=http://localhost:11434
+OLLAMA_MODEL=mistral
+```
+
+**Groq** (recommended): Get a free key at [console.groq.com/keys](https://console.groq.com/keys). Runs at ~500 tokens/sec.
+
+**Ollama** (optional fallback): Install from [ollama.com](https://ollama.com/download), then `ollama pull mistral`.
+
+### 3. Run
 
 ```bash
 npm run dev
 ```
 
-Open http://localhost:3000
+Open [http://localhost:3000](http://localhost:3000)
 
-## AI Providers
+## How It Works
 
-### Option A: Groq (Recommended - Fastest)
+### Action System
+The AI outputs special tags in its responses that the frontend intercepts:
 
-Groq runs LLMs on custom hardware at ~500 tokens/sec. Responses feel instant.
+| Action | Tag | Example |
+|--------|-----|---------|
+| Open URL | `[ACTION:OPEN_URL:url]` | Opens a page in the browser |
+| Web Search | `[ACTION:SEARCH:query]` | Searches DuckDuckGo, shows source pills |
+| Open Result | `[ACTION:OPEN_RESULT:N]` | Opens the Nth search result |
+| Show Image | `[ACTION:IMAGE:url\|alt]` | Displays an image inline |
 
-1. Get a free API key at https://console.groq.com/keys
-2. Add it to `.env.local`:
+### Page Scraping Flow
+1. AI opens a page via action tag
+2. Frontend scrapes the page via `/api/scrape`
+3. Ghost thinking messages show progress (*reading site...*, *summarizing...*)
+4. AI streams a summary with the source pill attached
 
-```
-GROQ_API_KEY=gsk_your_key_here
-GROQ_MODEL=llama-3.3-70b-versatile
-```
-
-3. Restart the dev server. Done.
-
-### Option B: Ollama (Offline Fallback)
-
-If Groq is unavailable or you want offline mode, Ollama runs locally.
-
-1. Install from https://ollama.com/download
-2. Pull a model: `ollama pull mistral`
-3. It auto-starts. The API will use it as fallback.
-
-### Automatic Failover
-
-- If `GROQ_API_KEY` is set: Groq first, Ollama fallback
-- If `GROQ_API_KEY` is empty: Ollama only
-- If both are down: Error message
-
-## Config (.env.local)
-
-```
-# Primary - Groq cloud inference (instant speed)
-GROQ_API_KEY=
-GROQ_MODEL=llama-3.3-70b-versatile
-
-# Fallback - Local Ollama
-OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=mistral
-```
+### Failover
+- `GROQ_API_KEY` set: Groq first, Ollama fallback
+- `GROQ_API_KEY` empty: Ollama only
+- Both down: Error message in chat
