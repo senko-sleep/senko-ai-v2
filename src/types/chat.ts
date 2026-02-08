@@ -41,6 +41,7 @@ export interface Message {
   webEmbeds?: WebEmbed[];
   tokenCount?: number;
   isThinking?: boolean;
+  error?: string;
 }
 
 export interface Conversation {

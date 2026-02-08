@@ -174,8 +174,21 @@ async function streamChat(
     });
 
     if (!res.ok) {
-      const data = await res.json().catch(() => ({ error: "Request failed" }));
-      onError(data.error || `HTTP ${res.status}`);
+      const data = await res.json().catch(() => ({}));
+      const serverMsg = data.error || "";
+      let friendly = "";
+      if (res.status === 502 || res.status === 503) {
+        friendly = serverMsg
+          ? `AI provider error (${res.status}): ${serverMsg}`
+          : `AI provider unavailable (${res.status}). The GROQ_API_KEY may not be set or the model is down.`;
+      } else if (res.status === 500) {
+        friendly = `Server error: ${serverMsg || "Internal error in chat API"}`;
+      } else if (res.status === 400) {
+        friendly = `Bad request: ${serverMsg || "Invalid message format"}`;
+      } else {
+        friendly = serverMsg || `Request failed with status ${res.status}`;
+      }
+      onError(friendly);
       return;
     }
 
@@ -858,7 +871,8 @@ export default function Home() {
               m.id === assistantId
                 ? {
                     ...m,
-                    content: m.content || `[Error: ${error}]`,
+                    content: m.content || "",
+                    error,
                   }
                 : m
             ),

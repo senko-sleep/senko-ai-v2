@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Pencil, Check, Copy, RotateCcw, Globe, ExternalLink } from "lucide-react";
+import { Pencil, Check, Copy, RotateCcw, Globe, ExternalLink, AlertTriangle } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { MarkdownRenderer } from "./markdown-renderer";
@@ -157,14 +157,29 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
   }
 
   // -- Assistant message --
+  const hasError = !!message.error;
+
   return (
     <div className="flex w-full px-4 py-0.5 justify-start group">
       <div className={cn(
-        "relative w-fit rounded-2xl rounded-bl-sm bg-white/[0.03] border border-white/[0.04]",
-        isRich || hasAttachments ? "max-w-[80%] px-3 py-2" : "max-w-[70%] px-3 py-1.5"
+        "relative w-fit rounded-2xl rounded-bl-sm",
+        hasError
+          ? "max-w-[80%] px-3 py-2 bg-red-500/[0.06] border border-red-500/[0.15]"
+          : isRich || hasAttachments ? "max-w-[80%] px-3 py-2 bg-white/[0.03] border border-white/[0.04]" : "max-w-[70%] px-3 py-1.5 bg-white/[0.03] border border-white/[0.04]"
       )}>
+        {/* Error banner */}
+        {hasError && (
+          <div className="mb-1.5 flex items-start gap-2 rounded-lg bg-red-500/[0.08] border border-red-500/[0.12] px-2.5 py-2">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-400" />
+            <div className="min-w-0">
+              <p className="text-[11px] font-medium text-red-400">Chat Error</p>
+              <p className="mt-0.5 text-[11px] leading-snug text-red-400/80 break-words">{message.error}</p>
+            </div>
+          </div>
+        )}
+
         {/* Content */}
-        {isRich ? (
+        {message.content && (isRich ? (
           <div className="text-[13px] leading-relaxed text-zinc-300">
             <MarkdownRenderer content={message.content} />
           </div>
@@ -172,7 +187,7 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
           <p className="whitespace-pre-wrap text-[13px] leading-snug text-zinc-300">
             {message.content}
           </p>
-        )}
+        ))}
 
         {/* Images (carousel for multiple) */}
         {hasImages && <ImageCarousel images={message.images!} />}

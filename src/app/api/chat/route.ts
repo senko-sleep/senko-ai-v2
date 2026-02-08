@@ -9,13 +9,6 @@ export const runtime = "nodejs";
 // Everything lives in this one file. No external lib imports.
 // ---------------------------------------------------------------------------
 
-const GROQ_API_KEY = config.groqApiKey;
-const GROQ_MODEL = config.groqModel;
-const GROQ_URL = config.groqUrl;
-
-const OLLAMA_URL = config.ollamaUrl;
-const OLLAMA_MODEL = config.ollamaModel;
-
 interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
@@ -27,14 +20,14 @@ async function streamGroq(
   messages: ChatMessage[],
   signal?: AbortSignal
 ): Promise<ReadableStream<Uint8Array>> {
-  const res = await fetch(GROQ_URL, {
+  const res = await fetch(config.groqUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${GROQ_API_KEY}`,
+      Authorization: `Bearer ${config.groqApiKey}`,
     },
     body: JSON.stringify({
-      model: GROQ_MODEL,
+      model: config.groqModel,
       messages,
       stream: true,
       temperature: 0.7,
@@ -104,7 +97,7 @@ function processGroqLine(
 
 async function isOllamaUp(): Promise<boolean> {
   try {
-    const r = await fetch(`${OLLAMA_URL}/api/tags`, {
+    const r = await fetch(`${config.ollamaUrl}/api/tags`, {
       signal: AbortSignal.timeout(800),
     });
     return r.ok;
@@ -117,10 +110,10 @@ async function streamOllama(
   messages: ChatMessage[],
   signal?: AbortSignal
 ): Promise<ReadableStream<Uint8Array>> {
-  const res = await fetch(`${OLLAMA_URL}/api/chat`, {
+  const res = await fetch(`${config.ollamaUrl}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: OLLAMA_MODEL, messages, stream: true }),
+    body: JSON.stringify({ model: config.ollamaModel, messages, stream: true }),
     signal,
   });
 
@@ -208,7 +201,7 @@ export async function POST(req: NextRequest) {
     let provider: string;
 
     // Strategy: Groq first (fastest), Ollama fallback (offline-capable)
-    if (GROQ_API_KEY) {
+    if (config.groqApiKey) {
       try {
         stream = await streamGroq(chatMessages);
         provider = "groq";
