@@ -160,7 +160,8 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
   const hasError = !!message.error;
 
   return (
-    <div className="flex w-full px-2 py-1 justify-start group sm:px-4">
+    <div className="flex flex-col w-full px-2 py-1 items-start group sm:px-4">
+      {/* Message bubble */}
       <div className={cn(
         "relative w-fit rounded-2xl rounded-bl-md overflow-hidden",
         hasError
@@ -196,13 +197,6 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
           ))}
         </div>
 
-        {/* Images (carousel for multiple) */}
-        {hasImages && (
-          <div className="px-3 pb-3">
-            <ImageCarousel images={message.images!} />
-          </div>
-        )}
-
         {/* Videos */}
         {hasVideos && (
           <div className="px-3 pb-3 space-y-2">
@@ -221,7 +215,7 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
           </div>
         )}
 
-        {/* Sources */}
+        {/* Sources - pill UI */}
         {hasSources && (
           <div className="border-t border-white/[0.06] px-3 py-2 sm:px-4 sm:py-2.5">
             <div className="flex items-center gap-1.5 mb-1.5 sm:mb-2">
@@ -237,7 +231,7 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={(e) => { if (onOpenLink) { e.preventDefault(); onOpenLink(source.url); } }}
-                  className="group/source flex items-center gap-1.5 rounded-lg bg-white/[0.04] px-2.5 py-1.5 text-[11px] text-zinc-300 transition-all hover:bg-[#00d4ff]/[0.08] hover:text-white border border-white/[0.06] hover:border-[#00d4ff]/25 max-w-[180px] sm:max-w-[200px] shrink-0 sm:shrink active:bg-[#00d4ff]/[0.12]"
+                  className="group/source flex items-center gap-1.5 rounded-full bg-white/[0.04] px-2.5 py-1 text-[11px] text-zinc-300 transition-all hover:bg-[#00d4ff]/[0.08] hover:text-white border border-white/[0.06] hover:border-[#00d4ff]/25 max-w-[200px] sm:max-w-[220px] shrink-0 sm:shrink active:bg-[#00d4ff]/[0.12]"
                   title={source.snippet || source.title}
                 >
                   {(source.favicon || getFaviconUrl(source.url)) ? (
@@ -278,6 +272,13 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
           )}
         </div>
       </div>
+
+      {/* Images - displayed OUTSIDE the message bubble as full-width attachments */}
+      {hasImages && (
+        <div className="w-full max-w-[95%] sm:max-w-[85%] mt-1.5">
+          <ImageCarousel images={message.images!} />
+        </div>
+      )}
     </div>
   );
 }

@@ -21,13 +21,13 @@ export function ImageCarousel({ images }: ImageCarouselProps) {
         href={images[0].url}
         target="_blank"
         rel="noopener noreferrer"
-        className="mt-2 block overflow-hidden rounded-lg border border-white/[0.06] hover:border-white/[0.12] transition-colors"
+        className="mt-1 block overflow-hidden rounded-xl border border-white/[0.06] hover:border-white/[0.12] transition-colors"
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={images[0].url}
           alt={images[0].alt || ""}
-          className="h-auto max-h-56 w-full object-cover"
+          className="h-auto max-h-[400px] w-full object-cover"
           loading="lazy"
           onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
         />
@@ -47,11 +47,18 @@ export function ImageCarousel({ images }: ImageCarouselProps) {
   };
 
   return (
-    <div className="mt-2 relative group/carousel">
-      {/* Slider */}
+    <div className="mt-1 relative group/carousel">
+      {/* Grid for small sets, scrollable for large sets */}
       <div
         ref={scrollRef}
-        className="flex gap-1.5 overflow-x-auto scrollbar-none snap-x snap-mandatory rounded-lg"
+        className={cn(
+          images.length <= 4
+            ? "grid gap-1.5 rounded-xl overflow-hidden"
+            : "flex gap-1.5 overflow-x-auto scrollbar-none snap-x snap-mandatory rounded-xl",
+          images.length === 2 && "grid-cols-2",
+          images.length === 3 && "grid-cols-3",
+          images.length === 4 && "grid-cols-2"
+        )}
         style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
       >
         {images.map((img, i) => (
@@ -61,19 +68,29 @@ export function ImageCarousel({ images }: ImageCarouselProps) {
             target="_blank"
             rel="noopener noreferrer"
             className={cn(
-              "flex-shrink-0 snap-center overflow-hidden rounded-lg border transition-all",
-              i === current
-                ? "border-[#00d4ff]/30"
-                : "border-white/[0.06] hover:border-white/[0.12]"
+              "overflow-hidden border transition-all",
+              images.length <= 4
+                ? "rounded-lg border-white/[0.06] hover:border-white/[0.12]"
+                : cn(
+                    "flex-shrink-0 snap-center rounded-lg",
+                    i === current
+                      ? "border-[#00d4ff]/30"
+                      : "border-white/[0.06] hover:border-white/[0.12]"
+                  )
             )}
-            onClick={(e) => { e.preventDefault(); scrollTo(i); }}
+            onClick={(e) => {
+              if (images.length > 4) { e.preventDefault(); scrollTo(i); }
+            }}
             onDoubleClick={() => window.open(img.url, "_blank", "noopener,noreferrer")}
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={img.url}
               alt={img.alt || ""}
-              className="h-36 w-48 object-cover"
+              className={cn(
+                "object-cover w-full",
+                images.length <= 4 ? "h-48" : "h-48 w-56"
+              )}
               loading="lazy"
               onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
             />
@@ -100,7 +117,7 @@ export function ImageCarousel({ images }: ImageCarouselProps) {
       )}
 
       {/* Dots indicator */}
-      {images.length > 1 && (
+      {images.length > 4 && (
         <div className="flex justify-center gap-1 mt-1.5">
           {images.map((_, i) => (
             <button
