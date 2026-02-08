@@ -231,7 +231,10 @@ async function streamChat(
     }
     onDone();
   } catch (err) {
-    if (signal?.aborted) return;
+    if (signal?.aborted) {
+      onDone();
+      return;
+    }
     onError(err instanceof Error ? err.message : "Stream failed");
   }
 }
@@ -423,6 +426,8 @@ export default function Home() {
       } catch {
         removeThinkingMsg(convId, thinkId);
         scrapingInProgress.current = false;
+        setIsStreaming(false);
+        abortRef.current = null;
       }
     },
     [browserInfo, location, updateConversation, addThinkingMsg, removeThinkingMsg]
@@ -475,6 +480,8 @@ export default function Home() {
       );
     } catch {
       removeThinkingMsg(convId, thinkId);
+      setIsStreaming(false);
+      abortRef.current = null;
     }
   }, [addThinkingMsg, removeThinkingMsg, updateConversation, browserInfo, location]);
 
@@ -800,6 +807,8 @@ export default function Home() {
         );
       } catch {
         removeThinkingMsg(convId, thinkId);
+        setIsStreaming(false);
+        abortRef.current = null;
       }
     },
     [updateConversation, addThinkingMsg, removeThinkingMsg, browserInfo, location]
