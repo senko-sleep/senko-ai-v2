@@ -23,6 +23,11 @@ export interface VideoEmbed {
   embedId?: string;
 }
 
+export interface WebEmbed {
+  url: string;
+  title?: string;
+}
+
 export interface Message {
   id: string;
   role: "user" | "assistant" | "thinking";
@@ -33,6 +38,7 @@ export interface Message {
   mapEmbed?: MapEmbed;
   images?: MessageImage[];
   videos?: VideoEmbed[];
+  webEmbeds?: WebEmbed[];
   tokenCount?: number;
   isThinking?: boolean;
 }

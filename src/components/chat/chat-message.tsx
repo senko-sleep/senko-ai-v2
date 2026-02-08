@@ -8,6 +8,7 @@ import { MarkdownRenderer } from "./markdown-renderer";
 import { MapEmbed } from "./map-embed";
 import { ImageCarousel } from "./image-carousel";
 import { VideoEmbed } from "./video-embed";
+import { WebEmbed } from "./web-embed";
 import type { Message } from "@/types/chat";
 
 interface ChatMessageProps {
@@ -77,8 +78,9 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
   const hasSources = message.sources && message.sources.length > 0;
   const hasImages = message.images && message.images.length > 0;
   const hasVideos = message.videos && message.videos.length > 0;
+  const hasWebEmbeds = message.webEmbeds && message.webEmbeds.length > 0;
   const hasMap = !!message.mapEmbed;
-  const hasAttachments = hasSources || hasImages || hasVideos || hasMap;
+  const hasAttachments = hasSources || hasImages || hasVideos || hasWebEmbeds || hasMap;
   const isRich = !isUser && hasRichContent(message.content);
   const isShort = message.content.length < 80 && !message.content.includes("\n");
 
@@ -178,6 +180,11 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
         {/* Videos */}
         {hasVideos && message.videos!.map((video, i) => (
           <VideoEmbed key={i} video={video} />
+        ))}
+
+        {/* Web Embeds (live iframes) */}
+        {hasWebEmbeds && message.webEmbeds!.map((embed, i) => (
+          <WebEmbed key={i} embed={embed} />
         ))}
 
         {/* Sources */}

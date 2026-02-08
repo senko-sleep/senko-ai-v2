@@ -113,6 +113,14 @@ ACTIONS - You can execute real actions. Use these action tags in your response:
    [ACTION:OPEN_APP:paint]
    [ACTION:OPEN_APP:terminal]
 
+6. SCREENSHOT - Take a screenshot of any website and show it in chat:
+   [ACTION:SCREENSHOT:https://example.com]
+   [ACTION:SCREENSHOT:https://anifoxwatch.web.app/search?q=spy+x+family]
+
+7. EMBED - Embed a live website directly in chat (user can interact with it):
+   [ACTION:EMBED:https://example.com|Site Name]
+   [ACTION:EMBED:https://anifoxwatch.web.app/|AniFox Watch]
+
 CRITICAL ACTION RULES:
 - NEVER open a URL/website unless the user EXPLICITLY says "open", "go to", "take me to", or "visit"
 - "show me images of X" -> [ACTION:SEARCH:X] (search and show images in chat, do NOT open Google Images)
@@ -124,6 +132,11 @@ CRITICAL ACTION RULES:
 - When searching, images from the pages will be automatically scraped and shown in a carousel
 - NEVER make up image URLs or video URLs -- only use real URLs from search results
 - NEVER use [ACTION:IMAGE:] with a URL you invented -- images come from scraped pages automatically
+- "screenshot X website" or "show me what X looks like" -> [ACTION:SCREENSHOT:url]
+- "embed X" or "show me X site in chat" -> [ACTION:EMBED:url|title]
+- "go to X site, search for Y, and screenshot it" -> [ACTION:SCREENSHOT:url/search?q=Y]
+- You can screenshot any URL including search result pages on other sites
+- EMBED lets the user interact with the site directly in chat (click, scroll, etc)
 - DO NOT explain how to do things -- just DO them with action tags
 - Keep text brief when executing actions
 - Always use full URLs with https://
@@ -452,6 +465,39 @@ export default function Home() {
     }
   }, [addThinkingMsg, removeThinkingMsg, updateConversation, browserInfo, location]);
 
+  const screenshotPage = useCallback(
+    async (convId: string, url: string) => {
+      const thinkId = addThinkingMsg(convId, `taking screenshot of ${new URL(url).hostname}...`);
+      try {
+        const res = await fetch(`/api/screenshot?url=${encodeURIComponent(url)}`);
+        const data = await res.json();
+        removeThinkingMsg(convId, thinkId);
+
+        if (data.screenshot) {
+          const msgId = generateId();
+          updateConversation(convId, (conv) => ({
+            ...conv,
+            messages: [...conv.messages, {
+              id: msgId,
+              role: "assistant" as const,
+              content: data.title ? `here's what **${data.title}** looks like :3` : `got the screenshot~ =w=`,
+              timestamp: new Date(),
+              images: [{ url: data.screenshot, alt: data.title || url }],
+              sources: [{
+                url,
+                title: data.title || new URL(url).hostname,
+                favicon: `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}&sz=16`,
+              }],
+            }],
+          }));
+        }
+      } catch {
+        removeThinkingMsg(convId, thinkId);
+      }
+    },
+    [addThinkingMsg, removeThinkingMsg, updateConversation]
+  );
+
   const welcomeToPage = useCallback(
     async (convId: string, url: string) => {
       const welcomeId = generateId();
@@ -512,7 +558,7 @@ export default function Home() {
         if (!msg || msg.role !== "assistant") return prev;
 
         const content = msg.content;
-        const actionRegex = /\[ACTION:(OPEN_URL|SEARCH|IMAGE|OPEN_RESULT|VIDEO|OPEN_APP):([^\]]+)\]/g;
+        const actionRegex = /\[ACTION:(OPEN_URL|SEARCH|IMAGE|OPEN_RESULT|OPEN_APP|SCREENSHOT|EMBED):([^\]]+)\]/g;
         let match;
         const actions: { type: string; value: string }[] = [];
         while ((match = actionRegex.exec(content)) !== null) {
@@ -524,6 +570,7 @@ export default function Home() {
         const cleanContent = content.replace(/\s*\[ACTION:[^\]]+\]\s*/g, " ").trim();
         const images: { url: string; alt?: string }[] = [];
         const videos: { url: string; title?: string; platform: "youtube" | "other"; embedId?: string }[] = [];
+        const webEmbeds: { url: string; title?: string }[] = [];
         const urlsToScrape: string[] = [];
 
         for (const action of actions) {
@@ -568,6 +615,15 @@ export default function Home() {
               openApp(convId, appName);
             }
           }
+          if (action.type === "SCREENSHOT") {
+            screenshotPage(convId, action.value);
+          }
+          if (action.type === "EMBED") {
+            const parts = action.value.split("|");
+            const embedUrl = parts[0].trim();
+            const embedTitle = parts[1]?.trim();
+            webEmbeds.push({ url: embedUrl, title: embedTitle });
+          }
         }
 
         // Scrape the first opened page and auto-summarize (with welcome)
@@ -594,6 +650,7 @@ export default function Home() {
                         content: cleanContent,
                         images: images.length > 0 ? [...(m.images || []), ...images] : m.images,
                         videos: videos.length > 0 ? [...(m.videos || []), ...videos] : m.videos,
+                        webEmbeds: webEmbeds.length > 0 ? [...(m.webEmbeds || []), ...webEmbeds] : m.webEmbeds,
                       }
                     : m
                 ),
@@ -603,7 +660,7 @@ export default function Home() {
       });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [scrapeAndSummarize, welcomeToPage, openApp]
+    [scrapeAndSummarize, welcomeToPage, openApp, screenshotPage]
   );
 
   const fetchSearchResults = useCallback(
