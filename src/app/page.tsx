@@ -165,6 +165,16 @@ async function streamChat(
   onError: (error: string) => void,
   signal?: AbortSignal
 ) {
+  const id = Math.random().toString(36).slice(2, 6);
+  let finished = false;
+  const finish = () => { if (!finished) { finished = true; onDone(); } };
+
+  console.log(`%c[stream:${id}] 📤 Starting fetch to /api/chat`, "color: #00bfff; font-weight: bold", {
+    messageCount: messages.length,
+    systemPromptLength: systemPrompt?.length || 0,
+    totalChars: messages.reduce((a, m) => a + m.content.length, 0),
+  });
+
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
@@ -173,14 +183,21 @@ async function streamChat(
       signal,
     });
 
+    console.log(`%c[stream:${id}] 📥 Response: ${res.status} ${res.statusText}`, 
+      res.ok ? "color: #00ff88; font-weight: bold" : "color: #ff4444; font-weight: bold",
+      { provider: res.headers.get("X-AI-Provider") });
+
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       const serverMsg = data.error || "";
+      console.error(`%c[stream:${id}] ❌ Server error:`, "color: #ff4444; font-weight: bold", { status: res.status, error: serverMsg });
       let friendly = "";
       if (res.status === 502 || res.status === 503) {
         friendly = serverMsg
           ? `AI provider error (${res.status}): ${serverMsg}`
           : `AI provider unavailable (${res.status}). The GROQ_API_KEY may not be set or the model is down.`;
+      } else if (res.status === 429) {
+        friendly = serverMsg || "AI rate limited. Please try again in a minute.";
       } else if (res.status === 500) {
         friendly = `Server error: ${serverMsg || "Internal error in chat API"}`;
       } else if (res.status === 400) {
@@ -194,16 +211,21 @@ async function streamChat(
 
     const reader = res.body?.getReader();
     if (!reader) {
+      console.error(`%c[stream:${id}] ❌ No response body reader`, "color: #ff4444");
       onError("No response stream");
       return;
     }
 
     const decoder = new TextDecoder();
     let buffer = "";
+    let chunkCount = 0;
 
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        console.log(`%c[stream:${id}] ✅ Stream complete (${chunkCount} chunks)`, "color: #00ff88; font-weight: bold");
+        break;
+      }
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n\n");
@@ -211,17 +233,16 @@ async function streamChat(
 
       for (const line of lines) {
         const trimmed = line.replace(/^data: /, "").trim();
-        if (!trimmed || trimmed === "[DONE]") {
-          if (trimmed === "[DONE]") onDone();
-          continue;
-        }
+        if (!trimmed || trimmed === "[DONE]") continue;
         try {
           const parsed = JSON.parse(trimmed);
           if (parsed.error) {
+            console.error(`%c[stream:${id}] ❌ Stream error:`, "color: #ff4444", parsed.error);
             onError(parsed.error);
             return;
           }
           if (parsed.content) {
+            chunkCount++;
             onChunk(parsed.content);
           }
         } catch {
@@ -229,12 +250,14 @@ async function streamChat(
         }
       }
     }
-    onDone();
+    finish();
   } catch (err) {
     if (signal?.aborted) {
-      onDone();
+      console.log(`%c[stream:${id}] ⚠️ Aborted by user`, "color: #ffaa00");
+      finish();
       return;
     }
+    console.error(`%c[stream:${id}] 💥 Fetch exception:`, "color: #ff0000; font-weight: bold", err);
     onError(err instanceof Error ? err.message : "Stream failed");
   }
 }
@@ -585,6 +608,8 @@ export default function Home() {
           actions.push({ type: match[1], value: match[2].trim() });
         }
 
+        console.log(`%c[processActions] 🔍 Found ${actions.length} actions`, "color: #cc88ff; font-weight: bold", actions.length > 0 ? actions : "none");
+
         if (actions.length === 0) return prev;
 
         const cleanContent = content.replace(/\s*\[ACTION:[^\]]+\]\s*/g, " ").trim();
@@ -685,6 +710,7 @@ export default function Home() {
 
   const fetchSearchResults = useCallback(
     async (convId: string, messageId: string, query: string) => {
+      console.log(`%c[fetchSearch] 🔎 Starting search for "${query}"`, "color: #88ccff; font-weight: bold");
       const thinkId = addThinkingMsg(convId, `searching "${query}"...`);
 
       try {
@@ -789,6 +815,7 @@ export default function Home() {
           : `I just searched for "${query}" and found these results:\n${resultSummary}\n\nGive a brief, insightful comment about the results. Reference the actual topic and what's interesting. Do NOT say generic things. Be specific. 1-2 sentences max. Use a kaomoji.`;
 
         abortRef.current = new AbortController();
+        console.log(`%c[fetchSearch] 🔄 Setting isStreaming=true for search comment`, "color: #88ccff; font-weight: bold");
         setIsStreaming(true);
         streamChat(
           [{ role: "user" as const, content: contextPrompt }],
@@ -801,11 +828,12 @@ export default function Home() {
               ),
             }));
           },
-          () => { setIsStreaming(false); abortRef.current = null; },
-          () => { setIsStreaming(false); abortRef.current = null; },
+          () => { console.log(`%c[fetchSearch] ✅ Search comment done, isStreaming=false`, "color: #00ff88; font-weight: bold"); setIsStreaming(false); abortRef.current = null; },
+          (err) => { console.error(`%c[fetchSearch] ❌ Search comment error, isStreaming=false`, "color: #ff4444; font-weight: bold", err); setIsStreaming(false); abortRef.current = null; },
           abortRef.current.signal
         );
-      } catch {
+      } catch (e) {
+        console.error(`%c[fetchSearch] 💥 Exception, isStreaming=false`, "color: #ff0000; font-weight: bold", e);
         removeThinkingMsg(convId, thinkId);
         setIsStreaming(false);
         abortRef.current = null;
@@ -816,6 +844,10 @@ export default function Home() {
 
   const sendToAI = useCallback(
     (convId: string, allMessages: Message[]) => {
+      console.log(`%c[sendToAI] 🚀 Starting`, "color: #ff88ff; font-weight: bold", {
+        convId: convId.slice(0, 8),
+        messageCount: allMessages.length,
+      });
       setIsStreaming(true);
       setWasCutOff(false);
 
@@ -869,11 +901,13 @@ export default function Home() {
           }));
         },
         () => {
+          console.log(`%c[sendToAI] ✅ Done, setting isStreaming=false`, "color: #00ff88; font-weight: bold");
           setIsStreaming(false);
           abortRef.current = null;
           processActions(convId, assistantId);
         },
         (error) => {
+          console.error(`%c[sendToAI] ❌ Error, setting isStreaming=false`, "color: #ff4444; font-weight: bold", error);
           updateConversation(convId, (conv) => ({
             ...conv,
             messages: conv.messages.map((m) =>
@@ -939,7 +973,16 @@ export default function Home() {
 
   const handleSendMessage = useCallback(
     (content: string) => {
-      if (!activeConversationId || isStreaming) return;
+      console.log(`%c[handleSend] 💬 Attempting to send`, "color: #ffcc00; font-weight: bold", {
+        content: content.slice(0, 50),
+        activeConversationId: activeConversationId?.slice(0, 8),
+        isStreaming,
+        blocked: !activeConversationId || isStreaming,
+      });
+      if (!activeConversationId || isStreaming) {
+        console.warn(`%c[handleSend] 🚫 BLOCKED - isStreaming=${isStreaming}, activeConv=${!!activeConversationId}`, "color: #ff8800; font-weight: bold");
+        return;
+      }
 
       const userMessage: Message = {
         id: generateId(),
