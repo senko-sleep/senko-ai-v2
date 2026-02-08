@@ -62,7 +62,7 @@ export function WebEmbed({ embed }: WebEmbedProps) {
           </div>
         )}
         <iframe
-          src={embed.url}
+          src={`/api/proxy?url=${encodeURIComponent(embed.url)}`}
           title={embed.title || embed.url}
           className="h-full w-full border-0"
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
