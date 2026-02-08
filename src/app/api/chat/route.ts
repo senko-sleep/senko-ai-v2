@@ -16,10 +16,23 @@ interface ChatMessage {
 
 // -- Groq streaming (primary - fastest inference available) -----------------
 
+// Fallback models when primary hits rate limits (ordered by preference)
+const GROQ_FALLBACK_MODELS = [
+  "llama-3.3-70b-versatile",
+  "gemma2-9b-it",
+  "llama-3.1-8b-instant",
+];
+
+function isRateLimitError(text: string, status: number): boolean {
+  return status === 429 || text.includes("rate_limit") || text.includes("Rate limit");
+}
+
 async function streamGroq(
   messages: ChatMessage[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  modelOverride?: string
 ): Promise<ReadableStream<Uint8Array>> {
+  const model = modelOverride || config.groqModel;
   const res = await fetch(config.groqUrl, {
     method: "POST",
     headers: {
@@ -27,7 +40,7 @@ async function streamGroq(
       Authorization: `Bearer ${config.groqApiKey}`,
     },
     body: JSON.stringify({
-      model: config.groqModel,
+      model,
       messages,
       stream: true,
       temperature: 0.7,
@@ -38,7 +51,10 @@ async function streamGroq(
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`Groq ${res.status}: ${text}`);
+    const err = new Error(`Groq ${res.status}: ${text}`) as Error & { status: number; body: string };
+    err.status = res.status;
+    err.body = text;
+    throw err;
   }
 
   if (!res.body) throw new Error("No Groq response body");
@@ -197,23 +213,55 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    let stream: ReadableStream<Uint8Array>;
-    let provider: string;
+    let stream!: ReadableStream<Uint8Array>;
+    let provider!: string;
 
-    // Strategy: Groq first (fastest), Ollama fallback (offline-capable)
+    // Strategy: Groq first (fastest), fallback models on rate limit, Ollama last
     if (config.groqApiKey) {
       try {
         stream = await streamGroq(chatMessages);
         provider = "groq";
       } catch (groqErr) {
-        // Groq failed, try Ollama
-        const ollamaOk = await isOllamaUp();
-        if (ollamaOk) {
-          stream = await streamOllama(chatMessages);
-          provider = "ollama";
+        const errAny = groqErr as Error & { status?: number; body?: string };
+        const isRateLimit = isRateLimitError(errAny.body || errAny.message || "", errAny.status || 0);
+
+        // If rate limited, try fallback models before giving up
+        if (isRateLimit) {
+          let fallbackWorked = false;
+          for (const fallbackModel of GROQ_FALLBACK_MODELS) {
+            if (fallbackModel === config.groqModel) continue;
+            try {
+              stream = await streamGroq(chatMessages, undefined, fallbackModel);
+              provider = `groq (${fallbackModel})`;
+              fallbackWorked = true;
+              break;
+            } catch {
+              // This fallback model also failed, try next
+            }
+          }
+          if (!fallbackWorked) {
+            // All Groq models exhausted, try Ollama
+            const ollamaOk = await isOllamaUp();
+            if (ollamaOk) {
+              stream = await streamOllama(chatMessages);
+              provider = "ollama";
+            } else {
+              return Response.json(
+                { error: "AI provider rate limited on all models. Please try again later or start Ollama locally." },
+                { status: 429 }
+              );
+            }
+          }
         } else {
-          const msg = groqErr instanceof Error ? groqErr.message : "Groq unavailable";
-          return Response.json({ error: msg }, { status: 502 });
+          // Non-rate-limit Groq error, try Ollama
+          const ollamaOk = await isOllamaUp();
+          if (ollamaOk) {
+            stream = await streamOllama(chatMessages);
+            provider = "ollama";
+          } else {
+            const msg = groqErr instanceof Error ? groqErr.message : "Groq unavailable";
+            return Response.json({ error: msg }, { status: 502 });
+          }
         }
       }
     } else {
