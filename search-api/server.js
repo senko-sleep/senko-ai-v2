@@ -37,7 +37,15 @@ async function getBrowser() {
 // ============================================================================
 
 function stripTags(html) {
-  return html.replace(/<[^>]*>/g, "").trim();
+  return html
+    .replace(/<[^>]*>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .trim();
 }
 
 function decodeDDGUrl(raw) {
@@ -113,7 +121,18 @@ function extractGoogleResults(html) {
     for (let i = 0; i < Math.min(cites.length, titles.length, 25); i++) {
       let url = cites[i];
       if (!url.startsWith("http")) url = "https://" + url;
-      if (titles[i]) results.push({ title: titles[i], url, snippet: "" });
+      let title = titles[i];
+      // Skip if title is empty, looks like a URL, or is a domain+URL concatenation
+      if (!title) continue;
+      if (/^https?:\/\//i.test(title)) {
+        try { title = new URL(title).hostname.replace(/^www\./, ""); } catch {}
+      }
+      // Detect domain+URL concatenation like "stackexchange.comhttps://..."
+      const concatMatch = title.match(/^([a-zA-Z0-9.-]+\.[a-z]{2,})(https?:\/\/.*)/i);
+      if (concatMatch) {
+        try { title = new URL(concatMatch[2]).hostname.replace(/^www\./, ""); } catch { title = concatMatch[1]; }
+      }
+      if (title) results.push({ title, url, snippet: "" });
     }
   }
 
