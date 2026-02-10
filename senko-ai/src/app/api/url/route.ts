@@ -27,6 +27,12 @@ interface PageMeta {
   favicon: string;
 }
 
+interface PageVideo {
+  url: string;
+  type?: string;
+  poster?: string;
+}
+
 interface PageData {
   url: string;
   finalUrl: string;
@@ -34,6 +40,7 @@ interface PageData {
   content: string;
   links: PageLink[];
   images: PageImage[];
+  videos: PageVideo[];
   headings: { level: number; text: string }[];
   rawHtml?: string;
 }
@@ -176,6 +183,66 @@ export async function GET(req: NextRequest) {
       images.push({ url: src, alt: altMatch?.[1] || "", width: w, height: h });
     }
 
+    // --- Extract video sources ---
+    const videos: PageVideo[] = [];
+    const seenVideos = new Set<string>();
+
+    // og:video meta tag
+    const ogVideoMatch = html.match(/<meta[^>]*property=["']og:video["'][^>]*content=["']([^"']+)["']/i)
+      || html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:video["']/i);
+    if (ogVideoMatch) {
+      const vUrl = resolveUrl(ogVideoMatch[1], origin, finalUrl);
+      if (vUrl && !seenVideos.has(vUrl)) { videos.push({ url: vUrl }); seenVideos.add(vUrl); }
+    }
+    // og:video:url and og:video:secure_url
+    const ogVideoUrlMatch = html.match(/<meta[^>]*property=["']og:video:(?:secure_)?url["'][^>]*content=["']([^"']+)["']/i)
+      || html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:video:(?:secure_)?url["']/i);
+    if (ogVideoUrlMatch) {
+      const vUrl = resolveUrl(ogVideoUrlMatch[1], origin, finalUrl);
+      if (vUrl && !seenVideos.has(vUrl)) { videos.push({ url: vUrl }); seenVideos.add(vUrl); }
+    }
+
+    // <video> tags with src attribute
+    const videoSrcRegex = /<video[^>]*\ssrc=["']([^"']+)["'][^>]*/gi;
+    let videoMatch;
+    while ((videoMatch = videoSrcRegex.exec(html)) !== null && videos.length < 10) {
+      const vUrl = resolveUrl(videoMatch[1], origin, finalUrl);
+      if (vUrl && !seenVideos.has(vUrl)) {
+        const posterMatch = videoMatch[0].match(/poster=["']([^"']+)["']/i);
+        videos.push({ url: vUrl, poster: posterMatch ? resolveUrl(posterMatch[1], origin, finalUrl) : undefined });
+        seenVideos.add(vUrl);
+      }
+    }
+
+    // <source> tags inside <video> elements
+    const sourceRegex = /<source[^>]*\ssrc=["']([^"']+)["'][^>]*/gi;
+    let sourceMatch;
+    while ((sourceMatch = sourceRegex.exec(html)) !== null && videos.length < 10) {
+      const vUrl = resolveUrl(sourceMatch[1], origin, finalUrl);
+      if (vUrl && !seenVideos.has(vUrl)) {
+        const typeMatch = sourceMatch[0].match(/type=["']([^"']+)["']/i);
+        videos.push({ url: vUrl, type: typeMatch?.[1] });
+        seenVideos.add(vUrl);
+      }
+    }
+
+    // Common JS video player patterns (e.g., video_url = "...", file: "...", sources: [{src: "..."}])
+    const jsVideoPatterns = [
+      /(?:video_url|videoUrl|file_url|fileUrl|mp4_url|source_url|stream_url)\s*[:=]\s*["']([^"']+\.(?:mp4|webm|m3u8)[^"']*)["']/gi,
+      /["'](?:file|src|source|url|mp4|video)["']\s*:\s*["']([^"']+\.(?:mp4|webm|m3u8)[^"']*)["']/gi,
+      /(?:src|href)\s*[:=]\s*["']([^"']+\.(?:mp4|webm|m3u8)(?:\?[^"']*)?)["']/gi,
+    ];
+    for (const pattern of jsVideoPatterns) {
+      let jsMatch;
+      while ((jsMatch = pattern.exec(html)) !== null && videos.length < 10) {
+        const vUrl = resolveUrl(jsMatch[1], origin, finalUrl);
+        if (vUrl && !seenVideos.has(vUrl) && !vUrl.includes("ad") && !vUrl.includes("tracker")) {
+          videos.push({ url: vUrl });
+          seenVideos.add(vUrl);
+        }
+      }
+    }
+
     // --- Extract headings ---
     const headings: { level: number; text: string }[] = [];
     const headingRegex = /<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi;
@@ -194,6 +261,7 @@ export async function GET(req: NextRequest) {
       content,
       links,
       images,
+      videos,
       headings,
     };
 

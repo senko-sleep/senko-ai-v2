@@ -366,6 +366,14 @@ COMMON SITE URL PATTERNS:
   * Reddit search: https://www.reddit.com/search/?q=URL_ENCODED_QUERY
   * Amazon search: https://www.amazon.com/s?k=URL_ENCODED_QUERY
   * Twitter/X search: https://x.com/search?q=URL_ENCODED_QUERY
+  * rule34video search: https://rule34video.com/search/?q=URL_ENCODED_QUERY (pagination: &page=N)
+  * rule34.xxx search: https://rule34.xxx/index.php?page=post&s=list&tags=URL_ENCODED_TAGS (pagination: &pid=N*42)
+  * e621 search: https://e621.net/posts?tags=URL_ENCODED_TAGS (pagination: &page=N)
+  * gelbooru search: https://gelbooru.com/index.php?page=post&s=list&tags=URL_ENCODED_TAGS
+  * danbooru search: https://danbooru.donmai.us/posts?tags=URL_ENCODED_TAGS
+  * nhentai search: https://nhentai.net/search/?q=URL_ENCODED_QUERY (pagination: &page=N)
+  * pornhub search: https://www.pornhub.com/video/search?search=URL_ENCODED_QUERY
+  * xvideos search: https://www.xvideos.com/?k=URL_ENCODED_QUERY
   * Most sites: https://site.com/search?q=URL_ENCODED_QUERY
   * Pagination: ?page=N or /page/N or ?p=N
   * Categories: /categories/NAME or /tags/NAME or /c/NAME
@@ -416,6 +424,21 @@ Examples of COMPLEX BROWSING (chaining actions):
   (then find results and respond with the specific one)
 - "go to page 4 of the results" -> [ACTION:OPEN_URL:https://site.com/search?q=X&page=4]
 - "type anime in the search bar on that site" -> [ACTION:OPEN_URL:https://site.com/search?q=anime] or [ACTION:READ_URL:https://site.com/search?q=anime]
+
+MULTI-STEP NAVIGATION (finding specific content):
+When the user wants a SPECIFIC item by name (e.g., "find [zaviel]Full Eevee Animation on rule34video"):
+  Step 1: Construct the site's search URL -> [ACTION:READ_URL:https://rule34video.com/search/?q=zaviel+eevee+animation]
+  Step 2: System feeds you the search results page with links. Scan the links for the matching title.
+  Step 3a: If you find it -> [ACTION:READ_URL:matching_url] to read the video page and get the direct video URL
+  Step 3b: If NOT found on this page -> look for "next page" or pagination links and [ACTION:READ_URL:next_page_url] to keep searching
+  Step 4: When you reach the video page, the system will give you video source URLs (mp4/webm). Use [ACTION:OPEN_URL:video_source_url] to play it, or [ACTION:OPEN_URL:page_url] to open the page in their browser.
+
+KEY RULES FOR MULTI-STEP:
+- You can chain up to 5 READ_URL actions to navigate through pages. Don't give up after one page.
+- When searching for a specific item and it's not on the current page, CHECK PAGINATION. Look for links like "Next", "page 2", ">>", etc.
+- When the system feeds you "Video sources found on page", those are DIRECT playable video URLs (mp4/webm). Use OPEN_URL on them.
+- If no video sources are found but you're on the right page, just OPEN_URL the page itself so the user can watch it in their browser.
+- ALWAYS prefer READ_URL over EMBED for sites with video players — the proxy can't handle JS video players, so open them in the browser instead.
 
 Examples of WRONG action responses (DO NOT DO THIS):
 - Writing a list of what you expect to find before results come back
@@ -1383,6 +1406,7 @@ export default function Home() {
               // Build a context message with the page data — send MORE links for browsing
               const pageLinks = (data.links || []).slice(0, 50).map((l: { url: string; text: string }, i: number) => `${i + 1}. [${l.text}](${l.url})`).join("\n");
               const pageHeadings = (data.headings || []).map((h: { level: number; text: string }) => `${"#".repeat(h.level)} ${h.text}`).join("\n");
+              const pageVideos = (data.videos || []).map((v: { url: string; type?: string }) => `- ${v.url}${v.type ? ` (${v.type})` : ""}`).join("\n");
 
               // DON'T attach images from READ_URL — the user wants navigation, not thumbnails
               // Images are only attached via SCRAPE_IMAGES action
@@ -1412,7 +1436,7 @@ export default function Home() {
               const lastUserMsg = userMessages[userMessages.length - 1]?.content || "";
 
               // Feed the page content back to AI for a follow-up response
-              const pageContext = `The user asked: "${lastUserMsg}"\n\nI just read the page at ${action.value}.\n\nTitle: ${data.meta?.title || "Unknown"}\nDescription: ${data.meta?.description || "None"}\n\n${pageHeadings ? `Page Structure:\n${pageHeadings}\n\n` : ""}Content:\n${(data.content || "No content found").slice(0, 3000)}\n\n${pageLinks ? `Links found on page:\n${pageLinks}` : ""}`;
+              const pageContext = `The user asked: "${lastUserMsg}"\n\nI just read the page at ${action.value}.\n\nTitle: ${data.meta?.title || "Unknown"}\nDescription: ${data.meta?.description || "None"}\n\n${pageHeadings ? `Page Structure:\n${pageHeadings}\n\n` : ""}Content:\n${(data.content || "No content found").slice(0, 3000)}\n\n${pageVideos ? `Video sources found on page:\n${pageVideos}\n\n` : ""}${pageLinks ? `Links found on page:\n${pageLinks}` : ""}`;
 
               const followUpId = generateId();
               updateConversation(convId, (conv2) => ({
@@ -1429,7 +1453,7 @@ export default function Home() {
               abortRef.current = followUpAbort;
               setIsStreaming(true);
               streamChat(
-                [{ role: "user" as const, content: pageContext + "\n\nIMPORTANT: Look at the user's original request above. Based on what they asked, use the links from the page to take the RIGHT action:\n- If they want a specific video/item -> find it in the links and use [ACTION:OPEN_URL:url] to open it or [ACTION:EMBED:url|title] to embed it\n- If they want a section/category -> find the link and navigate there\n- If they want to search -> construct the search URL\n- If they just wanted to read -> summarize\nYou MUST use action tags to complete their request. Don't just describe the page — ACT on it!" }],
+                [{ role: "user" as const, content: pageContext + "\n\nIMPORTANT: Look at the user's original request above. Based on what they asked, use the links from the page to take the RIGHT action:\n- If video sources were found on the page (mp4/webm/m3u8 URLs), use [ACTION:OPEN_URL:video_url] to play the video directly\n- If they want a specific video/item -> find it in the links and use [ACTION:READ_URL:url] to navigate to it (NOT EMBED — video sites don't work in embeds)\n- If the specific item they want is NOT in the links on this page, look for pagination links (Next, page 2, >>) and use [ACTION:READ_URL:next_page_url] to keep searching\n- If they want a section/category -> find the link and navigate there with READ_URL\n- If they want to search -> construct the site's search URL with READ_URL\n- If they just wanted to read -> summarize\n- If this is a video page and you found the right content, open it in their browser with [ACTION:OPEN_URL:page_url]\nYou MUST use action tags to complete their request. Don't just describe the page — ACT on it! Keep navigating until you find what they want." }],
                 buildSystemPrompt(browserInfo, location, getMemoryContext()),
                 (chunk) => {
                   updateConversation(convId, (conv) => ({
@@ -1542,7 +1566,8 @@ export default function Home() {
           }));
         }
         if (action.type === "CLICK_IN_TAB") {
-          // Read the active tab's page content and find the link to click
+          // Read the active tab's page, find the matching link, then READ that target page
+          // and feed it back to the AI for further action chaining (multi-step navigation)
           const conv = conversations.find((c) => c.id === convId);
           const activeTab = (conv?.tabs || []).find((t) => t.active);
           if (activeTab) {
@@ -1551,25 +1576,158 @@ export default function Home() {
             (async () => {
               const thinkId = addThinkingMsg(convId, `finding "${linkText}" on ${activeTab.title}...`);
               try {
+                // Step 1: Read the current page to find the link
                 const res = await fetch(`/api/url?url=${encodeURIComponent(activeTab.url)}&maxContent=8000`);
                 const data = await res.json();
-                removeThinkingMsg(convId, thinkId);
                 const links: { url: string; text: string }[] = data.links || [];
-                // Find the best matching link
-                const match = links.find((l) => l.text.toLowerCase().includes(linkText.toLowerCase())) ||
-                  links.find((l) => l.url.toLowerCase().includes(linkText.toLowerCase()));
-                if (match) {
+                // Find the best matching link — try exact substring first, then fuzzy word matching
+                const lowerText = linkText.toLowerCase();
+                const match = links.find((l) => l.text.toLowerCase().includes(lowerText)) ||
+                  links.find((l) => l.url.toLowerCase().includes(lowerText)) ||
+                  links.find((l) => {
+                    const words = lowerText.split(/\s+/).filter(w => w.length > 2);
+                    const lt = l.text.toLowerCase();
+                    return words.length > 0 && words.every(w => lt.includes(w));
+                  });
+
+                if (!match) {
+                  removeThinkingMsg(convId, thinkId);
+                  // Feed available links back to AI so it can pick the right one
+                  const availableLinks = links.slice(0, 30).map((l, i) => `${i + 1}. [${l.text}](${l.url})`).join("\n");
+                  const followUpId = generateId();
+                  updateConversation(convId, (conv2) => ({
+                    ...conv2,
+                    messages: [...conv2.messages, {
+                      id: followUpId,
+                      role: "assistant" as const,
+                      content: "",
+                      timestamp: new Date(),
+                    }],
+                  }));
+                  const followUpAbort = new AbortController();
+                  abortRef.current = followUpAbort;
+                  setIsStreaming(true);
+                  const userMsg = conv?.messages.filter((m) => m.role === "user").pop()?.content || "";
+                  streamChat(
+                    [{ role: "user" as const, content: `The user asked: "${userMsg}"\n\nI tried to find a link matching "${linkText}" on ${activeTab.url} but couldn't find an exact match.\n\nHere are the links available on the page:\n${availableLinks}\n\nLook at these links and find the one that best matches what the user wants. Then use [ACTION:READ_URL:url] to navigate to it, or [ACTION:OPEN_URL:url] to open it. If none match, try a different search URL or tell the user.` }],
+                    buildSystemPrompt(browserInfo, location, getMemoryContext()),
+                    (chunk) => { updateConversation(convId, (c) => ({ ...c, messages: c.messages.map((m) => m.id === followUpId ? { ...m, content: m.content + chunk } : m) })); },
+                    () => {
+                      const c = conversations.find((c2) => c2.id === convId);
+                      const rawContent = c?.messages.find((m) => m.id === followUpId)?.content || "";
+                      updateConversation(convId, (c2) => ({ ...c2, messages: c2.messages.map((m) => m.id === followUpId ? (() => { const { cleanText, extractedSources } = parseAIOutput(m.content); const existing = m.sources || []; const seen = new Set(existing.map((s) => s.url)); const merged = [...existing]; for (const s of extractedSources) { if (!seen.has(s.url)) { merged.push(s); seen.add(s.url); } } return { ...m, content: cleanText, sources: merged.length > 0 ? merged : m.sources }; })() : m) }));
+                      setIsStreaming(false); abortRef.current = null;
+                      if (rawContent.includes("[ACTION:")) { processActions(convId, followUpId, rawContent); }
+                    },
+                    (err) => { console.error("CLICK_IN_TAB follow-up error:", err); setIsStreaming(false); abortRef.current = null; },
+                    followUpAbort.signal
+                  );
+                  return;
+                }
+
+                // Step 2: Found the link — now READ the target page (like READ_URL does)
+                console.log(`%c[TAB] ✅ Found link: ${match.text} -> ${match.url}`, "color: #00ff88; font-weight: bold");
+                addTab(convId, match.url, match.text || linkText);
+
+                // Update thinking message
+                removeThinkingMsg(convId, thinkId);
+                const thinkId2 = addThinkingMsg(convId, `reading ${match.text || match.url}...`);
+
+                const targetRes = await fetch(`/api/url?url=${encodeURIComponent(match.url)}&maxContent=8000`);
+                const targetData = await targetRes.json();
+                removeThinkingMsg(convId, thinkId2);
+
+                if (targetData.error) {
+                  // Can't read the target page — just open it in browser
                   window.open(match.url, "_blank", "noopener,noreferrer");
-                  addTab(convId, match.url, match.text || linkText);
-                  console.log(`%c[TAB] ✅ Clicked link`, "color: #00ff88", match);
-                } else {
                   updateConversation(convId, (conv2) => ({
                     ...conv2,
                     messages: conv2.messages.map((m) =>
-                      m.id === messageId ? { ...m, content: (m.content ? m.content + "\n\n" : "") + `*couldn't find a link matching "${linkText}" on that page ;w;*` } : m
+                      m.id === messageId ? { ...m, content: (m.content ? m.content + "\n\n" : "") + `Opened "${match.text}" in your browser~` } : m
+                    ),
+                  }));
+                  return;
+                }
+
+                // Build context from the target page
+                const targetLinks = (targetData.links || []).slice(0, 50).map((l: { url: string; text: string }, i: number) => `${i + 1}. [${l.text}](${l.url})`).join("\n");
+                const targetHeadings = (targetData.headings || []).map((h: { level: number; text: string }) => `${"#".repeat(h.level)} ${h.text}`).join("\n");
+                const targetVideos = (targetData.videos || []).map((v: { url: string; type?: string }) => `- ${v.url}${v.type ? ` (${v.type})` : ""}`).join("\n");
+
+                // Attach source
+                if (targetData.meta?.title) {
+                  let hostname = "";
+                  try { hostname = new URL(match.url).hostname; } catch { /* skip */ }
+                  updateConversation(convId, (conv2) => ({
+                    ...conv2,
+                    messages: conv2.messages.map((m) =>
+                      m.id === messageId ? {
+                        ...m,
+                        sources: [...(m.sources || []), {
+                          url: match.url,
+                          title: targetData.meta.title || hostname,
+                          favicon: targetData.meta.favicon || `https://www.google.com/s2/favicons?domain=${hostname}&sz=16`,
+                        }],
+                      } : m
                     ),
                   }));
                 }
+
+                // Feed the target page back to AI for follow-up
+                const userMsg = conv?.messages.filter((m) => m.role === "user").pop()?.content || "";
+                const pageContext = `The user asked: "${userMsg}"\n\nI clicked "${match.text}" and navigated to ${match.url}.\n\nTitle: ${targetData.meta?.title || "Unknown"}\nDescription: ${targetData.meta?.description || "None"}\n\n${targetHeadings ? `Page Structure:\n${targetHeadings}\n\n` : ""}Content:\n${(targetData.content || "No content found").slice(0, 3000)}\n\n${targetVideos ? `Video sources found on page:\n${targetVideos}\n\n` : ""}${targetLinks ? `Links found on page:\n${targetLinks}` : ""}`;
+
+                const followUpId = generateId();
+                updateConversation(convId, (conv2) => ({
+                  ...conv2,
+                  messages: [...conv2.messages, {
+                    id: followUpId,
+                    role: "assistant" as const,
+                    content: "",
+                    timestamp: new Date(),
+                  }],
+                }));
+
+                const followUpAbort = new AbortController();
+                abortRef.current = followUpAbort;
+                setIsStreaming(true);
+                streamChat(
+                  [{ role: "user" as const, content: pageContext + "\n\nIMPORTANT: Look at the user's original request. Based on what they asked:\n- If video sources were found on the page, use [ACTION:OPEN_URL:video_url] to open the direct video URL for them\n- If they want a specific item and you found it -> use [ACTION:OPEN_URL:url] or [ACTION:EMBED:url|title]\n- If this is a video page with no direct video URL found, open the page in their browser with [ACTION:OPEN_URL:" + match.url + "]\n- If they want to keep navigating -> use [ACTION:READ_URL:url] on the next link\n- If the target wasn't found on this page, look for pagination links (next page, page 2, etc.) and use [ACTION:READ_URL:next_page_url] to keep searching\nYou MUST use action tags. Don't just describe — ACT on it!" }],
+                  buildSystemPrompt(browserInfo, location, getMemoryContext()),
+                  (chunk) => {
+                    updateConversation(convId, (c) => ({
+                      ...c,
+                      messages: c.messages.map((m) =>
+                        m.id === followUpId ? { ...m, content: m.content + chunk } : m
+                      ),
+                    }));
+                  },
+                  () => {
+                    const c = conversations.find((c2) => c2.id === convId);
+                    const rawContent = c?.messages.find((m) => m.id === followUpId)?.content || "";
+                    updateConversation(convId, (c2) => ({
+                      ...c2,
+                      messages: c2.messages.map((m) =>
+                        m.id === followUpId ? (() => {
+                          const { cleanText, extractedSources } = parseAIOutput(m.content);
+                          const existing = m.sources || [];
+                          const seen = new Set(existing.map((s) => s.url));
+                          const merged = [...existing];
+                          for (const s of extractedSources) { if (!seen.has(s.url)) { merged.push(s); seen.add(s.url); } }
+                          return { ...m, content: cleanText, sources: merged.length > 0 ? merged : m.sources };
+                        })() : m
+                      ),
+                    }));
+                    setIsStreaming(false);
+                    abortRef.current = null;
+                    if (rawContent.includes("[ACTION:")) {
+                      console.log(`%c[CLICK_IN_TAB] 🔗 Chaining actions from follow-up`, "color: #00ffcc; font-weight: bold");
+                      processActions(convId, followUpId, rawContent);
+                    }
+                  },
+                  (err) => { console.error("CLICK_IN_TAB follow-up error:", err); setIsStreaming(false); abortRef.current = null; },
+                  followUpAbort.signal
+                );
               } catch {
                 removeThinkingMsg(convId, thinkId);
               }
