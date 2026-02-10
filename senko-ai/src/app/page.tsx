@@ -455,14 +455,16 @@ KEY RULES FOR MULTI-STEP:
 - If no video sources are found but you're on the right page, use [ACTION:OPEN_URL:page_url] to open it in their browser as a fallback.
 - ALWAYS prefer READ_URL over EMBED for sites with video players — the proxy can't handle JS video players, so the system opens them in the browser instead.
 - If a search returns no results, try DIFFERENT search terms. Break the title into keywords. Try the artist name alone, then the character name, etc.
-- For video sites, know the common search URL patterns:
-  * rule34video.com: /search/?q=QUERY
-  * pornhub.com: /video/search?search=QUERY
-  * xvideos.com: /?k=QUERY
-  * xhamster.com: /search/QUERY
-  * youtube.com: /results?search_query=QUERY
-  * redtube.com: /?search=QUERY
-  * spankbang.com: /s/QUERY/
+- For video sites, know the EXACT search URL patterns (replace QUERY with the actual search terms, URL-encoded with + for spaces):
+  * rule34video.com: https://rule34video.com/search/?q=QUERY
+  * pornhub.com: https://www.pornhub.com/video/search?search=QUERY
+  * xvideos.com: https://www.xvideos.com/?k=QUERY
+  * xhamster.com: https://xhamster.com/search/QUERY
+  * youtube.com: https://www.youtube.com/results?search_query=QUERY
+  * redtube.com: https://www.redtube.com/?search=QUERY
+  * spankbang.com: https://spankbang.com/s/QUERY/
+  * tube8.com: https://www.tube8.com/searches?q=QUERY
+  * xnxx.com: https://www.xnxx.com/search/QUERY
 - When you find a video page, READ_URL it — don't just OPEN_URL it. READ_URL triggers the deep video extraction pipeline which will find and play the video automatically.
 - NEVER say "I can't find the video" or "I couldn't extract it" — keep trying different approaches. Search with fewer keywords, try the site's browse/category pages, check related videos, etc.
 
@@ -1089,6 +1091,7 @@ export default function Home() {
       const videos: { url: string; title?: string; platform: "youtube" | "other"; embedId?: string }[] = [];
       const webEmbeds: { url: string; title?: string }[] = [];
       const urlsToScrape: string[] = [];
+      const videoUrlsToExtract: string[] = [];
 
       // Helper to detect YouTube video URLs
       const getYouTubeId = (url: string): string | null => {
@@ -1382,20 +1385,30 @@ export default function Home() {
             console.log(`%c[BROWSE] 🚨 Fabricated URL detected — resolving real link instead`, "color: #ff4444; font-weight: bold", url);
             resolveFabricatedUrl(url, messageId);
           } else {
+            // Check if this is a video site — DON'T embed (they block iframes with X-Frame-Options)
+            const isVideoSiteUrl = /\b(rule34video|pornhub|xvideos|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|hentaihaven|hanime|iwara|dailymotion|vimeo|bitchute|rumble)\b/i.test(url);
             if (ytId) {
               console.log(`%c[BROWSE] 🎬 YouTube video detected, embedding player`, "color: #ff0000", { embedId: ytId });
               videos.push({ url, platform: "youtube", embedId: ytId });
             } else {
-              // Embed the site inline in chat so user can see it without leaving
-              let hostname = "";
-              try { hostname = new URL(url).hostname; } catch { /* skip */ }
-              webEmbeds.push({ url, title: hostname || url });
+              if (isVideoSiteUrl) {
+                console.log(`%c[BROWSE] 🎬 Video site detected — skipping embed, will deep-extract video`, "color: #ff9900; font-weight: bold", url);
+                // Don't add webEmbed — it will just show "refused to connect"
+                // Mark for video extraction (handled below)
+                videoUrlsToExtract.push(url);
+              } else {
+                // Embed the site inline in chat so user can see it without leaving
+                let hostname = "";
+                try { hostname = new URL(url).hostname; } catch { /* skip */ }
+                webEmbeds.push({ url, title: hostname || url });
+              }
             }
             try {
               window.open(url, "_blank", "noopener,noreferrer");
               console.log(`%c[BROWSE] ✅ Window opened`, "color: #00ff88", url);
               addTab(convId, url);
-              if (!url.includes("google.com/search") && !url.includes("youtube.com/results") && !ytId) {
+              // Queue for text scraping (skip video sites — they get deep video extraction instead)
+              if (!url.includes("google.com/search") && !url.includes("youtube.com/results") && !ytId && !isVideoSiteUrl) {
                 console.log(`%c[BROWSE] 📄 Queuing page for scrape`, "color: #88ccff", url);
                 urlsToScrape.push(url);
               }
@@ -1999,6 +2012,57 @@ export default function Home() {
         }
       }
 
+      // Deep video extraction for video site URLs (separate from text scraping)
+      if (videoUrlsToExtract.length > 0) {
+        const videoUrl = videoUrlsToExtract[0];
+        console.log(`%c[BROWSE] 🎬 Starting deep video extraction for: ${videoUrl}`, "color: #ff9900; font-weight: bold");
+        (async () => {
+          const thinkId = addThinkingMsg(convId, `extracting video from page...`);
+          try {
+            const urlRes = await fetch(`/api/url?url=${encodeURIComponent(videoUrl)}&maxContent=4000`);
+            const urlData = await urlRes.json();
+            let foundVids: { url: string; type?: string; quality?: string }[] = urlData.videos || [];
+            let playable = foundVids.filter((v: { url: string; type?: string }) => /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(v.url) || /^video\//i.test(v.type || ""));
+            // Puppeteer fallback
+            if (playable.length === 0) {
+              console.log(`%c[BROWSE] 🎬 No direct videos from static scrape, trying Puppeteer`, "color: #ff9900");
+              try {
+                const extractRes = await fetch(`/api/video-extract?url=${encodeURIComponent(videoUrl)}`);
+                const extractData = await extractRes.json();
+                if (extractData.videos?.length > 0) {
+                  foundVids = extractData.videos;
+                  playable = foundVids.filter((v: { url: string; type?: string }) => /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(v.url) || /^video\//i.test(v.type || "") || /mpegurl|dash/i.test(v.type || ""));
+                }
+              } catch (e) { console.error("[BROWSE] Puppeteer extraction failed:", e); }
+            }
+            removeThinkingMsg(convId, thinkId);
+            if (playable.length > 0) {
+              console.log(`%c[BROWSE] 🎬 Found ${playable.length} playable videos!`, "color: #00ff88; font-weight: bold");
+              const videoEmbeds = playable.slice(0, 3).map((v: { url: string }) => ({
+                url: v.url, platform: "other" as const, title: urlData.meta?.title || "Video",
+              }));
+              updateConversation(convId, (c) => ({
+                ...c,
+                messages: c.messages.map((m) => m.id === messageId ? {
+                  ...m,
+                  videos: [...(m.videos || []), ...videoEmbeds],
+                  sources: [...(m.sources || []), {
+                    url: videoUrl,
+                    title: urlData.meta?.title || videoUrl,
+                    favicon: `https://www.google.com/s2/favicons?domain=${(() => { try { return new URL(videoUrl).hostname; } catch { return ""; } })()}&sz=16`,
+                  }],
+                } : m),
+              }));
+            } else {
+              console.log(`%c[BROWSE] 🎬 No playable videos found — page already open in new tab`, "color: #ffaa00");
+            }
+          } catch (e) {
+            console.error("[BROWSE] Video extraction error:", e);
+            removeThinkingMsg(convId, thinkId);
+          }
+        })();
+      }
+
       // Scrape the first opened page and auto-summarize (with welcome)
       if (urlsToScrape.length > 0) {
         setTimeout(() => scrapeAndSummarize(convId, urlsToScrape[0]), 100);
@@ -2126,9 +2190,14 @@ export default function Home() {
         // Build sources directly from search results (single search, no duplicate call)
         let sources: WebSource[] = [];
         if (searchData.results && searchData.results.length > 0) {
-          searchResultsByConv.current[convId] = searchData.results.map(
+          // Merge new results with existing ones (new results first, old results kept for topic-switching)
+          const newResults = searchData.results.map(
             (r: { title: string; url: string }) => ({ url: r.url, title: r.title })
           );
+          const existingResults = searchResultsByConv.current[convId] || [];
+          const seenUrls = new Set(newResults.map((r: { url: string }) => r.url));
+          const mergedResults = [...newResults, ...existingResults.filter((r: { url: string }) => !seenUrls.has(r.url))];
+          searchResultsByConv.current[convId] = mergedResults.slice(0, 50);
           sources = searchData.results.map(
             (r: { title: string; url: string; snippet: string }) => {
               let favicon = "";
@@ -2475,12 +2544,20 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
         .filter((m) => !m.isThinking)
         .map((m) => {
           let content = m.content;
-          // Enrich assistant messages with context about what was shown (images, sources, search topic)
+          // Enrich assistant messages with context about what was shown (images, sources, videos, embeds)
           if (m.role === "assistant") {
             const extras: string[] = [];
             if (m.images && m.images.length > 0) {
               const altTexts = m.images.slice(0, 5).map((img) => img.alt || "").filter(Boolean);
               extras.push(`[I showed ${m.images.length} images${altTexts.length > 0 ? ` of: ${altTexts.join(", ")}` : ""}]`);
+            }
+            if (m.videos && m.videos.length > 0) {
+              const videoTitles = m.videos.slice(0, 3).map((v) => v.title || v.url).join(", ");
+              extras.push(`[I played ${m.videos.length} video(s): ${videoTitles}]`);
+            }
+            if (m.webEmbeds && m.webEmbeds.length > 0) {
+              const embedTitles = m.webEmbeds.slice(0, 3).map((e) => e.title || e.url).join(", ");
+              extras.push(`[I opened: ${embedTitles}]`);
             }
             if (m.sources && m.sources.length > 0) {
               const sourceTitles = m.sources.slice(0, 5).map((s) => s.title).join(", ");
@@ -3145,12 +3222,15 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
               });
 
               if (contentLinks.length > 0) {
-                // Store these links as search results for the conversation so the Nth-item interceptor can use them
-                searchResultsByConv.current[capturedConvId] = contentLinks.slice(0, 20).map((l) => {
+                // Merge new site results with existing ones (new first, old kept for topic-switching)
+                const newSiteResults = contentLinks.slice(0, 20).map((l) => {
                   let fullUrl = l.url;
                   if (fullUrl.startsWith("/")) { try { fullUrl = new URL(siteUrl).origin + fullUrl; } catch { /* keep */ } }
                   return { title: l.text, url: fullUrl, snippet: "" };
                 });
+                const existingSiteResults = searchResultsByConv.current[capturedConvId] || [];
+                const seenSiteUrls = new Set(newSiteResults.map((r: { url: string }) => r.url));
+                searchResultsByConv.current[capturedConvId] = [...newSiteResults, ...existingSiteResults.filter((r: { url: string }) => !seenSiteUrls.has(r.url))].slice(0, 50);
 
                 // Build a numbered list of results
                 const resultList = contentLinks.slice(0, 10).map((l, i) => `${i + 1}. ${l.text}`).join("\n");

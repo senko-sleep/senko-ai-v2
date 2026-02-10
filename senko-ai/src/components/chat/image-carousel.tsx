@@ -28,8 +28,8 @@ export function ImageCarousel({ images }: ImageCarouselProps) {
           <img
             src={images[0].url}
             alt={images[0].alt || ""}
-            className="h-auto max-h-[400px] w-full object-cover transition-transform duration-300 group-hover/img:scale-[1.02]"
-            loading="lazy"
+            className={`h-auto max-h-[400px] w-full transition-transform duration-300 group-hover/img:scale-[1.02] ${/\.gif(\?|$)/i.test(images[0].url) ? 'object-contain bg-black/20' : 'object-cover'}`}
+            loading={/\.gif(\?|$)/i.test(images[0].url) ? undefined : "lazy"}
             onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
           />
         </button>
@@ -97,10 +97,11 @@ export function ImageCarousel({ images }: ImageCarouselProps) {
                 src={img.url}
                 alt={img.alt || ""}
                 className={cn(
-                  "object-cover w-full transition-transform duration-300 group-hover/img:scale-[1.03]",
+                  "w-full transition-transform duration-300 group-hover/img:scale-[1.03]",
+                  /\.gif(\?|$)/i.test(img.url) ? "object-contain bg-black/20" : "object-cover",
                   images.length <= 4 ? "h-48" : "h-48 w-56"
                 )}
-                loading="lazy"
+                loading={/\.gif(\?|$)/i.test(img.url) ? undefined : "lazy"}
                 onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
               />
             </button>
