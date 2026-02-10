@@ -1,0 +1,58 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "functions": {
+    "src/app/api/search/route.ts": {
+      "maxDuration": 60,
+      "memory": 1024
+    },
+    "src/app/api/sources/route.ts": {
+      "maxDuration": 60,
+      "memory": 1024
+    },
+    "src/app/api/scrape/route.ts": {
+      "maxDuration": 30
+    },
+    "src/app/api/screenshot/route.ts": {
+      "maxDuration": 30,
+      "memory": 1024
+    }
+  },
+    "crons": [],
+  "headers": [
+    {
+      "source": "/api/search",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        },
+        {
+          "key": "Access-Control-Allow-Methods",
+          "value": "GET, OPTIONS"
+        },
+        {
+          "key": "Access-Control-Allow-Headers",
+          "value": "Content-Type"
+        }
+      ]
+    },
+    {
+      "source": "/api/sources",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        },
+        {
+          "key": "Access-Control-Allow-Methods",
+          "value": "GET, OPTIONS"
+        },
+        {
+          "key": "Access-Control-Allow-Headers",
+          "value": "Content-Type"
+        }
+      ]
+    }
+  ]
+}

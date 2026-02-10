@@ -1,0 +1,30 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="630" fill="#000000"/>
+  <rect x="0" y="0" width="1200" height="630" fill="url(#grad)" opacity="0.15"/>
+  <defs>
+    <radialGradient id="grad" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="#ff9500"/>
+      <stop offset="100%" stop-color="#000000"/>
+    </radialGradient>
+  </defs>
+  <!-- Icon circle -->
+  <rect x="516" y="180" width="168" height="168" rx="40" fill="#ff9500" fill-opacity="0.12" stroke="#ff9500" stroke-opacity="0.3" stroke-width="2"/>
+  <!-- Bot icon paths -->
+  <g transform="translate(556, 220)">
+    <rect x="12" y="24" width="64" height="48" rx="8" stroke="#ff9500" stroke-width="4" fill="none"/>
+    <circle cx="32" cy="48" r="6" fill="#ff9500"/>
+    <circle cx="56" cy="48" r="6" fill="#ff9500"/>
+    <line x1="44" y1="8" x2="44" y2="24" stroke="#ff9500" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="44" cy="6" r="5" stroke="#ff9500" stroke-width="3" fill="none"/>
+    <line x1="0" y1="42" x2="12" y2="42" stroke="#ff9500" stroke-width="4" stroke-linecap="round"/>
+    <line x1="76" y1="42" x2="88" y2="42" stroke="#ff9500" stroke-width="4" stroke-linecap="round"/>
+  </g>
+  <!-- Title -->
+  <text x="600" y="420" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="56" font-weight="700" fill="#ffffff">Senko AI</text>
+  <!-- Subtitle -->
+  <text x="600" y="470" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="22" fill="#a1a1aa">Agentic AI Assistant</text>
+  <!-- Feature pills -->
+  <g transform="translate(600, 510)" text-anchor="middle">
+    <text font-family="system-ui, sans-serif" font-size="16" fill="#ff9500" opacity="0.8">Web Search  ·  Browser Control  ·  Live Embeds  ·  Screenshots  ·  Maps</text>
+  </g>
+</svg>
