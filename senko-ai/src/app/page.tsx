@@ -1102,7 +1102,7 @@ export default function Home() {
       };
 
       // Helper to resolve a fabricated URL by fetching the real page and finding the Nth content link
-      const resolveFabricatedUrl = async (fabricatedUrl: string, msgId: string) => {
+      const resolveFabricatedUrl = async (fabricatedUrl: string, msgId: string, titleHint?: string) => {
         try {
           const parsed = new URL(fabricatedUrl);
           const baseUrl = parsed.origin;
@@ -1224,13 +1224,93 @@ export default function Home() {
             return l.text.length > 5 && !/\b(login|sign|register|home|menu)\b/i.test(l.text);
           });
 
-          if (targetLinks[targetIndex]) {
-            const targetLink = targetLinks[targetIndex];
+          // If we have a title hint (from the AI's embed title or message), try to match by title first
+          let bestMatch: { url: string; text: string } | null = null;
+          if (titleHint && targetLinks.length > 0) {
+            const hint = titleHint.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
+            const hintWords = hint.split(/\s+/).filter(w => w.length > 2);
+            if (hintWords.length > 0) {
+              let bestScore = 0;
+              for (const link of targetLinks) {
+                const linkText = link.text.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
+                const matchedWords = hintWords.filter(w => linkText.includes(w));
+                const score = matchedWords.length / hintWords.length;
+                if (score > bestScore) {
+                  bestScore = score;
+                  bestMatch = link;
+                }
+              }
+              // Only use title match if at least 40% of words match
+              if (bestScore < 0.4) bestMatch = null;
+              if (bestMatch) {
+                console.log(`%c[FABRICATION] 🎯 Title-matched: "${titleHint}" -> "${bestMatch.text}" (score: ${bestScore})`, "color: #00ff88; font-weight: bold");
+              }
+            }
+          }
+          // Also try to extract title keywords from the fabricated URL path
+          if (!bestMatch && targetLinks.length > 0) {
+            const pathSegments = parsed.pathname.split("/").filter(s => s.length > 0);
+            const lastSegment = pathSegments[pathSegments.length - 1] || "";
+            const urlWords = decodeURIComponent(lastSegment).replace(/[-_+]/g, " ").toLowerCase().split(/\s+/).filter(w => w.length > 2 && /^[a-z]+$/.test(w));
+            if (urlWords.length >= 2) {
+              let bestScore = 0;
+              for (const link of targetLinks) {
+                const linkText = link.text.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
+                const matchedWords = urlWords.filter(w => linkText.includes(w));
+                const score = matchedWords.length / urlWords.length;
+                if (score > bestScore) {
+                  bestScore = score;
+                  bestMatch = link;
+                }
+              }
+              if (bestScore < 0.4) bestMatch = null;
+              if (bestMatch) {
+                console.log(`%c[FABRICATION] 🎯 URL-path-matched: "${lastSegment}" -> "${bestMatch.text}" (score: ${bestScore})`, "color: #00ff88; font-weight: bold");
+              }
+            }
+          }
+          // Also try matching from recent AI messages (look for bold text or quoted titles)
+          // The title may have been mentioned in a PREVIOUS assistant message, not just the current one
+          if (!bestMatch && targetLinks.length > 0 && conv) {
+            const recentAssistantMsgs = conv.messages.filter(m => m.role === "assistant").slice(-5).reverse();
+            for (const aiMsg of recentAssistantMsgs) {
+              if (bestMatch) break;
+              // Extract bold text **title** or bracketed text [title]
+              const boldMatches = [...(aiMsg.content.matchAll(/\*\*(.+?)\*\*/g))].map(m => m[1]);
+              const bracketMatches = [...(aiMsg.content.matchAll(/\[([^\]]{5,})\]/g))].map(m => m[1]).filter(t => !t.startsWith("ACTION:"));
+              const candidates = [...boldMatches, ...bracketMatches];
+              for (const candidate of candidates) {
+                if (bestMatch) break;
+                if (candidate.length < 5) continue;
+                const candidateWords = candidate.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim().split(/\s+/).filter(w => w.length > 2);
+                if (candidateWords.length === 0) continue;
+                let topScore = 0;
+                let topLink: { url: string; text: string } | null = null;
+                for (const link of targetLinks) {
+                  const linkText = link.text.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
+                  const matchedWords = candidateWords.filter(w => linkText.includes(w));
+                  const score = matchedWords.length / candidateWords.length;
+                  if (score > topScore) {
+                    topScore = score;
+                    topLink = link;
+                  }
+                }
+                if (topScore >= 0.4 && topLink) {
+                  bestMatch = topLink;
+                  console.log(`%c[FABRICATION] 🎯 Message-title-matched: "${candidate}" -> "${bestMatch.text}" (score: ${topScore})`, "color: #00ff88; font-weight: bold");
+                }
+              }
+            }
+          }
+
+          const resolvedLink = bestMatch || targetLinks[targetIndex] || null;
+          if (resolvedLink) {
+            const targetLink = resolvedLink;
             let targetUrl = targetLink.url;
             if (targetUrl.startsWith("/")) {
               targetUrl = parsed.origin + targetUrl;
             }
-            console.log(`%c[FABRICATION] ✅ Found item #${targetIndex + 1}: ${targetLink.text} -> ${targetUrl}`, "color: #00ff88; font-weight: bold");
+            console.log(`%c[FABRICATION] ✅ Found item: ${targetLink.text} -> ${targetUrl}${bestMatch ? " (title-matched)" : ` (#${targetIndex + 1})`}`, "color: #00ff88; font-weight: bold");
             try {
               window.open(targetUrl, "_blank", "noopener,noreferrer");
               addTab(convId, targetUrl, targetLink.text);
@@ -1242,27 +1322,7 @@ export default function Home() {
               messages: c.messages.map((m) =>
                 m.id === msgId ? {
                   ...m,
-                  content: `Here's #${targetIndex + 1}: ${targetLink.text}~`,
-                  webEmbeds: [...(m.webEmbeds || []), { url: targetUrl, title: targetLink.text }],
-                } : m
-              ),
-            }));
-          } else if (targetLinks.length > 0) {
-            // Requested index out of range, open the first one
-            const targetLink = targetLinks[0];
-            let targetUrl = targetLink.url;
-            if (targetUrl.startsWith("/")) targetUrl = parsed.origin + targetUrl;
-            console.log(`%c[FABRICATION] ⚠️ Item #${targetIndex + 1} not found, opening first: ${targetLink.text}`, "color: #ffaa00; font-weight: bold");
-            try {
-              window.open(targetUrl, "_blank", "noopener,noreferrer");
-              addTab(convId, targetUrl, targetLink.text);
-            } catch (e) { console.error("[FABRICATION] Failed to open:", e); }
-            updateConversation(convId, (c) => ({
-              ...c,
-              messages: c.messages.map((m) =>
-                m.id === msgId ? {
-                  ...m,
-                  content: `Couldn't find #${targetIndex + 1}, here's the first one: ${targetLink.text}~`,
+                  content: bestMatch ? `Here's ${targetLink.text}~` : `Here's #${targetIndex + 1}: ${targetLink.text}~`,
                   webEmbeds: [...(m.webEmbeds || []), { url: targetUrl, title: targetLink.text }],
                 } : m
               ),
@@ -1512,7 +1572,7 @@ export default function Home() {
           // Check if the AI fabricated this embed URL
           if (!ytId && isFabricatedUrl(embedUrl)) {
             console.log(`%c[EMBED] 🚨 Fabricated embed URL detected — resolving real link instead`, "color: #ff4444; font-weight: bold", embedUrl);
-            resolveFabricatedUrl(embedUrl, messageId);
+            resolveFabricatedUrl(embedUrl, messageId, embedTitle);
           } else if (ytId) {
             videos.push({ url: embedUrl, platform: "youtube", embedId: ytId, title: embedTitle });
             addTab(convId, embedUrl, embedTitle);
