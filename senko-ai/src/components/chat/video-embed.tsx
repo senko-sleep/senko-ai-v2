@@ -1,9 +1,22 @@
 "use client";
 
+import { useState, useCallback, useRef } from "react";
 import type { VideoEmbed as VideoEmbedType } from "@/types/chat";
 
 interface VideoEmbedProps {
   video: VideoEmbedType;
+}
+
+// Sites known to block direct video access (CORS/referer/hotlink protection)
+// These get routed through the video proxy immediately instead of waiting for failure
+const NEEDS_PROXY_PATTERN = /\b(xvideos|pornhub|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|rule34video|hentaihaven|hanime|iwara|spankwire|xtube|thumbzilla|keezmovies)\b/i;
+
+function needsProxy(url: string): boolean {
+  return NEEDS_PROXY_PATTERN.test(url);
+}
+
+function getProxyUrl(url: string): string {
+  return `/api/video-proxy?url=${encodeURIComponent(url)}`;
 }
 
 function getYouTubeEmbedUrl(video: VideoEmbedType): string | null {
@@ -23,7 +36,37 @@ function getYouTubeEmbedUrl(video: VideoEmbedType): string | null {
   return null;
 }
 
+type VideoState = "loading" | "playing" | "proxy-retry" | "failed";
+
 export function VideoEmbed({ video }: VideoEmbedProps) {
+  // For known blocked sites, start with proxy URL immediately
+  const startWithProxy = needsProxy(video.url);
+  const [state, setState] = useState<VideoState>("loading");
+  const [currentSrc, setCurrentSrc] = useState(
+    startWithProxy ? getProxyUrl(video.url) : video.url
+  );
+  const [isProxied, setIsProxied] = useState(startWithProxy);
+  const retryCount = useRef(0);
+
+  const handleError = useCallback(() => {
+    if (!isProxied && retryCount.current === 0) {
+      // First failure on direct URL — retry through proxy
+      console.log(`[VideoEmbed] Direct load failed, retrying through proxy: ${video.url.slice(0, 80)}`);
+      retryCount.current = 1;
+      setState("proxy-retry");
+      setIsProxied(true);
+      setCurrentSrc(getProxyUrl(video.url));
+    } else {
+      // Proxy also failed — show fallback
+      console.log(`[VideoEmbed] Proxy also failed, showing fallback: ${video.url.slice(0, 80)}`);
+      setState("failed");
+    }
+  }, [video.url, isProxied]);
+
+  const handleCanPlay = useCallback(() => {
+    setState("playing");
+  }, []);
+
   if (video.platform === "youtube") {
     const embedUrl = getYouTubeEmbedUrl(video);
     if (!embedUrl) return null;
@@ -48,39 +91,49 @@ export function VideoEmbed({ video }: VideoEmbedProps) {
     );
   }
 
-  // Generic video embed (mp4, webm, m3u8, etc.)
+  // Generic video embed (mp4, webm, m3u8, etc.) with automatic proxy retry
   return (
     <div className="mt-2 overflow-hidden rounded-lg border border-white/[0.06] bg-black/40">
-      <video
-        src={video.url}
-        controls
-        autoPlay
-        playsInline
-        crossOrigin="anonymous"
-        className="w-full max-h-[480px]"
-        preload="auto"
-        onError={(e) => {
-          // If video fails to load (CORS, format issues), show a fallback link
-          const target = e.target as HTMLVideoElement;
-          const parent = target.parentElement;
-          if (parent && !parent.querySelector(".video-fallback")) {
-            target.style.display = "none";
-            const fallback = document.createElement("a");
-            fallback.href = video.url;
-            fallback.target = "_blank";
-            fallback.rel = "noopener noreferrer";
-            fallback.className = "video-fallback flex items-center justify-center gap-2 py-8 px-4 text-sm text-zinc-400 hover:text-[var(--senko-accent)] transition-colors";
-            fallback.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg> Open video in new tab`;
-            parent.appendChild(fallback);
-          }
-        }}
-      >
-        Your browser does not support video.
-      </video>
+      {state === "failed" ? (
+        <a
+          href={video.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center justify-center gap-2 py-8 px-4 text-sm text-zinc-400 hover:text-[var(--senko-accent)] transition-colors"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          Open video in new tab
+        </a>
+      ) : (
+        <>
+          {state === "proxy-retry" && (
+            <div className="flex items-center justify-center gap-2 py-2 text-[11px] text-zinc-500">
+              <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/></svg>
+              Retrying through proxy...
+            </div>
+          )}
+          <video
+            key={currentSrc}
+            src={currentSrc}
+            controls
+            autoPlay
+            playsInline
+            className="w-full max-h-[480px]"
+            preload="auto"
+            onError={handleError}
+            onCanPlay={handleCanPlay}
+          >
+            Your browser does not support video.
+          </video>
+        </>
+      )}
       {video.title && (
         <div className="px-2 py-1.5 bg-white/[0.02] flex items-center gap-2">
           <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-600 shrink-0"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-          <p className="text-[11px] text-zinc-500 truncate">{video.title}</p>
+          <p className="text-[11px] text-zinc-500 truncate">
+            {video.title}
+            {isProxied && state === "playing" && <span className="ml-1 text-zinc-600">(proxied)</span>}
+          </p>
         </div>
       )}
     </div>

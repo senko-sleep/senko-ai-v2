@@ -330,7 +330,8 @@ Available actions:
   [ACTION:OPEN_APP:appname] - Open a desktop app (calculator, notepad, chrome, spotify, discord, vscode, etc).
   [ACTION:OPEN_RESULT:N] - Open the Nth search result from a previous search in the user's browser.
   [ACTION:SCRAPE_IMAGES:url] - Go to a specific URL and scrape all images from that page. Shows them in a carousel. Use when user wants images FROM a specific website.
-  [ACTION:READ_URL:url] - Fetch and read a webpage's content, links, images, and metadata. Use this to deeply read a source page, navigate into links, or scan a site for information. Returns structured data you can use to answer questions.
+  [ACTION:READ_URL:url] - Fetch and read a webpage's content, links, images, and metadata. Use this to deeply read a source page, navigate into links, or scan a site for information. Returns structured data you can use to answer questions. For JS-heavy sites (video sites, social media), this automatically uses a real browser.
+  [ACTION:BROWSE:url] - Load a page in a REAL BROWSER (Puppeteer). Use this when you need accurate links and content from JS-heavy sites that don't work with simple fetching. This runs JavaScript, intercepts network requests, and extracts video URLs from rendered DOM. Use for: xvideos, pornhub, xhamster, reddit, twitter, instagram, tiktok, or any site where READ_URL returns incomplete/empty results.
   [ACTION:SCREENSHOT:url] - Screenshot a website and show it in chat.
   [ACTION:EMBED:url|title] - Embed a live website in chat as an interactive iframe. Great for showing sites inline without leaving the chat.
   [ACTION:CLOSE_TAB:N or name] - Close an open tab by number (1-indexed) or by name/URL substring. The UI shows a tab bar of all pages you've opened.
@@ -342,23 +343,23 @@ Available actions:
 COMPLEX BROWSING:
 You are a full browser agent. You can chain multiple actions to accomplish complex tasks on websites:
 
-1. **Navigate to a section**: READ_URL the page first, find the section link, then OPEN_URL or EMBED it.
-   - "go to the yuri section on X site" -> [ACTION:READ_URL:https://site.com] -> (system feeds you the page links) -> you find the yuri section link -> [ACTION:EMBED:https://site.com/categories/yuri|Yuri Section]
+1. **Navigate to a section**: BROWSE/READ_URL the page first, find the section link, then OPEN_URL or EMBED it.
+   - "go to the yuri section on X site" -> [ACTION:BROWSE:https://site.com] -> (system feeds you the page links) -> you find the yuri section link -> [ACTION:BROWSE:https://site.com/categories/yuri]
 
-2. **Get a specific result**: READ_URL a listing page, find the Nth item's link, then OPEN_URL or EMBED it.
-   - "get the first video" -> [ACTION:READ_URL:https://site.com] -> find first video link -> [ACTION:EMBED:https://site.com/video/123|First Video]
+2. **Get a specific result**: BROWSE a listing page, find the Nth item's link, then OPEN_URL or BROWSE it.
+   - "get the first video" -> [ACTION:BROWSE:https://site.com] -> find first video link -> [ACTION:BROWSE:https://site.com/video/123]
    - "open the 4th result" -> look at the page links, pick #4 -> [ACTION:OPEN_URL:https://site.com/result4]
 
 3. **Search within a site**: Construct the site's search URL directly. Most sites use /search?q= or /results?search_query= patterns.
-   - "search for X on that site" -> [ACTION:OPEN_URL:https://site.com/search?q=X] or [ACTION:READ_URL:https://site.com/search?q=X]
-   - Then if user wants a specific result from that search -> READ_URL the search page -> find the link -> OPEN_URL/EMBED it
+   - "search for X on that site" -> [ACTION:BROWSE:https://site.com/search?q=X]
+   - Then if user wants a specific result from that search -> BROWSE the search page -> find the link -> BROWSE/OPEN_URL it
 
 4. **Go to a specific page**: Construct pagination URLs.
-   - "go to page 4" -> [ACTION:READ_URL:https://site.com/?p=4] or [ACTION:OPEN_URL:https://site.com/page/4]
+   - "go to page 4" -> [ACTION:BROWSE:https://site.com/?p=4] or [ACTION:OPEN_URL:https://site.com/page/4]
 
-5. **Click things on a page**: Use READ_URL to scan the page, find the right link, then OPEN_URL it.
+5. **Click things on a page**: Use BROWSE to scan the page, find the right link, then OPEN_URL it.
 
-When the system feeds you page content after a READ_URL, you MUST look at the links and use another action to navigate deeper. You can use [ACTION:OPEN_URL:...], [ACTION:EMBED:...], or another [ACTION:READ_URL:...] in your follow-up response. This is how you chain actions to accomplish complex browsing tasks.
+When the system feeds you page content after a BROWSE/READ_URL, you MUST look at the links and use another action to navigate deeper. You can use [ACTION:OPEN_URL:...], [ACTION:EMBED:...], [ACTION:BROWSE:...], or [ACTION:READ_URL:...] in your follow-up response. This is how you chain actions to accomplish complex browsing tasks.
 
 COMMON SITE URL PATTERNS:
   * YouTube search: https://www.youtube.com/results?search_query=URL_ENCODED_QUERY
@@ -389,6 +390,21 @@ HOW TO USE ACTIONS NATURALLY:
 - You have access to previous search results. If the user says "embed the first result" or "open result 3", you know which URLs those are.
 - When the user wants something SPECIFIC from a page (first video, 4th result, a section) -> use READ_URL first to scan the page, then use OPEN_URL/EMBED on the specific link you find.
 
+TOPIC SWITCHING — READ THIS CAREFULLY:
+When the user sends a NEW message, ALWAYS ask yourself: "Is this a continuation of the previous topic, or a NEW independent request?"
+Signs of a NEW topic / independent request:
+- The message is a complete, self-contained request (e.g., "open a random manga website", "search for cats", "tell me about space")
+- The message introduces a NEW subject that wasn't being discussed before
+- The message uses words like "now", "instead", "something else", "different", "another"
+- The message is an action request (open, search, find, show me) about something DIFFERENT from what was just discussed
+Signs of CONTINUING the previous topic:
+- The message explicitly references the previous context ("that site", "the first result", "tell me more", "what about X on there")
+- The message uses pronouns referring to previous content ("open it", "show me that", "go there")
+- The message asks a follow-up question about the same subject
+
+**CRITICAL**: When the user makes a NEW request, treat it as COMPLETELY INDEPENDENT. Do NOT connect it to previous context. Example: If you just visited Random.org and the user says "open a random manga website" — "random" here means ARBITRARY/ANY, it has NOTHING to do with Random.org. The user wants you to find and open a manga website. Another example: If you were discussing cooking and the user says "open a gaming website" — this is a NEW topic, don't mention cooking.
+Common words that are ADJECTIVES, not references to previous context: "random" (= any/arbitrary), "new" (= different/fresh), "good" (= quality), "best" (= top), "cool" (= interesting). These describe the NEW request, they do NOT refer back to previous messages.
+
 CRITICAL RULES:
 1. For research, facts, how-to, information -> use [ACTION:SEARCH:query]. The system auto-finds images and scrapes sources. **EVEN IF you were just having small talk or playing a game**, if the user asks a factual question, asks you to look something up, or wants info on ANY topic -- you MUST use SEARCH. Do NOT just answer from memory or continue chatting. The conversation context does NOT matter -- if they want info, SEARCH for it. Examples: "tell me about X", "what is X", "who is X", "how does X work", "look up X", "search X" -> ALL of these ALWAYS get [ACTION:SEARCH:query] no matter what you were talking about before.
 2. NEVER output image URLs, markdown images ![](url), <img> tags, or raw image links. The UI carousel handles ALL images automatically. Do NOT describe or list what images were found -- the UI shows them.
@@ -414,27 +430,31 @@ Examples of CORRECT action responses (SHORT + personality + NORMAL CAPS):
 - "i'm feeling sad" -> Aww no ;w; what's going on? Wanna talk about it?
 
 Examples of COMPLEX BROWSING (chaining actions):
-- "go to pornhub and get the first video" -> Lemme check what's on there~ [ACTION:READ_URL:https://www.pornhub.com]
+- "go to pornhub and get the first video" -> Lemme check what's on there~ [ACTION:BROWSE:https://www.pornhub.com]
   (then when system feeds you the page with links, you find the first video link and respond:)
-  -> Found it! Here~ [ACTION:EMBED:https://www.pornhub.com/view_video.php?viewkey=xxx|First Video]
-- "go to the yuri section" -> Lemme find that section~ [ACTION:READ_URL:https://site.com]
+  -> Found it! Here~ [ACTION:BROWSE:https://www.pornhub.com/view_video.php?viewkey=xxx]
+- "go to xvideos and search for X" -> On it~ [ACTION:BROWSE:https://www.xvideos.com/?k=X]
+  (then find the video links and respond with the specific one)
+- "go to the yuri section" -> Lemme find that section~ [ACTION:BROWSE:https://site.com]
   (then find the category link and respond:)
-  -> Here's the yuri section~ [ACTION:EMBED:https://site.com/categories/yuri|Yuri]
-- "search for X on that website" -> Searching on there~ [ACTION:READ_URL:https://site.com/search?q=X]
+  -> Here's the yuri section~ [ACTION:BROWSE:https://site.com/categories/yuri]
+- "search for X on that website" -> Searching on there~ [ACTION:BROWSE:https://site.com/search?q=X]
   (then find results and respond with the specific one)
-- "go to page 4 of the results" -> [ACTION:OPEN_URL:https://site.com/search?q=X&page=4]
-- "type anime in the search bar on that site" -> [ACTION:OPEN_URL:https://site.com/search?q=anime] or [ACTION:READ_URL:https://site.com/search?q=anime]
+- "go to page 4 of the results" -> [ACTION:BROWSE:https://site.com/search?q=X&page=4]
+- "type anime in the search bar on that site" -> [ACTION:BROWSE:https://site.com/search?q=anime]
 
 MULTI-STEP NAVIGATION (finding specific content):
 When the user wants a SPECIFIC item by name (e.g., "find [zaviel]Full Eevee Animation on rule34video"):
-  Step 1: Construct the site's search URL -> [ACTION:READ_URL:https://rule34video.com/search/?q=zaviel+eevee+animation]
+  Step 1: Construct the site's search URL -> [ACTION:BROWSE:https://rule34video.com/search/?q=zaviel+eevee+animation]
   Step 2: System feeds you the search results page with links. Scan the links for the matching title.
-  Step 3a: If you find it -> [ACTION:READ_URL:matching_url] to read the video page and get the direct video URL
-  Step 3b: If NOT found on this page -> look for "next page" or pagination links and [ACTION:READ_URL:next_page_url] to keep searching
-  Step 4: When you reach the video page, the system will AUTOMATICALLY extract video sources (mp4/webm/m3u8) and play them inline. You don't need to do anything extra — just navigate to the right page with READ_URL and the system handles the rest.
+  Step 3a: If you find it -> [ACTION:BROWSE:matching_url] to read the video page and get the direct video URL
+  Step 3b: If NOT found on this page -> look for "next page" or pagination links and [ACTION:BROWSE:next_page_url] to keep searching
+  Step 4: When you reach the video page, the system will AUTOMATICALLY extract video sources (mp4/webm/m3u8) and play them inline. You don't need to do anything extra — just navigate to the right page and the system handles the rest.
+
+IMPORTANT: For video sites (xvideos, pornhub, xhamster, rule34video, etc.) and social media (twitter, reddit, instagram, tiktok), ALWAYS use [ACTION:BROWSE:url] instead of [ACTION:READ_URL:url]. BROWSE uses a real browser that runs JavaScript and intercepts network requests, giving you accurate links and video URLs. READ_URL only does a static fetch which misses JS-rendered content.
 
 VIDEO EXTRACTION — HOW IT WORKS (you don't need to do this manually):
-The system automatically deep-scans every page you READ_URL for video sources using 10+ extraction strategies:
+The system automatically deep-scans every page you BROWSE or READ_URL for video sources using 10+ extraction strategies:
 - og:video meta tags, twitter:player tags
 - <video> and <source> HTML tags
 - data-* attributes (data-src, data-video-url, data-mp4, etc.)
@@ -449,11 +469,11 @@ When videos are found, they play INLINE in the chat AND the page opens in a new 
 Your job is just to NAVIGATE to the right page — the system does the extraction.
 
 KEY RULES FOR MULTI-STEP:
-- You can chain up to 8 READ_URL actions to navigate through pages. NEVER give up after one page.
+- You can chain up to 8 BROWSE/READ_URL actions to navigate through pages. NEVER give up after one page.
 - When searching for a specific item and it's not on the current page, CHECK PAGINATION. Look for links like "Next", "page 2", ">>", "→", etc.
 - When the system feeds you "Video sources found on page", those are DIRECT playable video URLs (mp4/webm). The system already played them — just confirm to the user.
 - If no video sources are found but you're on the right page, use [ACTION:OPEN_URL:page_url] to open it in their browser as a fallback.
-- ALWAYS prefer READ_URL over EMBED for sites with video players — the proxy can't handle JS video players, so the system opens them in the browser instead.
+- ALWAYS prefer BROWSE over EMBED for sites with video players — the proxy can't handle JS video players, so the system opens them in the browser instead.
 - If a search returns no results, try DIFFERENT search terms. Break the title into keywords. Try the artist name alone, then the character name, etc.
 - For video sites, know the EXACT search URL patterns (replace QUERY with the actual search terms, URL-encoded with + for spaces):
   * rule34video.com: https://rule34video.com/search/?q=QUERY
@@ -465,8 +485,9 @@ KEY RULES FOR MULTI-STEP:
   * spankbang.com: https://spankbang.com/s/QUERY/
   * tube8.com: https://www.tube8.com/searches?q=QUERY
   * xnxx.com: https://www.xnxx.com/search/QUERY
-- When you find a video page, READ_URL it — don't just OPEN_URL it. READ_URL triggers the deep video extraction pipeline which will find and play the video automatically.
+- When you find a video page, BROWSE it — don't just OPEN_URL it. BROWSE triggers the deep video extraction pipeline which will find and play the video automatically.
 - NEVER say "I can't find the video" or "I couldn't extract it" — keep trying different approaches. Search with fewer keywords, try the site's browse/category pages, check related videos, etc.
+- For ANY site where you need accurate, real links — use BROWSE. It loads the page in a real browser and gives you the actual rendered content, not just raw HTML.
 
 Examples of WRONG action responses (DO NOT DO THIS):
 - Writing a list of what you expect to find before results come back
@@ -1027,7 +1048,7 @@ export default function Home() {
       const content = contentToParse;
       console.log(`%c[processActions] \u{1F4DD} Message content length: ${content.length}`, "color: #cc88ff", { fromParam: !!finalContent, preview: content.slice(0, 80) });
       // Match both [ACTION:TYPE:value] and malformed [TYPE:value] patterns
-      const actionRegex = /\[ACTION:(OPEN_URL|SEARCH|IMAGE|OPEN_RESULT|OPEN_APP|SCREENSHOT|EMBED|SCRAPE_IMAGES|READ_URL|CLOSE_TAB|SWITCH_TAB|LIST_TABS|CLICK_IN_TAB|OPEN_TAB):([^\]]+)\]/g;
+      const actionRegex = /\[ACTION:(OPEN_URL|SEARCH|IMAGE|OPEN_RESULT|OPEN_APP|SCREENSHOT|EMBED|SCRAPE_IMAGES|READ_URL|BROWSE|CLOSE_TAB|SWITCH_TAB|LIST_TABS|CLICK_IN_TAB|OPEN_TAB):([^\]]+)\]/g;
       let match;
       const actions: { type: string; value: string }[] = [];
       while ((match = actionRegex.exec(content)) !== null) {
@@ -1170,7 +1191,7 @@ export default function Home() {
                 const msg = conv.messages[i];
                 if (msg.sources?.length) { contextUrl = msg.sources[msg.sources.length - 1].url; break; }
                 if (msg.webEmbeds?.length) { contextUrl = msg.webEmbeds[msg.webEmbeds.length - 1].url; break; }
-                const actionUrlMatch = msg.content.match(/\[ACTION:(?:READ_URL|OPEN_URL):([^\]]+)\]/);
+                const actionUrlMatch = msg.content.match(/\[ACTION:(?:READ_URL|BROWSE|OPEN_URL):([^\]]+)\]/);
                 if (actionUrlMatch) { contextUrl = actionUrlMatch[1].trim(); break; }
               }
             }
@@ -1187,7 +1208,9 @@ export default function Home() {
           console.log(`%c[FABRICATION] 🔄 Fetching real page: ${fetchUrl} (target index: ${targetIndex})`, "color: #ff8800; font-weight: bold");
           const thinkId = addThinkingMsg(convId, `finding the real link on ${parsed.hostname}...`);
 
-          const res = await fetch(`/api/url?url=${encodeURIComponent(fetchUrl)}&maxContent=8000`);
+          // Use /api/browse for JS-heavy sites to get accurate rendered links
+          const isJsHeavy = /\b(xvideos|pornhub|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|rule34video|twitter|x\.com|reddit|instagram|tiktok)\b/i.test(fetchUrl);
+          const res = await fetch(`${isJsHeavy ? "/api/browse" : "/api/url"}?url=${encodeURIComponent(fetchUrl)}&maxContent=8000`);
           const data = await res.json();
           removeThinkingMsg(convId, thinkId);
 
@@ -1484,13 +1507,17 @@ export default function Home() {
             }
           })();
         }
-        if (action.type === "READ_URL") {
+        if (action.type === "READ_URL" || action.type === "BROWSE") {
           // Deep read a URL - fetch content, links, images, metadata and feed back to AI
-          console.log(`%c[READ] 📖 Deep reading URL`, "color: #00ccff; font-weight: bold; font-size: 12px", action.value);
+          // Use /api/browse (Puppeteer) for JS-heavy sites, /api/url (static fetch) for others
+          const isJsHeavySite = /\b(xvideos|pornhub|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|hentaihaven|hanime|iwara|rule34video|dailymotion|vimeo|bitchute|rumble|streamable|twitch|tiktok|instagram|twitter|x\.com|facebook|reddit)\b/i.test(action.value);
+          const useBrowse = action.type === "BROWSE" || isJsHeavySite;
+          const endpoint = useBrowse ? "/api/browse" : "/api/url";
+          console.log(`%c[READ] 📖 ${useBrowse ? "BROWSING (Puppeteer)" : "Reading"} URL`, "color: #00ccff; font-weight: bold; font-size: 12px", action.value);
           (async () => {
-            const thinkId = addThinkingMsg(convId, `reading ${action.value}...`);
+            const thinkId = addThinkingMsg(convId, useBrowse ? `browsing ${action.value}...` : `reading ${action.value}...`);
             try {
-              const res = await fetch(`/api/url?url=${encodeURIComponent(action.value)}&maxContent=8000`);
+              const res = await fetch(`${endpoint}?url=${encodeURIComponent(action.value)}&maxContent=8000`);
               let data = await res.json();
               removeThinkingMsg(convId, thinkId);
               if (data.error) {
@@ -1516,20 +1543,34 @@ export default function Home() {
                 return /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(u) || /^video\//i.test(v.type || "");
               });
 
-              // If this looks like a video page but no direct videos found, try Puppeteer deep extraction
+              // If this looks like a video page but no direct videos found, try real browser browsing first, then video-extract
               if (isVideoPage && directVideos.length === 0) {
-                console.log(`%c[READ_URL] 🎬 Video page detected but no direct sources — trying Puppeteer deep extraction`, "color: #ff9900; font-weight: bold");
+                console.log(`%c[READ_URL] 🎬 Video page detected but no direct sources — trying real browser`, "color: #ff9900; font-weight: bold");
                 const extractThinkId = addThinkingMsg(convId, `deep-scanning video player on ${action.value}...`);
                 try {
-                  const extractRes = await fetch(`/api/video-extract?url=${encodeURIComponent(action.value)}`);
-                  const extractData = await extractRes.json();
-                  removeThinkingMsg(convId, extractThinkId);
-                  if (extractData.videos && extractData.videos.length > 0) {
-                    console.log(`%c[READ_URL] 🎬 Puppeteer found ${extractData.videos.length} videos!`, "color: #00ff88; font-weight: bold", extractData.videos.map((v: {url:string}) => v.url.slice(0, 80)));
-                    foundVideos = extractData.videos;
+                  // Try /api/browse first (loads page in real browser, intercepts network requests)
+                  const browseRes = await fetch(`/api/browse?url=${encodeURIComponent(action.value)}&maxContent=4000`);
+                  const browseData = await browseRes.json();
+                  if (browseData.videos && browseData.videos.length > 0) {
+                    console.log(`%c[READ_URL] 🎬 Browse found ${browseData.videos.length} videos!`, "color: #00ff88; font-weight: bold", browseData.videos.map((v: {url:string}) => v.url.slice(0, 80)));
+                    foundVideos = browseData.videos;
+                    // Also update links/content from the browsed page (more accurate than static fetch)
+                    if (browseData.links && browseData.links.length > (data.links || []).length) {
+                      data.links = browseData.links;
+                      data.content = browseData.content || data.content;
+                    }
+                  } else {
+                    // Fallback to dedicated video-extract endpoint
+                    const extractRes = await fetch(`/api/video-extract?url=${encodeURIComponent(action.value)}`);
+                    const extractData = await extractRes.json();
+                    if (extractData.videos && extractData.videos.length > 0) {
+                      console.log(`%c[READ_URL] 🎬 Video-extract found ${extractData.videos.length} videos!`, "color: #00ff88; font-weight: bold", extractData.videos.map((v: {url:string}) => v.url.slice(0, 80)));
+                      foundVideos = extractData.videos;
+                    }
                   }
+                  removeThinkingMsg(convId, extractThinkId);
                 } catch (e) {
-                  console.error("[READ_URL] Puppeteer extraction failed:", e);
+                  console.error("[READ_URL] Video extraction failed:", e);
                   removeThinkingMsg(convId, extractThinkId);
                 }
               }
@@ -2019,13 +2060,14 @@ export default function Home() {
         (async () => {
           const thinkId = addThinkingMsg(convId, `extracting video from page...`);
           try {
-            const urlRes = await fetch(`/api/url?url=${encodeURIComponent(videoUrl)}&maxContent=4000`);
+            // Use /api/browse (Puppeteer) for video sites — it intercepts network requests and gets real video URLs
+            const urlRes = await fetch(`/api/browse?url=${encodeURIComponent(videoUrl)}&maxContent=4000`);
             const urlData = await urlRes.json();
             let foundVids: { url: string; type?: string; quality?: string }[] = urlData.videos || [];
-            let playable = foundVids.filter((v: { url: string; type?: string }) => /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(v.url) || /^video\//i.test(v.type || ""));
-            // Puppeteer fallback
+            let playable = foundVids.filter((v: { url: string; type?: string }) => /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(v.url) || /^video\//i.test(v.type || "") || /mpegurl|dash/i.test(v.type || ""));
+            // Puppeteer video-extract fallback if browse didn't find playable videos
             if (playable.length === 0) {
-              console.log(`%c[BROWSE] 🎬 No direct videos from static scrape, trying Puppeteer`, "color: #ff9900");
+              console.log(`%c[BROWSE] 🎬 No direct videos from browse, trying video-extract fallback`, "color: #ff9900");
               try {
                 const extractRes = await fetch(`/api/video-extract?url=${encodeURIComponent(videoUrl)}`);
                 const extractData = await extractRes.json();
@@ -3178,7 +3220,9 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
 
           (async () => {
             try {
-              const res = await fetch(`/api/url?url=${encodeURIComponent(searchUrl)}&maxContent=12000`);
+              // Use /api/browse for JS-heavy sites to get accurate rendered links
+              const isJsHeavy = /\b(xvideos|pornhub|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|rule34video|twitter|x\.com|reddit|instagram|tiktok)\b/i.test(siteUrl);
+              const res = await fetch(`${isJsHeavy ? "/api/browse" : "/api/url"}?url=${encodeURIComponent(searchUrl)}&maxContent=12000`);
               const data = await res.json();
               removeThinkingMsg(capturedConvId, thinkId);
 
@@ -3334,7 +3378,9 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
 
           (async () => {
             try {
-              const res = await fetch(`/api/url?url=${encodeURIComponent(contextUrl)}&maxContent=8000`);
+              // Use /api/browse for JS-heavy sites to get accurate rendered links
+              const isJsHeavy = /\b(xvideos|pornhub|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|rule34video|twitter|x\.com|reddit|instagram|tiktok)\b/i.test(contextUrl);
+              const res = await fetch(`${isJsHeavy ? "/api/browse" : "/api/url"}?url=${encodeURIComponent(contextUrl)}&maxContent=8000`);
               const data = await res.json();
               removeThinkingMsg(capturedConvId, thinkId);
 
@@ -3485,7 +3531,7 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
             (async () => {
               const thinkId = addThinkingMsg(capturedConvId, `extracting video from ${picked.title}...`);
               try {
-                const urlRes = await fetch(`/api/url?url=${encodeURIComponent(picked.url)}&maxContent=4000`);
+                const urlRes = await fetch(`/api/browse?url=${encodeURIComponent(picked.url)}&maxContent=4000`);
                 const urlData = await urlRes.json();
                 let foundVids: { url: string; type?: string; quality?: string }[] = urlData.videos || [];
                 let playable = foundVids.filter((v: { url: string; type?: string }) => /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(v.url) || /^video\//i.test(v.type || ""));
@@ -3577,7 +3623,7 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
                 (async () => {
                   const thinkId = addThinkingMsg(capturedConvId, `extracting video from ${matchedResult.title}...`);
                   try {
-                    const urlRes = await fetch(`/api/url?url=${encodeURIComponent(matchedResult.url)}&maxContent=4000`);
+                    const urlRes = await fetch(`/api/browse?url=${encodeURIComponent(matchedResult.url)}&maxContent=4000`);
                     const urlData = await urlRes.json();
                     let foundVids: { url: string; type?: string; quality?: string }[] = urlData.videos || [];
                     let playable = foundVids.filter((v: { url: string; type?: string }) => /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(v.url) || /^video\//i.test(v.type || ""));

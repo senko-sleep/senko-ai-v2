@@ -1435,6 +1435,294 @@ app.get("/url", async (req, res) => {
   }
 });
 
+// GET /browse?url=URL&maxContent=5000 — REAL BROWSER browsing with Puppeteer
+// Unlike /url (static fetch), this loads the page in a real browser, runs JS, and extracts
+// links, content, videos, and images from the fully rendered DOM. Use this for JS-heavy sites.
+app.get("/browse", async (req, res) => {
+  const url = req.query.url;
+  const maxContent = parseInt(req.query.maxContent || "8000", 10);
+  if (!url) return res.status(400).json({ error: "url required" });
+
+  let page;
+  try {
+    const b = await getBrowser();
+    page = await b.newPage();
+    await page.setUserAgent(UA);
+    await page.setViewport({ width: 1920, height: 1080 });
+
+    // Intercept network requests to catch video URLs
+    const networkVideos = [];
+    const seenNetworkUrls = new Set();
+    await page.setRequestInterception(true);
+    page.on("request", (request) => {
+      const reqUrl = request.url();
+      const resourceType = request.resourceType();
+      if (resourceType === "media" || resourceType === "xhr" || resourceType === "fetch" || resourceType === "other") {
+        const lower = reqUrl.toLowerCase();
+        if (/\.(?:mp4|webm|m3u8|mpd|flv|ts)\b/i.test(lower) || /video\/|mpegurl|dash/i.test(request.headers()["accept"] || "")) {
+          if (!seenNetworkUrls.has(reqUrl) && !/\b(ad[sv]?|tracker|pixel|beacon|analytics|exoclick|trafficjunky|juicyads)\b/i.test(lower)) {
+            seenNetworkUrls.add(reqUrl);
+            let type = "";
+            if (/\.mp4/i.test(reqUrl)) type = "video/mp4";
+            else if (/\.webm/i.test(reqUrl)) type = "video/webm";
+            else if (/\.m3u8/i.test(reqUrl)) type = "application/x-mpegURL";
+            else if (/\.mpd/i.test(reqUrl)) type = "application/dash+xml";
+            const qMatch = reqUrl.match(/(\d{3,4})p/);
+            networkVideos.push({ url: reqUrl, type: type || undefined, quality: qMatch ? qMatch[1] + "p" : undefined, source: "network" });
+          }
+        }
+      }
+      // Block ads/trackers to speed up page load
+      if (/exoclick|trafficjunky|juicyads|adglare|popads|popcash|adsterra|propellerads/i.test(reqUrl)) {
+        request.abort();
+      } else {
+        request.continue();
+      }
+    });
+
+    // Also catch video URLs from responses
+    page.on("response", async (response) => {
+      try {
+        const respUrl = response.url();
+        const contentType = response.headers()["content-type"] || "";
+        if (/video\/|mpegurl|dash\+xml|octet-stream/i.test(contentType)) {
+          if (!seenNetworkUrls.has(respUrl) && !/\b(ad[sv]?|tracker|pixel)\b/i.test(respUrl)) {
+            seenNetworkUrls.add(respUrl);
+            networkVideos.push({ url: respUrl, type: contentType.split(";")[0].trim(), source: "response" });
+          }
+        }
+      } catch {}
+    });
+
+    console.log(`[browse] Loading ${url}`);
+    await page.goto(url, { waitUntil: "networkidle2", timeout: 25000 }).catch(() => {});
+    const finalUrl = page.url();
+
+    // Wait for dynamic content to render
+    await new Promise((r) => setTimeout(r, 2000));
+
+    // Try clicking play button for video pages
+    try {
+      await page.evaluate(() => {
+        const selectors = [
+          "video", ".play-button", ".vjs-big-play-button", ".jw-icon-display",
+          "[class*='play']", "[aria-label*='play']", "[title*='play']",
+          ".fp-play", ".plyr__control--overlaid", ".video-play-button",
+          "button[class*='play']", "div[class*='play']",
+        ];
+        for (const sel of selectors) {
+          const el = document.querySelector(sel);
+          if (el) { el.click(); break; }
+        }
+      });
+      await new Promise((r) => setTimeout(r, 2000));
+    } catch {}
+
+    // Extract everything from the rendered DOM
+    const pageData = await page.evaluate((maxLen) => {
+      const result = {
+        title: document.title || "",
+        description: "",
+        content: "",
+        links: [],
+        images: [],
+        videos: [],
+        headings: [],
+      };
+
+      // Meta description
+      const descMeta = document.querySelector('meta[name="description"]') || document.querySelector('meta[property="og:description"]');
+      if (descMeta) result.description = descMeta.getAttribute("content") || "";
+
+      // OG image
+      const ogImg = document.querySelector('meta[property="og:image"]');
+      const ogImage = ogImg ? ogImg.getAttribute("content") : "";
+
+      // Extract text content from main content areas
+      const mainEl = document.querySelector("main, article, [role='main'], .content, #content, .main-content") || document.body;
+      const walker = document.createTreeWalker(mainEl, NodeFilter.SHOW_TEXT, {
+        acceptNode: (node) => {
+          const parent = node.parentElement;
+          if (!parent) return NodeFilter.FILTER_REJECT;
+          const tag = parent.tagName.toLowerCase();
+          if (["script", "style", "noscript", "svg", "iframe"].includes(tag)) return NodeFilter.FILTER_REJECT;
+          const text = node.textContent.trim();
+          if (text.length < 2) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      });
+      const textParts = [];
+      let node;
+      while ((node = walker.nextNode()) && textParts.join("\n").length < maxLen) {
+        textParts.push(node.textContent.trim());
+      }
+      result.content = textParts.join("\n").replace(/\n{3,}/g, "\n\n").slice(0, maxLen);
+
+      // Extract ALL links from rendered DOM
+      const seenUrls = new Set();
+      document.querySelectorAll("a[href]").forEach((a) => {
+        if (result.links.length >= 150) return;
+        const href = a.href;
+        if (!href || href.startsWith("javascript:") || href.startsWith("mailto:") || href.startsWith("tel:") || href === "#") return;
+        if (seenUrls.has(href)) return;
+        seenUrls.add(href);
+        const text = (a.getAttribute("title") || a.textContent || "").replace(/\s+/g, " ").trim();
+        if (text.length > 0 && text.length < 300) {
+          result.links.push({ url: href, text });
+        }
+      });
+
+      // Extract images from rendered DOM
+      const seenImgs = new Set();
+      if (ogImage) {
+        result.images.push({ url: ogImage, alt: result.title });
+        seenImgs.add(ogImage);
+      }
+      document.querySelectorAll("img").forEach((img) => {
+        if (result.images.length >= 30) return;
+        const src = img.currentSrc || img.src;
+        if (!src || src.startsWith("data:") || seenImgs.has(src)) return;
+        if (/favicon|icon|logo|pixel|1x1|spacer|tracking|\.svg/i.test(src)) return;
+        const w = img.naturalWidth || img.width;
+        const h = img.naturalHeight || img.height;
+        if (w && w < 50) return;
+        if (h && h < 50) return;
+        seenImgs.add(src);
+        result.images.push({ url: src, alt: img.alt || "" });
+      });
+
+      // Extract videos from rendered DOM
+      const seenVids = new Set();
+      const addVid = (vUrl, extra = {}) => {
+        if (!vUrl || seenVids.has(vUrl) || vUrl.startsWith("blob:") || vUrl.startsWith("data:")) return;
+        if (/\b(ad[sv]?|tracker|pixel|beacon|exoclick|trafficjunky)\b/i.test(vUrl)) return;
+        seenVids.add(vUrl);
+        result.videos.push({ url: vUrl, ...extra, source: "dom" });
+      };
+
+      document.querySelectorAll("video").forEach((v) => {
+        const poster = v.poster || undefined;
+        if (v.src) addVid(v.src, { poster });
+        if (v.currentSrc) addVid(v.currentSrc, { poster });
+        v.querySelectorAll("source").forEach((s) => {
+          if (s.src) addVid(s.src, { type: s.type || undefined, poster });
+        });
+      });
+
+      // Check data attributes
+      document.querySelectorAll("[data-src],[data-video-url],[data-video-src],[data-file-url],[data-mp4],[data-hls],[data-stream]").forEach((el) => {
+        const attrs = ["data-src", "data-video-url", "data-video-src", "data-file-url", "data-mp4", "data-hls", "data-stream"];
+        for (const attr of attrs) {
+          const val = el.getAttribute(attr);
+          if (val && /\.(mp4|webm|m3u8|mpd|flv)/i.test(val)) addVid(val);
+        }
+      });
+
+      // Check iframes for video embeds
+      document.querySelectorAll("iframe").forEach((iframe) => {
+        const src = iframe.src;
+        if (src && /\b(embed|player|video|watch|play)\b/i.test(src) && !/\b(ad|banner|widget|social|comment)\b/i.test(src)) {
+          addVid(src, { type: "iframe" });
+        }
+      });
+
+      // Check for jwplayer, videojs, flowplayer instances
+      try {
+        if (window.jwplayer) {
+          const p = window.jwplayer();
+          if (p && p.getPlaylistItem) {
+            const item = p.getPlaylistItem();
+            if (item) {
+              if (item.file) addVid(item.file);
+              if (item.sources) item.sources.forEach((s) => { if (s.file) addVid(s.file, { type: s.type }); });
+            }
+          }
+        }
+      } catch {}
+      try {
+        const vjsPlayers = document.querySelectorAll(".video-js");
+        vjsPlayers.forEach((el) => {
+          const player = el.player || window.videojs?.getPlayer(el.id);
+          if (player) {
+            const src = player.currentSrc?.() || player.src?.();
+            if (src) addVid(src);
+          }
+        });
+      } catch {}
+      try {
+        if (window.flowplayer) {
+          document.querySelectorAll(".flowplayer").forEach((el) => {
+            const fp = window.flowplayer(el);
+            if (fp && fp.video) {
+              if (fp.video.src) addVid(fp.video.src);
+              if (fp.video.sources) fp.video.sources.forEach((s) => { if (s.src) addVid(s.src, { type: s.type }); });
+            }
+          });
+        }
+      } catch {}
+
+      // Extract headings
+      document.querySelectorAll("h1, h2, h3, h4, h5, h6").forEach((h) => {
+        if (result.headings.length >= 30) return;
+        const text = h.textContent.replace(/\s+/g, " ").trim();
+        if (text.length > 0) {
+          result.headings.push({ level: parseInt(h.tagName[1]), text });
+        }
+      });
+
+      return result;
+    }, maxContent);
+
+    const title = await page.title();
+    await page.close();
+
+    // Merge network-intercepted videos with DOM-extracted videos
+    const allVideos = [];
+    const allSeenVids = new Set();
+    for (const v of networkVideos) {
+      if (!allSeenVids.has(v.url)) { allVideos.push(v); allSeenVids.add(v.url); }
+    }
+    for (const v of pageData.videos) {
+      if (!allSeenVids.has(v.url)) { allVideos.push(v); allSeenVids.add(v.url); }
+    }
+
+    // Sort: mp4 > webm > m3u8, higher quality first
+    const typeOrder = { "video/mp4": 0, "video/webm": 1, "application/x-mpegURL": 2, "application/dash+xml": 3 };
+    allVideos.sort((a, b) => {
+      const ta = typeOrder[a.type] ?? (a.type === "iframe" ? 10 : 5);
+      const tb = typeOrder[b.type] ?? (b.type === "iframe" ? 10 : 5);
+      if (ta !== tb) return ta - tb;
+      const qa = parseInt(a.quality) || 0;
+      const qb = parseInt(b.quality) || 0;
+      return qb - qa;
+    });
+
+    // Build meta
+    const meta = {
+      title: pageData.title || title,
+      description: pageData.description,
+      ogImage: pageData.images[0]?.url || "",
+      favicon: `https://www.google.com/s2/favicons?domain=${(() => { try { return new URL(finalUrl).hostname; } catch { return ""; } })()}&sz=16`,
+    };
+
+    console.log(`[browse] Done: ${finalUrl} — ${pageData.links.length} links, ${allVideos.length} videos, ${pageData.images.length} images`);
+    res.json({
+      url,
+      finalUrl,
+      meta,
+      content: pageData.content,
+      links: pageData.links,
+      images: pageData.images,
+      videos: allVideos,
+      headings: pageData.headings,
+    });
+  } catch (err) {
+    if (page) await page.close().catch(() => {});
+    console.error("[browse] Error:", err.message);
+    res.status(500).json({ error: err.message || "Browse failed", url });
+  }
+});
+
 // GET /video-extract?url=URL — Puppeteer deep video extraction (catches JS-rendered players)
 app.get("/video-extract", async (req, res) => {
   const url = req.query.url;
@@ -1648,6 +1936,141 @@ app.get("/screenshot", async (req, res) => {
     if (page) await page.close().catch(() => {});
     res.status(500).json({ error: err.message || "Screenshot failed" });
   }
+});
+
+// GET /video-proxy?url=VIDEO_URL — Stream video through our server to bypass CORS/referer/hotlink restrictions
+// The browser can't play videos from sites that check Referer or block CORS. This proxies the request
+// with the correct headers so the video plays in our <video> tag.
+app.get("/video-proxy", async (req, res) => {
+  const videoUrl = req.query.url;
+  if (!videoUrl) return res.status(400).json({ error: "url required" });
+
+  try {
+    const parsed = new URL(videoUrl);
+    const origin = parsed.origin;
+    const referer = origin + "/";
+
+    // Build headers that mimic a real browser on the source site
+    const proxyHeaders = {
+      "User-Agent": UA,
+      "Referer": referer,
+      "Origin": origin,
+      "Accept": "*/*",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Sec-Fetch-Dest": "video",
+      "Sec-Fetch-Mode": "no-cors",
+      "Sec-Fetch-Site": "cross-site",
+    };
+
+    // Forward Range header for seeking support
+    if (req.headers.range) {
+      proxyHeaders["Range"] = req.headers.range;
+    }
+
+    // Site-specific cookie/header handling
+    const host = parsed.hostname.toLowerCase();
+
+    // XVideos: needs specific cookies and referer
+    if (/xvideos/i.test(host)) {
+      proxyHeaders["Cookie"] = "platform=pc; age_verified=1";
+    }
+    // PornHub: needs specific cookies
+    if (/pornhub/i.test(host)) {
+      proxyHeaders["Cookie"] = "platform=pc; age_verified=1; accessAgeDisclaimerPH=1";
+    }
+    // XHamster: needs age verification cookie
+    if (/xhamster/i.test(host)) {
+      proxyHeaders["Cookie"] = "age_check=1";
+    }
+    // Rule34Video: needs age verification
+    if (/rule34video/i.test(host)) {
+      proxyHeaders["Cookie"] = "age_verified=1";
+    }
+    // SpankBang
+    if (/spankbang/i.test(host)) {
+      proxyHeaders["Cookie"] = "country=US; age=1";
+    }
+
+    console.log(`[video-proxy] Proxying: ${videoUrl.slice(0, 120)}...`);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+
+    const upstream = await fetch(videoUrl, {
+      headers: proxyHeaders,
+      signal: controller.signal,
+      redirect: "follow",
+    });
+
+    clearTimeout(timeout);
+
+    if (!upstream.ok && upstream.status !== 206) {
+      console.error(`[video-proxy] Upstream returned ${upstream.status} for ${videoUrl.slice(0, 80)}`);
+      return res.status(upstream.status).json({ error: `Upstream returned ${upstream.status}` });
+    }
+
+    // Forward relevant response headers
+    const contentType = upstream.headers.get("content-type");
+    const contentLength = upstream.headers.get("content-length");
+    const contentRange = upstream.headers.get("content-range");
+    const acceptRanges = upstream.headers.get("accept-ranges");
+
+    // Set CORS headers so the browser can play this
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Range");
+    res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges");
+
+    if (contentType) res.setHeader("Content-Type", contentType);
+    if (contentLength) res.setHeader("Content-Length", contentLength);
+    if (contentRange) res.setHeader("Content-Range", contentRange);
+    if (acceptRanges) res.setHeader("Accept-Ranges", acceptRanges);
+
+    // Use 206 for range requests, 200 otherwise
+    res.status(upstream.status);
+
+    // Stream the video data through
+    const reader = upstream.body.getReader();
+    const pump = async () => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) { res.end(); break; }
+          if (!res.writableEnded) {
+            const ok = res.write(Buffer.from(value));
+            if (!ok) {
+              await new Promise((resolve) => res.once("drain", resolve));
+            }
+          } else {
+            break;
+          }
+        }
+      } catch (err) {
+        if (!res.writableEnded) res.end();
+      }
+    };
+
+    // Handle client disconnect
+    req.on("close", () => {
+      reader.cancel().catch(() => {});
+    });
+
+    await pump();
+  } catch (err) {
+    console.error("[video-proxy] Error:", err.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message || "Proxy failed" });
+    }
+  }
+});
+
+// OPTIONS handler for video-proxy CORS preflight
+app.options("/video-proxy", (req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Range");
+  res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges");
+  res.status(204).end();
 });
 
 // Graceful shutdown
