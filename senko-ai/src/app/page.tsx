@@ -431,14 +431,40 @@ When the user wants a SPECIFIC item by name (e.g., "find [zaviel]Full Eevee Anim
   Step 2: System feeds you the search results page with links. Scan the links for the matching title.
   Step 3a: If you find it -> [ACTION:READ_URL:matching_url] to read the video page and get the direct video URL
   Step 3b: If NOT found on this page -> look for "next page" or pagination links and [ACTION:READ_URL:next_page_url] to keep searching
-  Step 4: When you reach the video page, the system will give you video source URLs (mp4/webm). Use [ACTION:OPEN_URL:video_source_url] to play it, or [ACTION:OPEN_URL:page_url] to open the page in their browser.
+  Step 4: When you reach the video page, the system will AUTOMATICALLY extract video sources (mp4/webm/m3u8) and play them inline. You don't need to do anything extra — just navigate to the right page with READ_URL and the system handles the rest.
+
+VIDEO EXTRACTION — HOW IT WORKS (you don't need to do this manually):
+The system automatically deep-scans every page you READ_URL for video sources using 10+ extraction strategies:
+- og:video meta tags, twitter:player tags
+- <video> and <source> HTML tags
+- data-* attributes (data-src, data-video-url, data-mp4, etc.)
+- JSON-LD VideoObject schemas
+- Inline JavaScript: player configs, variable assignments, jwplayer/videojs/flowplayer setups
+- Encoded/escaped URLs in JS strings
+- Base64-decoded URLs
+- iframe video embeds
+- Full <script> block scanning for any .mp4/.webm/.m3u8 URLs
+If static scraping finds nothing, the system automatically uses Puppeteer to load the page in a real browser, intercept network requests, click play buttons, and extract video URLs from the rendered DOM and JS player APIs.
+When videos are found, they play INLINE in the chat AND the page opens in a new tab as backup.
+Your job is just to NAVIGATE to the right page — the system does the extraction.
 
 KEY RULES FOR MULTI-STEP:
-- You can chain up to 5 READ_URL actions to navigate through pages. Don't give up after one page.
-- When searching for a specific item and it's not on the current page, CHECK PAGINATION. Look for links like "Next", "page 2", ">>", etc.
-- When the system feeds you "Video sources found on page", those are DIRECT playable video URLs (mp4/webm). Use OPEN_URL on them.
-- If no video sources are found but you're on the right page, just OPEN_URL the page itself so the user can watch it in their browser.
-- ALWAYS prefer READ_URL over EMBED for sites with video players — the proxy can't handle JS video players, so open them in the browser instead.
+- You can chain up to 8 READ_URL actions to navigate through pages. NEVER give up after one page.
+- When searching for a specific item and it's not on the current page, CHECK PAGINATION. Look for links like "Next", "page 2", ">>", "→", etc.
+- When the system feeds you "Video sources found on page", those are DIRECT playable video URLs (mp4/webm). The system already played them — just confirm to the user.
+- If no video sources are found but you're on the right page, use [ACTION:OPEN_URL:page_url] to open it in their browser as a fallback.
+- ALWAYS prefer READ_URL over EMBED for sites with video players — the proxy can't handle JS video players, so the system opens them in the browser instead.
+- If a search returns no results, try DIFFERENT search terms. Break the title into keywords. Try the artist name alone, then the character name, etc.
+- For video sites, know the common search URL patterns:
+  * rule34video.com: /search/?q=QUERY
+  * pornhub.com: /video/search?search=QUERY
+  * xvideos.com: /?k=QUERY
+  * xhamster.com: /search/QUERY
+  * youtube.com: /results?search_query=QUERY
+  * redtube.com: /?search=QUERY
+  * spankbang.com: /s/QUERY/
+- When you find a video page, READ_URL it — don't just OPEN_URL it. READ_URL triggers the deep video extraction pipeline which will find and play the video automatically.
+- NEVER say "I can't find the video" or "I couldn't extract it" — keep trying different approaches. Search with fewer keywords, try the site's browse/category pages, check related videos, etc.
 
 Examples of WRONG action responses (DO NOT DO THIS):
 - Writing a list of what you expect to find before results come back
@@ -1452,7 +1478,7 @@ export default function Home() {
             const thinkId = addThinkingMsg(convId, `reading ${action.value}...`);
             try {
               const res = await fetch(`/api/url?url=${encodeURIComponent(action.value)}&maxContent=8000`);
-              const data = await res.json();
+              let data = await res.json();
               removeThinkingMsg(convId, thinkId);
               if (data.error) {
                 updateConversation(convId, (conv) => ({
@@ -1463,10 +1489,142 @@ export default function Home() {
                 }));
                 return;
               }
+
+              // --- AUTO VIDEO EXTRACTION ---
+              // Check if the page looks like a video page (video site URL or has video-related content)
+              const pageUrl = action.value.toLowerCase();
+              const isVideoSite = /\b(video|watch|view_video|clip|embed|play|rule34video|pornhub|xvideos|xhamster|redtube|tube8|spankbang|xnxx|youporn|dailymotion|vimeo|bitchute|rumble|streamable)\b/i.test(pageUrl);
+              const isVideoPage = isVideoSite || /\b(video|watch|player|clip)\b/i.test(data.meta?.title || "") || /\b(video|watch|player)\b/i.test(pageUrl);
+              let foundVideos: { url: string; type?: string; quality?: string; poster?: string }[] = data.videos || [];
+
+              // Filter to only direct playable video sources (not iframes)
+              const directVideos = foundVideos.filter((v: { url: string; type?: string }) => {
+                const u = v.url.toLowerCase();
+                return /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(u) || /^video\//i.test(v.type || "");
+              });
+
+              // If this looks like a video page but no direct videos found, try Puppeteer deep extraction
+              if (isVideoPage && directVideos.length === 0) {
+                console.log(`%c[READ_URL] 🎬 Video page detected but no direct sources — trying Puppeteer deep extraction`, "color: #ff9900; font-weight: bold");
+                const extractThinkId = addThinkingMsg(convId, `deep-scanning video player on ${action.value}...`);
+                try {
+                  const extractRes = await fetch(`/api/video-extract?url=${encodeURIComponent(action.value)}`);
+                  const extractData = await extractRes.json();
+                  removeThinkingMsg(convId, extractThinkId);
+                  if (extractData.videos && extractData.videos.length > 0) {
+                    console.log(`%c[READ_URL] 🎬 Puppeteer found ${extractData.videos.length} videos!`, "color: #00ff88; font-weight: bold", extractData.videos.map((v: {url:string}) => v.url.slice(0, 80)));
+                    foundVideos = extractData.videos;
+                  }
+                } catch (e) {
+                  console.error("[READ_URL] Puppeteer extraction failed:", e);
+                  removeThinkingMsg(convId, extractThinkId);
+                }
+              }
+
+              // Re-filter after potential Puppeteer results
+              const playableVideos = foundVideos.filter((v: { url: string; type?: string }) => {
+                const u = v.url.toLowerCase();
+                return /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(u) || /^video\//i.test(v.type || "") || /mpegurl|dash/i.test(v.type || "");
+              });
+
+              // If we found playable video sources, auto-play the best one + open page in new tab
+              if (playableVideos.length > 0) {
+                const bestVideo = playableVideos[0]; // Already sorted by quality in the API
+                console.log(`%c[READ_URL] 🎬 AUTO-PLAYING video: ${bestVideo.url} (${bestVideo.type || "unknown"}, ${bestVideo.quality || "?"})`, "color: #00ff88; font-weight: bold");
+
+                // Add video embed to the message for inline playback
+                const videoEmbeds = playableVideos.slice(0, 3).map((v: { url: string; type?: string; quality?: string; poster?: string }) => ({
+                  url: v.url,
+                  platform: "other" as const,
+                  title: data.meta?.title || "Video",
+                }));
+
+                // Also open the page in a new tab so user can watch there if inline doesn't work
+                try {
+                  window.open(action.value, "_blank", "noopener,noreferrer");
+                  addTab(convId, action.value, data.meta?.title || "Video");
+                } catch (e) { console.error("[READ_URL] Failed to open tab:", e); }
+
+                updateConversation(convId, (conv) => ({
+                  ...conv,
+                  messages: conv.messages.map((m) =>
+                    m.id === messageId ? {
+                      ...m,
+                      content: m.content || `Found it! Here's the video~`,
+                      videos: [...(m.videos || []), ...videoEmbeds],
+                      sources: [...(m.sources || []), {
+                        url: action.value,
+                        title: data.meta?.title || action.value,
+                        favicon: data.meta?.favicon || `https://www.google.com/s2/favicons?domain=${(() => { try { return new URL(action.value).hostname; } catch { return ""; } })()}&sz=16`,
+                      }],
+                    } : m
+                  ),
+                }));
+
+                // Still feed to AI for a brief response, but with video already playing
+                const conv = conversations.find((c) => c.id === convId);
+                const userMessages = conv?.messages.filter((m) => m.role === "user") || [];
+                const lastUserMsg = userMessages[userMessages.length - 1]?.content || "";
+                const videoList = playableVideos.slice(0, 5).map((v: { url: string; type?: string; quality?: string }) => `- ${v.url}${v.quality ? ` (${v.quality})` : ""}${v.type ? ` [${v.type}]` : ""}`).join("\n");
+
+                const followUpId = generateId();
+                updateConversation(convId, (conv2) => ({
+                  ...conv2,
+                  messages: [...conv2.messages, {
+                    id: followUpId,
+                    role: "assistant" as const,
+                    content: "",
+                    timestamp: new Date(),
+                  }],
+                }));
+
+                const followUpAbort = new AbortController();
+                abortRef.current = followUpAbort;
+                setIsStreaming(true);
+                streamChat(
+                  [{ role: "user" as const, content: `The user asked: "${lastUserMsg}"\n\nI found the video page: ${data.meta?.title || action.value}\n\nDirect video sources extracted:\n${videoList}\n\nThe video is ALREADY playing inline in the chat and the page is open in a new tab. Just write a SHORT, cheerful confirmation (1-2 sentences max). Do NOT use any action tags — everything is already done. Do NOT list URLs or technical details.` }],
+                  buildSystemPrompt(browserInfo, location, getMemoryContext()),
+                  (chunk) => {
+                    updateConversation(convId, (c) => ({
+                      ...c,
+                      messages: c.messages.map((m) =>
+                        m.id === followUpId ? { ...m, content: m.content + chunk } : m
+                      ),
+                    }));
+                  },
+                  () => {
+                    updateConversation(convId, (c) => ({
+                      ...c,
+                      messages: c.messages.map((m) =>
+                        m.id === followUpId ? (() => {
+                          const { cleanText, extractedSources } = parseAIOutput(m.content);
+                          return { ...m, content: cleanText, sources: extractedSources.length > 0 ? extractedSources : m.sources };
+                        })() : m
+                      ),
+                    }));
+                    setIsStreaming(false);
+                    abortRef.current = null;
+                  },
+                  (err) => { console.error("Video follow-up error:", err); setIsStreaming(false); abortRef.current = null; },
+                  followUpAbort.signal
+                );
+                return; // Video handled — don't fall through to normal READ_URL flow
+              }
+
+              // --- NO VIDEO FOUND: Fall through to normal READ_URL flow ---
+              // If video page but no sources at all, open page in new tab as last resort
+              if (isVideoPage && foundVideos.length === 0) {
+                console.log(`%c[READ_URL] 🎬 Video page but couldn't extract sources — opening in new tab as fallback`, "color: #ffaa00; font-weight: bold");
+                try {
+                  window.open(action.value, "_blank", "noopener,noreferrer");
+                  addTab(convId, action.value, data.meta?.title || "Video");
+                } catch (e) { console.error("[READ_URL] Failed to open tab:", e); }
+              }
+
               // Build a context message with the page data — send MORE links for browsing
               const pageLinks = (data.links || []).slice(0, 50).map((l: { url: string; text: string }, i: number) => `${i + 1}. [${l.text}](${l.url})`).join("\n");
               const pageHeadings = (data.headings || []).map((h: { level: number; text: string }) => `${"#".repeat(h.level)} ${h.text}`).join("\n");
-              const pageVideos = (data.videos || []).map((v: { url: string; type?: string }) => `- ${v.url}${v.type ? ` (${v.type})` : ""}`).join("\n");
+              const pageVideos = foundVideos.map((v: { url: string; type?: string; quality?: string }) => `- ${v.url}${v.type ? ` (${v.type})` : ""}${v.quality ? ` [${v.quality}]` : ""}`).join("\n");
 
               // DON'T attach images from READ_URL — the user wants navigation, not thumbnails
               // Images are only attached via SCRAPE_IMAGES action
@@ -1496,7 +1654,7 @@ export default function Home() {
               const lastUserMsg = userMessages[userMessages.length - 1]?.content || "";
 
               // Feed the page content back to AI for a follow-up response
-              const pageContext = `The user asked: "${lastUserMsg}"\n\nI just read the page at ${action.value}.\n\nTitle: ${data.meta?.title || "Unknown"}\nDescription: ${data.meta?.description || "None"}\n\n${pageHeadings ? `Page Structure:\n${pageHeadings}\n\n` : ""}Content:\n${(data.content || "No content found").slice(0, 3000)}\n\n${pageVideos ? `Video sources found on page:\n${pageVideos}\n\n` : ""}${pageLinks ? `Links found on page:\n${pageLinks}` : ""}`;
+              const pageContext = `The user asked: "${lastUserMsg}"\n\nI just read the page at ${action.value}.\n\nTitle: ${data.meta?.title || "Unknown"}\nDescription: ${data.meta?.description || "None"}\n\n${pageHeadings ? `Page Structure:\n${pageHeadings}\n\n` : ""}Content:\n${(data.content || "No content found").slice(0, 3000)}\n\n${pageVideos ? `Video sources found on page:\n${pageVideos}\n\n` : ""}${isVideoPage && foundVideos.length === 0 ? `NOTE: This looks like a video page but I couldn't extract direct video sources. The page has been opened in a new tab for the user.\n\n` : ""}${pageLinks ? `Links found on page:\n${pageLinks}` : ""}`;
 
               const followUpId = generateId();
               updateConversation(convId, (conv2) => ({
@@ -1513,7 +1671,7 @@ export default function Home() {
               abortRef.current = followUpAbort;
               setIsStreaming(true);
               streamChat(
-                [{ role: "user" as const, content: pageContext + "\n\nIMPORTANT: Look at the user's original request above. Based on what they asked, use the links from the page to take the RIGHT action:\n- If video sources were found on the page (mp4/webm/m3u8 URLs), use [ACTION:OPEN_URL:video_url] to play the video directly\n- If they want a specific video/item -> find it in the links and use [ACTION:READ_URL:url] to navigate to it (NOT EMBED — video sites don't work in embeds)\n- If the specific item they want is NOT in the links on this page, look for pagination links (Next, page 2, >>) and use [ACTION:READ_URL:next_page_url] to keep searching\n- If they want a section/category -> find the link and navigate there with READ_URL\n- If they want to search -> construct the site's search URL with READ_URL\n- If they just wanted to read -> summarize\n- If this is a video page and you found the right content, open it in their browser with [ACTION:OPEN_URL:page_url]\nYou MUST use action tags to complete their request. Don't just describe the page — ACT on it! Keep navigating until you find what they want." }],
+                [{ role: "user" as const, content: pageContext + "\n\nIMPORTANT: Look at the user's original request above. Based on what they asked, use the links from the page to take the RIGHT action:\n- If video sources were found on the page (mp4/webm/m3u8 URLs), use [ACTION:OPEN_URL:video_url] to play the video directly\n- If they want a specific video/item -> find it in the links and use [ACTION:READ_URL:url] to navigate to it (NOT EMBED — video sites don't work in embeds)\n- If the specific item they want is NOT in the links on this page, look for pagination links (Next, page 2, >>) and use [ACTION:READ_URL:next_page_url] to keep searching\n- If they want a section/category -> find the link and navigate there with READ_URL\n- If they want to search -> construct the site's search URL with READ_URL\n- If they just wanted to read -> summarize\n- If this is a video page and you found the right content, open it in their browser with [ACTION:OPEN_URL:page_url]\n- If the page was already opened in a new tab (video page fallback), just tell the user it's open\nYou MUST use action tags to complete their request. Don't just describe the page — ACT on it! Keep navigating until you find what they want." }],
                 buildSystemPrompt(browserInfo, location, getMemoryContext()),
                 (chunk) => {
                   updateConversation(convId, (conv) => ({
@@ -1944,7 +2102,7 @@ export default function Home() {
         }
 
         // Detect if this is an image-focused request BEFORE fetching
-        const imageQueryPattern = /\b(images?|pics?|pictures?|photos?|show me|send me|wallpapers?)\b/i;
+        const imageQueryPattern = /\b(images?|pics?|pictures?|photos?|show me|send me|get me|give me|wanna see|want to see|let me see|i want|wallpapers?)\b/i;
         const isImageQuery = imageQueryPattern.test(query);
         // Detect hybrid: user wants BOTH images AND research (e.g. "send me images of anya forger and tell me what she is")
         const researchIntentPattern = /\b(tell me|what is|who is|explain|about|describe|info|information|history|how does|why|and tell|also tell)\b/i;
@@ -2036,7 +2194,7 @@ export default function Home() {
             // Fall through to deep research path (don't return early)
           } else {
             // Pure image query — show images with canned message and return
-            const cleanTopic = query.replace(/\b(images?|pics?|pictures?|photos?|of|show me|send me|look\s*up|find|get|wallpapers?)\b/gi, "").trim();
+            const cleanTopic = query.replace(/\b(images?|pics?|pictures?|photos?|of|show me|send me|get me|give me|wanna see|want to see|let me see|i want|look\s*up|find|get|wallpapers?|r34|rule\s*34|nsfw|hentai|xxx|lewd|explicit)\b/gi, "").trim();
             const commentId = generateId();
             updateConversation(convId, (conv) => ({
               ...conv,
@@ -3231,19 +3389,163 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
           const picked = convResults[pickIndex];
           console.log(`%c[CLIENT] 🎯 Bare pick #${pickIndex + 1}: ${picked.title} -> ${picked.url}`, "color: #00ffcc; font-weight: bold");
           const pickId = generateId();
+          const isVideoUrl = /\b(video|watch|view_video|clip|embed|play|rule34video|pornhub|xvideos|xhamster|redtube|tube8|spankbang|xnxx|youporn)\b/i.test(picked.url);
           updateConversation(activeConversationId, (c) => ({
             ...c,
             messages: [...c.messages, {
               id: pickId, role: "assistant" as const, timestamp: new Date(),
-              content: `Here's #${pickIndex + 1}: ${picked.title}~`,
-              webEmbeds: [{ url: picked.url, title: picked.title }],
+              content: isVideoUrl ? `Loading ${picked.title}~` : `Here's #${pickIndex + 1}: ${picked.title}~`,
+              webEmbeds: isVideoUrl ? undefined : [{ url: picked.url, title: picked.title }],
             }],
           }));
-          try {
-            window.open(picked.url, "_blank", "noopener,noreferrer");
-            addTab(activeConversationId, picked.url, picked.title);
-          } catch (e) { console.error("[CLIENT] Failed to open picked result:", e); }
+          // For video URLs, trigger deep video extraction pipeline
+          if (isVideoUrl) {
+            setIsStreaming(true);
+            const capturedConvId = activeConversationId;
+            (async () => {
+              const thinkId = addThinkingMsg(capturedConvId, `extracting video from ${picked.title}...`);
+              try {
+                const urlRes = await fetch(`/api/url?url=${encodeURIComponent(picked.url)}&maxContent=4000`);
+                const urlData = await urlRes.json();
+                let foundVids: { url: string; type?: string; quality?: string }[] = urlData.videos || [];
+                let playable = foundVids.filter((v: { url: string; type?: string }) => /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(v.url) || /^video\//i.test(v.type || ""));
+                // Puppeteer fallback if no direct videos
+                if (playable.length === 0) {
+                  console.log(`%c[CLIENT] 🎬 No direct videos, trying Puppeteer extraction`, "color: #ff9900; font-weight: bold");
+                  try {
+                    const extractRes = await fetch(`/api/video-extract?url=${encodeURIComponent(picked.url)}`);
+                    const extractData = await extractRes.json();
+                    if (extractData.videos?.length > 0) {
+                      foundVids = extractData.videos;
+                      playable = foundVids.filter((v: { url: string; type?: string }) => /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(v.url) || /^video\//i.test(v.type || "") || /mpegurl|dash/i.test(v.type || ""));
+                    }
+                  } catch (e) { console.error("[CLIENT] Puppeteer extraction failed:", e); }
+                }
+                removeThinkingMsg(capturedConvId, thinkId);
+                if (playable.length > 0) {
+                  const videoEmbeds = playable.slice(0, 3).map((v: { url: string }) => ({ url: v.url, platform: "other" as const, title: picked.title }));
+                  updateConversation(capturedConvId, (c) => ({
+                    ...c,
+                    messages: c.messages.map((m) => m.id === pickId ? {
+                      ...m, content: `Here's ${picked.title}~ Enjoy!`,
+                      videos: videoEmbeds,
+                      sources: [{ url: picked.url, title: picked.title, favicon: `https://www.google.com/s2/favicons?domain=${(() => { try { return new URL(picked.url).hostname; } catch { return ""; } })()}&sz=16` }],
+                    } : m),
+                  }));
+                } else {
+                  // Fallback: just open in new tab
+                  updateConversation(capturedConvId, (c) => ({
+                    ...c,
+                    messages: c.messages.map((m) => m.id === pickId ? {
+                      ...m, content: `Opening ${picked.title} in a new tab~`,
+                      webEmbeds: [{ url: picked.url, title: picked.title }],
+                    } : m),
+                  }));
+                }
+                try { window.open(picked.url, "_blank", "noopener,noreferrer"); addTab(capturedConvId, picked.url, picked.title); } catch {}
+                setIsStreaming(false);
+              } catch (e) {
+                console.error("[CLIENT] Video extraction failed:", e);
+                removeThinkingMsg(capturedConvId, thinkId);
+                try { window.open(picked.url, "_blank", "noopener,noreferrer"); addTab(capturedConvId, picked.url, picked.title); } catch {}
+                setIsStreaming(false);
+              }
+            })();
+          } else {
+            try { window.open(picked.url, "_blank", "noopener,noreferrer"); addTab(activeConversationId, picked.url, picked.title); } catch (e) { console.error("[CLIENT] Failed to open picked result:", e); }
+          }
           return; // Don't send to AI
+        }
+
+        // ── Title-based fuzzy match against stored results ──
+        // Catch "click this one [zaviel]Full Eevee Animation" or "play [zaviel]Full Eevee Animation"
+        // by matching words from the user's message against stored result titles
+        const userWords = content.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(w => w.length > 2);
+        if (userWords.length >= 2) {
+          let bestTitleMatch: { url: string; title: string } | null = null;
+          let bestTitleScore = 0;
+          for (const result of convResults) {
+            const titleWords = result.title.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(w => w.length > 2);
+            if (titleWords.length === 0) continue;
+            const matchedWords = titleWords.filter(tw => userWords.some(uw => uw === tw || uw.includes(tw) || tw.includes(uw)));
+            const score = matchedWords.length / titleWords.length;
+            if (score > bestTitleScore) {
+              bestTitleScore = score;
+              bestTitleMatch = result;
+            }
+          }
+          // Require at least 50% of title words to match AND at least 2 matched words
+          if (bestTitleMatch && bestTitleScore >= 0.5) {
+            const titleWords = bestTitleMatch.title.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(w => w.length > 2);
+            const matchedCount = titleWords.filter(tw => userWords.some(uw => uw === tw || uw.includes(tw) || tw.includes(uw))).length;
+            if (matchedCount >= 2) {
+              console.log(`%c[CLIENT] 🎯 Title-matched pick: "${bestTitleMatch.title}" (score: ${bestTitleScore.toFixed(2)}, matched: ${matchedCount}/${titleWords.length}) -> ${bestTitleMatch.url}`, "color: #00ffcc; font-weight: bold");
+              const pickId = generateId();
+              const isVideoUrl = /\b(video|watch|view_video|clip|embed|play|rule34video|pornhub|xvideos|xhamster|redtube|tube8|spankbang|xnxx|youporn)\b/i.test(bestTitleMatch.url);
+              updateConversation(activeConversationId, (c) => ({
+                ...c,
+                messages: [...c.messages, {
+                  id: pickId, role: "assistant" as const, timestamp: new Date(),
+                  content: isVideoUrl ? `Loading ${bestTitleMatch!.title}~` : `Here you go~ ${bestTitleMatch!.title}`,
+                  webEmbeds: isVideoUrl ? undefined : [{ url: bestTitleMatch!.url, title: bestTitleMatch!.title }],
+                }],
+              }));
+              if (isVideoUrl) {
+                setIsStreaming(true);
+                const capturedConvId = activeConversationId;
+                const matchedResult = bestTitleMatch;
+                (async () => {
+                  const thinkId = addThinkingMsg(capturedConvId, `extracting video from ${matchedResult.title}...`);
+                  try {
+                    const urlRes = await fetch(`/api/url?url=${encodeURIComponent(matchedResult.url)}&maxContent=4000`);
+                    const urlData = await urlRes.json();
+                    let foundVids: { url: string; type?: string; quality?: string }[] = urlData.videos || [];
+                    let playable = foundVids.filter((v: { url: string; type?: string }) => /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(v.url) || /^video\//i.test(v.type || ""));
+                    if (playable.length === 0) {
+                      try {
+                        const extractRes = await fetch(`/api/video-extract?url=${encodeURIComponent(matchedResult.url)}`);
+                        const extractData = await extractRes.json();
+                        if (extractData.videos?.length > 0) {
+                          foundVids = extractData.videos;
+                          playable = foundVids.filter((v: { url: string; type?: string }) => /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(v.url) || /^video\//i.test(v.type || "") || /mpegurl|dash/i.test(v.type || ""));
+                        }
+                      } catch (e) { console.error("[CLIENT] Puppeteer extraction failed:", e); }
+                    }
+                    removeThinkingMsg(capturedConvId, thinkId);
+                    if (playable.length > 0) {
+                      const videoEmbeds = playable.slice(0, 3).map((v: { url: string }) => ({ url: v.url, platform: "other" as const, title: matchedResult.title }));
+                      updateConversation(capturedConvId, (c) => ({
+                        ...c,
+                        messages: c.messages.map((m) => m.id === pickId ? {
+                          ...m, content: `Here's ${matchedResult.title}~ Enjoy!`,
+                          videos: videoEmbeds,
+                          sources: [{ url: matchedResult.url, title: matchedResult.title, favicon: `https://www.google.com/s2/favicons?domain=${(() => { try { return new URL(matchedResult.url).hostname; } catch { return ""; } })()}&sz=16` }],
+                        } : m),
+                      }));
+                    } else {
+                      updateConversation(capturedConvId, (c) => ({
+                        ...c,
+                        messages: c.messages.map((m) => m.id === pickId ? {
+                          ...m, content: `Opening ${matchedResult.title} in a new tab~`,
+                          webEmbeds: [{ url: matchedResult.url, title: matchedResult.title }],
+                        } : m),
+                      }));
+                    }
+                    try { window.open(matchedResult.url, "_blank", "noopener,noreferrer"); addTab(capturedConvId, matchedResult.url, matchedResult.title); } catch {}
+                    setIsStreaming(false);
+                  } catch (e) {
+                    console.error("[CLIENT] Video extraction failed:", e);
+                    removeThinkingMsg(capturedConvId, thinkId);
+                    try { window.open(matchedResult.url, "_blank", "noopener,noreferrer"); addTab(capturedConvId, matchedResult.url, matchedResult.title); } catch {}
+                    setIsStreaming(false);
+                  }
+                })();
+              } else {
+                try { window.open(bestTitleMatch.url, "_blank", "noopener,noreferrer"); addTab(activeConversationId, bestTitleMatch.url, bestTitleMatch.title); } catch (e) { console.error("[CLIENT] Failed to open title-matched result:", e); }
+              }
+              return; // Don't send to AI
+            }
+          }
         }
       }
 

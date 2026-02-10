@@ -48,17 +48,41 @@ export function VideoEmbed({ video }: VideoEmbedProps) {
     );
   }
 
-  // Generic video embed
+  // Generic video embed (mp4, webm, m3u8, etc.)
   return (
-    <div className="mt-2 overflow-hidden rounded-lg border border-white/[0.06]">
+    <div className="mt-2 overflow-hidden rounded-lg border border-white/[0.06] bg-black/40">
       <video
         src={video.url}
         controls
-        className="w-full max-h-64"
-        preload="metadata"
+        autoPlay
+        playsInline
+        crossOrigin="anonymous"
+        className="w-full max-h-[480px]"
+        preload="auto"
+        onError={(e) => {
+          // If video fails to load (CORS, format issues), show a fallback link
+          const target = e.target as HTMLVideoElement;
+          const parent = target.parentElement;
+          if (parent && !parent.querySelector(".video-fallback")) {
+            target.style.display = "none";
+            const fallback = document.createElement("a");
+            fallback.href = video.url;
+            fallback.target = "_blank";
+            fallback.rel = "noopener noreferrer";
+            fallback.className = "video-fallback flex items-center justify-center gap-2 py-8 px-4 text-sm text-zinc-400 hover:text-[var(--senko-accent)] transition-colors";
+            fallback.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg> Open video in new tab`;
+            parent.appendChild(fallback);
+          }
+        }}
       >
         Your browser does not support video.
       </video>
+      {video.title && (
+        <div className="px-2 py-1.5 bg-white/[0.02] flex items-center gap-2">
+          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-600 shrink-0"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          <p className="text-[11px] text-zinc-500 truncate">{video.title}</p>
+        </div>
+      )}
     </div>
   );
 }

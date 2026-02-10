@@ -389,6 +389,7 @@ const IMAGE_SITE_DOMAINS = [
   "deviantart.com", "artstation.com",
   "flickr.com", "500px.com", "unsplash.com", "pexels.com", "pixabay.com",
   "zerochan.net", "danbooru.donmai.us", "gelbooru.com", "safebooru.org",
+  "rule34.xxx", "rule34.paheal.net", "e621.net", "xbooru.com", "tbib.org", "realbooru.com",
   "imgur.com", "i.imgur.com",
   "fandom.com", "fandomwire.com",
   "screenrant.com", "cbr.com",
@@ -882,6 +883,110 @@ app.get("/images", async (req, res) => {
   const images = [];
   const encoded = encodeURIComponent(query);
 
+  // Detect NSFW queries — mainstream search engines filter these, so we need direct booru APIs
+  const nsfwPattern = /\b(r34|rule\s*34|nsfw|hentai|porn|xxx|lewd|nude|naked|explicit|e621|gelbooru|danbooru|paheal|xbooru)\b/i;
+  const isNsfwQuery = nsfwPattern.test(query);
+
+  // Extract clean search tags for booru APIs (remove NSFW site names, keep the subject)
+  const booruTags = query
+    .replace(/\b(r34|rule\s*34|nsfw|hentai|porn|xxx|lewd|nude|naked|explicit|images?|pics?|pictures?|photos?|show\s*me|send\s*me|of|on|from|e621|gelbooru|danbooru|paheal|xbooru)\b/gi, "")
+    .trim()
+    .replace(/\s+/g, "+")
+    .toLowerCase();
+
+  // Strategy 0: Direct booru API scraping (only for NSFW queries)
+  const nsfwStrategies = isNsfwQuery && booruTags ? await Promise.allSettled([
+    // Rule34.xxx API (Gelbooru-compatible)
+    (async () => {
+      const results = [];
+      try {
+        const apiUrl = `https://api.rule34.xxx/index.php?page=dapi&s=post&q=index&json=1&limit=24&tags=${encodeURIComponent(booruTags)}`;
+        const apiRes = await fetch(apiUrl, {
+          headers: { "User-Agent": UA },
+          signal: AbortSignal.timeout(8000),
+        });
+        const posts = await apiRes.json();
+        if (Array.isArray(posts)) {
+          for (const post of posts) {
+            if (results.length >= 20) break;
+            const imgUrl = post.file_url || post.sample_url;
+            if (imgUrl && isValidImageUrl(imgUrl)) {
+              const tags = (post.tags || "").split(" ").slice(0, 5).join(", ");
+              results.push({ url: imgUrl, alt: tags || booruTags.replace(/\+/g, " "), source: `https://rule34.xxx/index.php?page=post&s=view&id=${post.id}` });
+            }
+          }
+        }
+      } catch (e) { console.log("[images] Rule34 API error:", e.message); }
+      return results;
+    })(),
+    // Gelbooru API
+    (async () => {
+      const results = [];
+      try {
+        const apiUrl = `https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&limit=20&tags=${encodeURIComponent(booruTags)}`;
+        const apiRes = await fetch(apiUrl, {
+          headers: { "User-Agent": UA },
+          signal: AbortSignal.timeout(8000),
+        });
+        const data = await apiRes.json();
+        const posts = data.post || data;
+        if (Array.isArray(posts)) {
+          for (const post of posts) {
+            if (results.length >= 16) break;
+            const imgUrl = post.file_url || post.sample_url;
+            if (imgUrl && isValidImageUrl(imgUrl)) {
+              const tags = (post.tags || "").split(" ").slice(0, 5).join(", ");
+              results.push({ url: imgUrl, alt: tags || booruTags.replace(/\+/g, " "), source: `https://gelbooru.com/index.php?page=post&s=view&id=${post.id}` });
+            }
+          }
+        }
+      } catch (e) { console.log("[images] Gelbooru API error:", e.message); }
+      return results;
+    })(),
+    // e621 API (furry content)
+    (async () => {
+      const results = [];
+      try {
+        const apiUrl = `https://e621.net/posts.json?limit=20&tags=${encodeURIComponent(booruTags)}`;
+        const apiRes = await fetch(apiUrl, {
+          headers: { "User-Agent": "SenkoAI/1.0 (search-api)" },
+          signal: AbortSignal.timeout(8000),
+        });
+        const data = await apiRes.json();
+        if (data.posts && Array.isArray(data.posts)) {
+          for (const post of data.posts) {
+            if (results.length >= 16) break;
+            const imgUrl = post.file?.url || post.sample?.url || post.preview?.url;
+            if (imgUrl && isValidImageUrl(imgUrl)) {
+              const tags = (post.tags?.general || []).slice(0, 5).join(", ");
+              results.push({ url: imgUrl, alt: tags || booruTags.replace(/\+/g, " "), source: `https://e621.net/posts/${post.id}` });
+            }
+          }
+        }
+      } catch (e) { console.log("[images] e621 API error:", e.message); }
+      return results;
+    })(),
+  ]) : [];
+
+  // Collect NSFW results first (they get priority)
+  const nsfwResults = [];
+  if (isNsfwQuery && nsfwStrategies.length > 0) {
+    for (const s of nsfwStrategies) {
+      if (s.status === "fulfilled") {
+        for (const img of s.value) {
+          if (nsfwResults.length >= 24) break;
+          if (!isImageDuplicate(img.url, nsfwResults)) nsfwResults.push(img);
+        }
+      }
+    }
+    console.log(`[images] NSFW strategies found ${nsfwResults.length} images for "${query}"`);
+  }
+
+  // If NSFW strategies found enough images, return early
+  if (nsfwResults.length >= 12) {
+    return res.json({ images: nsfwResults.slice(0, 20), query });
+  }
+
   const [strategy1, strategy2, strategy3] = await Promise.allSettled([
     // Strategy 1: Bing Images
     (async () => {
@@ -997,6 +1102,8 @@ app.get("/images", async (req, res) => {
   ]);
 
   const allResults = [
+    // NSFW booru results first (if any — they're the ones the user actually wants for NSFW queries)
+    ...nsfwResults,
     ...(strategy1.status === "fulfilled" ? strategy1.value : []),
     ...(strategy2.status === "fulfilled" ? strategy2.value : []),
     ...(strategy3.status === "fulfilled" ? strategy3.value : []),
@@ -1106,58 +1213,204 @@ app.get("/url", async (req, res) => {
       pageImages.push({ url: src, alt: altMatch ? altMatch[1] : "", width: w, height: h });
     }
 
-    // --- Extract video sources ---
+    // --- Extract video sources (DEEP EXTRACTION) ---
     const videos = [];
     const seenVideos = new Set();
+    const addVideo = (rawUrl, extra = {}) => {
+      if (!rawUrl || typeof rawUrl !== "string") return;
+      // Decode common escapes
+      let decoded = rawUrl.replace(/\\u002F/gi, "/").replace(/\\u0026/gi, "&").replace(/\\u003d/gi, "=").replace(/\\\//g, "/").replace(/&amp;/g, "&");
+      const vUrl = resolveUrl(decoded, origin, finalUrl);
+      if (!vUrl || seenVideos.has(vUrl)) return;
+      // Filter out ads, trackers, tiny files, and non-video URLs
+      const lower = vUrl.toLowerCase();
+      if (/\b(ad[sv]?|tracker|pixel|beacon|analytics|pop(?:up|under)|banner)\b/i.test(lower)) return;
+      if (lower.includes("spacer") || lower.includes("blank.") || lower.includes("1x1")) return;
+      seenVideos.add(vUrl);
+      // Detect quality from URL or context
+      let quality = extra.quality || "";
+      if (!quality) {
+        const qMatch = vUrl.match(/(\d{3,4})p/);
+        if (qMatch) quality = qMatch[1] + "p";
+      }
+      // Detect type from extension
+      let type = extra.type || "";
+      if (!type) {
+        if (/\.mp4/i.test(vUrl)) type = "video/mp4";
+        else if (/\.webm/i.test(vUrl)) type = "video/webm";
+        else if (/\.m3u8/i.test(vUrl)) type = "application/x-mpegURL";
+        else if (/\.mpd/i.test(vUrl)) type = "application/dash+xml";
+        else if (/\.flv/i.test(vUrl)) type = "video/x-flv";
+        else if (/\.ogg/i.test(vUrl)) type = "video/ogg";
+        else if (/\.mov/i.test(vUrl)) type = "video/quicktime";
+        else if (/\.avi/i.test(vUrl)) type = "video/x-msvideo";
+        else if (/\.ts\b/i.test(vUrl)) type = "video/mp2t";
+      }
+      videos.push({ url: vUrl, type: type || undefined, quality: quality || undefined, poster: extra.poster || undefined });
+    };
 
-    const ogVideoMatch = html.match(/<meta[^>]*property=["']og:video["'][^>]*content=["']([^"']+)["']/i)
-      || html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:video["']/i);
-    if (ogVideoMatch) {
-      const vUrl = resolveUrl(ogVideoMatch[1], origin, finalUrl);
-      if (vUrl && !seenVideos.has(vUrl)) { videos.push({ url: vUrl }); seenVideos.add(vUrl); }
-    }
-    const ogVideoUrlMatch = html.match(/<meta[^>]*property=["']og:video:(?:secure_)?url["'][^>]*content=["']([^"']+)["']/i)
-      || html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:video:(?:secure_)?url["']/i);
-    if (ogVideoUrlMatch) {
-      const vUrl = resolveUrl(ogVideoUrlMatch[1], origin, finalUrl);
-      if (vUrl && !seenVideos.has(vUrl)) { videos.push({ url: vUrl }); seenVideos.add(vUrl); }
+    // 1. og:video meta tags (all variants)
+    const ogVideoRegexes = [
+      /<meta[^>]*property=["']og:video(?::(?:secure_)?url)?["'][^>]*content=["']([^"']+)["']/gi,
+      /<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:video(?::(?:secure_)?url)?["']/gi,
+    ];
+    for (const rx of ogVideoRegexes) {
+      let m; while ((m = rx.exec(html)) !== null) addVideo(m[1]);
     }
 
-    const videoSrcRegex = /<video[^>]*\ssrc=["']([^"']+)["'][^>]*/gi;
-    let videoMatch;
-    while ((videoMatch = videoSrcRegex.exec(html)) !== null && videos.length < 10) {
-      const vUrl = resolveUrl(videoMatch[1], origin, finalUrl);
-      if (vUrl && !seenVideos.has(vUrl)) {
-        const posterMatch = videoMatch[0].match(/poster=["']([^"']+)["']/i);
-        videos.push({ url: vUrl, poster: posterMatch ? resolveUrl(posterMatch[1], origin, finalUrl) : undefined });
-        seenVideos.add(vUrl);
+    // 2. twitter:player meta tags
+    const twitterPlayerMatch = html.match(/<meta[^>]*(?:name|property)=["']twitter:player(?::stream)?["'][^>]*content=["']([^"']+)["']/i)
+      || html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*(?:name|property)=["']twitter:player(?::stream)?["']/i);
+    if (twitterPlayerMatch) addVideo(twitterPlayerMatch[1]);
+
+    // 3. <video> tags with src attribute + poster
+    const videoTagRegex = /<video[^>]*>([\s\S]*?)<\/video>|<video[^>]*\/>/gi;
+    let vTagMatch;
+    while ((vTagMatch = videoTagRegex.exec(html)) !== null) {
+      const fullTag = vTagMatch[0];
+      const srcMatch = fullTag.match(/\bsrc=["']([^"']+)["']/i);
+      const posterMatch = fullTag.match(/poster=["']([^"']+)["']/i);
+      const poster = posterMatch ? resolveUrl(posterMatch[1], origin, finalUrl) : undefined;
+      if (srcMatch) addVideo(srcMatch[1], { poster });
+      // Also get all <source> inside this <video>
+      const innerSourceRegex = /<source[^>]*\bsrc=["']([^"']+)["'][^>]*/gi;
+      let innerMatch;
+      while ((innerMatch = innerSourceRegex.exec(fullTag)) !== null) {
+        const typeM = innerMatch[0].match(/type=["']([^"']+)["']/i);
+        addVideo(innerMatch[1], { poster, type: typeM ? typeM[1] : "" });
       }
     }
 
-    const sourceRegex = /<source[^>]*\ssrc=["']([^"']+)["'][^>]*/gi;
+    // 4. Standalone <source> tags outside <video> (some sites do this)
+    const sourceRegex = /<source[^>]*\bsrc=["']([^"']+)["'][^>]*/gi;
     let sourceMatch;
-    while ((sourceMatch = sourceRegex.exec(html)) !== null && videos.length < 10) {
-      const vUrl = resolveUrl(sourceMatch[1], origin, finalUrl);
-      if (vUrl && !seenVideos.has(vUrl)) {
-        const typeMatch = sourceMatch[0].match(/type=["']([^"']+)["']/i);
-        videos.push({ url: vUrl, type: typeMatch ? typeMatch[1] : undefined });
-        seenVideos.add(vUrl);
-      }
+    while ((sourceMatch = sourceRegex.exec(html)) !== null) {
+      const typeM = sourceMatch[0].match(/type=["']([^"']+)["']/i);
+      addVideo(sourceMatch[1], { type: typeM ? typeM[1] : "" });
     }
 
+    // 5. data-* attributes on any element (data-src, data-video-url, data-file, data-mp4, etc.)
+    const dataAttrRegex = /data-(?:src|video[-_]?(?:url|src|file|mp4|webm|hls)|file[-_]?url|stream[-_]?url|mp4|hls|dash|source)=["']([^"']+)["']/gi;
+    let dataMatch;
+    while ((dataMatch = dataAttrRegex.exec(html)) !== null) addVideo(dataMatch[1]);
+
+    // 6. JSON-LD VideoObject / contentUrl / embedUrl
+    const jsonLdRegex = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+    let jsonLdMatch;
+    while ((jsonLdMatch = jsonLdRegex.exec(html)) !== null) {
+      try {
+        const data = JSON.parse(jsonLdMatch[1]);
+        const extractVideoLD = (obj) => {
+          if (!obj || typeof obj !== "object") return;
+          if (Array.isArray(obj)) { obj.forEach(extractVideoLD); return; }
+          if (obj["@type"] === "VideoObject" || obj["@type"] === "Video") {
+            if (obj.contentUrl) addVideo(obj.contentUrl);
+            if (obj.embedUrl) addVideo(obj.embedUrl);
+            if (obj.url) addVideo(obj.url);
+            if (obj.thumbnailUrl) {
+              // Use as poster for the last video
+              const last = videos[videos.length - 1];
+              if (last && !last.poster) last.poster = resolveUrl(typeof obj.thumbnailUrl === "string" ? obj.thumbnailUrl : obj.thumbnailUrl[0], origin, finalUrl);
+            }
+          }
+          for (const val of Object.values(obj)) {
+            if (typeof val === "object") extractVideoLD(val);
+          }
+        };
+        extractVideoLD(data);
+      } catch {}
+    }
+
+    // 7. Inline JS: variable assignments, config objects, player init calls
     const jsVideoPatterns = [
-      /(?:video_url|videoUrl|file_url|fileUrl|mp4_url|source_url|stream_url)\s*[:=]\s*["']([^"']+\.(?:mp4|webm|m3u8)[^"']*)["']/gi,
-      /["'](?:file|src|source|url|mp4|video)["']\s*:\s*["']([^"']+\.(?:mp4|webm|m3u8)[^"']*)["']/gi,
-      /(?:src|href)\s*[:=]\s*["']([^"']+\.(?:mp4|webm|m3u8)(?:\?[^"']*)?)["']/gi,
+      // Direct URL assignments: video_url = "...", videoUrl: "...", etc.
+      /(?:video_url|videoUrl|video_file|videoFile|file_url|fileUrl|mp4_url|mp4Url|source_url|sourceUrl|stream_url|streamUrl|hls_url|hlsUrl|dash_url|dashUrl|media_url|mediaUrl|content_url|contentUrl|download_url|downloadUrl|playback_url|playbackUrl|video_src|videoSrc)\s*[:=]\s*["']([^"'\s][^"']*?)["']/gi,
+      // JSON key-value: "file": "...", "src": "...", "url": "...", "mp4": "...", "source": "..."
+      /["'](?:file|src|source|url|mp4|mp4_url|video|video_url|stream|hls|dash|media|contentUrl|videoUrl|playUrl|play_url)["']\s*:\s*["']([^"'\s][^"']*?\.(?:mp4|webm|m3u8|mpd|flv|ogg|mov|avi|ts)(?:\?[^"']*)?)["']/gi,
+      // Bare URL with video extension in any src/href context
+      /(?:src|href|url|file)\s*[:=]\s*["']([^"'\s]+\.(?:mp4|webm|m3u8|mpd|flv|ogg|mov)(?:\?[^"']*)?)["']/gi,
+      // Encoded URLs: video_url=https%3A%2F%2F...
+      /(?:video_url|file_url|source|src|mp4|stream|media)=([a-zA-Z0-9%]+(?:%2F|%3A)[a-zA-Z0-9%./_\-?&=+]+)/gi,
+      // flashvars patterns: flashvars.video_url = "..."
+      /flashvars\s*(?:\.\s*\w+\s*=|=\s*{[^}]*?)["']?(?:video_url|file|flv_url|mp4_url)["']?\s*[:=]\s*["']([^"']+)["']/gi,
+      // jwplayer / flowplayer / videojs setup: .setup({ file: "..." }) or sources: [{ src: "..." }]
+      /(?:setup|config|options|settings|player|init)\s*\(\s*{[\s\S]{0,2000}?["'](?:file|src|source|url|mp4|video)["']\s*:\s*["']([^"']+\.(?:mp4|webm|m3u8|mpd)[^"']*)["']/gi,
+      // sources array: sources: [{ src: "...", type: "..." }]
+      /sources\s*:\s*\[[\s\S]{0,3000}?["']?(?:src|file|url)["']?\s*:\s*["']([^"']+\.(?:mp4|webm|m3u8|mpd)[^"']*)["']/gi,
+      // Catch URLs in any JS string that look like video files
+      /["'](https?:\/\/[^"'\s]+\.(?:mp4|webm|m3u8|mpd)(?:\?[^"'\s]*)?)["']/gi,
     ];
     for (const pattern of jsVideoPatterns) {
       let jsMatch;
-      while ((jsMatch = pattern.exec(html)) !== null && videos.length < 10) {
-        const vUrl = resolveUrl(jsMatch[1], origin, finalUrl);
-        if (vUrl && !seenVideos.has(vUrl) && !vUrl.includes("ad") && !vUrl.includes("tracker")) {
-          videos.push({ url: vUrl });
-          seenVideos.add(vUrl);
+      while ((jsMatch = pattern.exec(html)) !== null && videos.length < 20) {
+        let candidate = jsMatch[1];
+        // Handle URL-encoded values
+        if (candidate.includes("%2F") || candidate.includes("%3A")) {
+          try { candidate = decodeURIComponent(candidate); } catch {}
         }
+        addVideo(candidate);
+      }
+    }
+
+    // 8. iframe embeds (video players embedded via iframe)
+    const iframeRegex = /<iframe[^>]*\bsrc=["']([^"']+)["'][^>]*/gi;
+    let iframeMatch;
+    const videoIframes = [];
+    while ((iframeMatch = iframeRegex.exec(html)) !== null) {
+      const src = resolveUrl(iframeMatch[1], origin, finalUrl);
+      if (!src) continue;
+      const lower = src.toLowerCase();
+      // Known video embed domains
+      if (/youtube\.com\/embed|youtu\.be|player\.vimeo|dailymotion\.com\/embed|pornhub\.com\/embed|xvideos\.com\/embed|redtube\.com\/embed|xhamster\.com\/embed|rule34video\.com\/embed|streamable\.com|vidyard|wistia|brightcove|jwplatform|bitchute\.com\/embed|rumble\.com\/embed/i.test(lower)) {
+        videoIframes.push({ url: src, type: "iframe" });
+      }
+      // Generic embed patterns
+      else if (/\b(embed|player|video|watch|play)\b/i.test(lower) && !/\b(ad|banner|widget|social|comment|chat)\b/i.test(lower)) {
+        videoIframes.push({ url: src, type: "iframe" });
+      }
+    }
+
+    // 9. Deeply scan all <script> blocks for video URLs (catches dynamically constructed URLs)
+    const scriptRegex = /<script[^>]*>([\s\S]*?)<\/script>/gi;
+    let scriptMatch;
+    while ((scriptMatch = scriptRegex.exec(html)) !== null && videos.length < 20) {
+      const scriptContent = scriptMatch[1];
+      if (scriptContent.length < 10 || scriptContent.length > 100000) continue;
+      // Skip analytics/tracking scripts
+      if (/google-analytics|googletagmanager|facebook\.net|twitter\.com\/oct|hotjar|segment\.io/i.test(scriptContent)) continue;
+      // Look for video URLs in the script
+      const scriptVideoRegex = /(https?:\/\/[^\s"'<>\\]+\.(?:mp4|webm|m3u8|mpd)(?:\?[^\s"'<>\\]*)?)/gi;
+      let svMatch;
+      while ((svMatch = scriptVideoRegex.exec(scriptContent)) !== null && videos.length < 20) {
+        addVideo(svMatch[1]);
+      }
+      // Look for base64-encoded video URLs (some sites obfuscate)
+      const b64Regex = /atob\s*\(\s*["']([A-Za-z0-9+/=]{20,})["']\s*\)/g;
+      let b64Match;
+      while ((b64Match = b64Regex.exec(scriptContent)) !== null) {
+        try {
+          const decoded = Buffer.from(b64Match[1], "base64").toString("utf8");
+          if (/https?:\/\/.*\.(?:mp4|webm|m3u8|mpd)/i.test(decoded)) addVideo(decoded);
+        } catch {}
+      }
+    }
+
+    // 10. Sort videos: prioritize mp4 > webm > m3u8 > others, higher quality first
+    const typeOrder = { "video/mp4": 0, "video/webm": 1, "application/x-mpegURL": 2, "application/dash+xml": 3 };
+    videos.sort((a, b) => {
+      const ta = typeOrder[a.type] ?? 5;
+      const tb = typeOrder[b.type] ?? 5;
+      if (ta !== tb) return ta - tb;
+      const qa = parseInt(a.quality) || 0;
+      const qb = parseInt(b.quality) || 0;
+      return qb - qa; // Higher quality first
+    });
+
+    // Include iframe embeds at the end (fallback if no direct sources)
+    for (const iframe of videoIframes) {
+      if (videos.length < 20 && !seenVideos.has(iframe.url)) {
+        videos.push(iframe);
+        seenVideos.add(iframe.url);
       }
     }
 
@@ -1179,6 +1432,194 @@ app.get("/url", async (req, res) => {
   } catch (err) {
     const message = err.message || "Unknown error";
     res.status(500).json({ error: message, url });
+  }
+});
+
+// GET /video-extract?url=URL — Puppeteer deep video extraction (catches JS-rendered players)
+app.get("/video-extract", async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ error: "url required" });
+
+  let page;
+  try {
+    const b = await getBrowser();
+    page = await b.newPage();
+    await page.setUserAgent(UA);
+    await page.setViewport({ width: 1280, height: 800 });
+
+    // Intercept ALL network requests to catch video URLs
+    const networkVideos = [];
+    const seenNetworkUrls = new Set();
+    await page.setRequestInterception(true);
+    page.on("request", (request) => {
+      const reqUrl = request.url();
+      const resourceType = request.resourceType();
+      // Catch media requests
+      if (resourceType === "media" || resourceType === "xhr" || resourceType === "fetch" || resourceType === "other") {
+        const lower = reqUrl.toLowerCase();
+        if (/\.(?:mp4|webm|m3u8|mpd|flv|ts)\b/i.test(lower) || /video\/|mpegurl|dash/i.test(request.headers()["accept"] || "")) {
+          if (!seenNetworkUrls.has(reqUrl) && !/\b(ad[sv]?|tracker|pixel|beacon|analytics)\b/i.test(lower)) {
+            seenNetworkUrls.add(reqUrl);
+            let type = "";
+            if (/\.mp4/i.test(reqUrl)) type = "video/mp4";
+            else if (/\.webm/i.test(reqUrl)) type = "video/webm";
+            else if (/\.m3u8/i.test(reqUrl)) type = "application/x-mpegURL";
+            else if (/\.mpd/i.test(reqUrl)) type = "application/dash+xml";
+            const qMatch = reqUrl.match(/(\d{3,4})p/);
+            networkVideos.push({ url: reqUrl, type: type || undefined, quality: qMatch ? qMatch[1] + "p" : undefined, source: "network" });
+          }
+        }
+      }
+      request.continue();
+    });
+
+    // Also catch video URLs from responses
+    page.on("response", async (response) => {
+      try {
+        const respUrl = response.url();
+        const contentType = response.headers()["content-type"] || "";
+        if (/video\/|mpegurl|dash\+xml|octet-stream/i.test(contentType)) {
+          if (!seenNetworkUrls.has(respUrl) && !/\b(ad[sv]?|tracker|pixel)\b/i.test(respUrl)) {
+            seenNetworkUrls.add(respUrl);
+            networkVideos.push({ url: respUrl, type: contentType.split(";")[0].trim(), source: "response" });
+          }
+        }
+      } catch {}
+    });
+
+    await page.goto(url, { waitUntil: "networkidle2", timeout: 20000 }).catch(() => {});
+
+    // Wait for video player to initialize
+    await new Promise((r) => setTimeout(r, 3000));
+
+    // Try clicking play button if video hasn't started
+    try {
+      await page.evaluate(() => {
+        // Common play button selectors
+        const selectors = [
+          "video", ".play-button", ".vjs-big-play-button", ".jw-icon-display",
+          "[class*='play']", "[aria-label*='play']", "[title*='play']",
+          ".fp-play", ".plyr__control--overlaid", ".video-play-button",
+          "button[class*='play']", "div[class*='play']",
+        ];
+        for (const sel of selectors) {
+          const el = document.querySelector(sel);
+          if (el) { el.click(); break; }
+        }
+      });
+      // Wait for video to start loading after click
+      await new Promise((r) => setTimeout(r, 2000));
+    } catch {}
+
+    // Extract video sources from the rendered DOM
+    const domVideos = await page.evaluate(() => {
+      const results = [];
+      const seen = new Set();
+      const add = (url, extra = {}) => {
+        if (!url || seen.has(url) || url.startsWith("blob:") || url.startsWith("data:")) return;
+        if (/\b(ad[sv]?|tracker|pixel|beacon)\b/i.test(url)) return;
+        seen.add(url);
+        results.push({ url, ...extra, source: "dom" });
+      };
+
+      // All <video> elements
+      document.querySelectorAll("video").forEach((v) => {
+        if (v.src) add(v.src, { poster: v.poster || undefined });
+        if (v.currentSrc) add(v.currentSrc, { poster: v.poster || undefined });
+        // <source> children
+        v.querySelectorAll("source").forEach((s) => {
+          if (s.src) add(s.src, { type: s.type || undefined, poster: v.poster || undefined });
+        });
+      });
+
+      // Check for video players that store URLs in data attributes
+      document.querySelectorAll("[data-src],[data-video-url],[data-video-src],[data-file-url],[data-mp4],[data-hls],[data-stream]").forEach((el) => {
+        const attrs = ["data-src", "data-video-url", "data-video-src", "data-file-url", "data-mp4", "data-hls", "data-stream"];
+        for (const attr of attrs) {
+          const val = el.getAttribute(attr);
+          if (val && /\.(mp4|webm|m3u8|mpd|flv)/i.test(val)) add(val);
+        }
+      });
+
+      // Check iframes for video embeds
+      document.querySelectorAll("iframe").forEach((iframe) => {
+        const src = iframe.src;
+        if (src && /\b(embed|player|video|watch|play)\b/i.test(src) && !/\b(ad|banner|widget)\b/i.test(src)) {
+          add(src, { type: "iframe" });
+        }
+      });
+
+      // Check for jwplayer, videojs, flowplayer instances
+      try {
+        if (window.jwplayer) {
+          const p = window.jwplayer();
+          if (p && p.getPlaylistItem) {
+            const item = p.getPlaylistItem();
+            if (item) {
+              if (item.file) add(item.file);
+              if (item.sources) item.sources.forEach((s) => { if (s.file) add(s.file, { type: s.type }); });
+            }
+          }
+        }
+      } catch {}
+      try {
+        const vjsPlayers = document.querySelectorAll(".video-js");
+        vjsPlayers.forEach((el) => {
+          const player = el.player || window.videojs?.getPlayer(el.id);
+          if (player) {
+            const src = player.currentSrc?.() || player.src?.();
+            if (src) add(src);
+            const techEl = player.tech?.()?.el?.();
+            if (techEl && techEl.src) add(techEl.src);
+          }
+        });
+      } catch {}
+      try {
+        if (window.flowplayer) {
+          document.querySelectorAll(".flowplayer").forEach((el) => {
+            const fp = window.flowplayer(el);
+            if (fp && fp.video) {
+              if (fp.video.src) add(fp.video.src);
+              if (fp.video.sources) fp.video.sources.forEach((s) => { if (s.src) add(s.src, { type: s.type }); });
+            }
+          });
+        }
+      } catch {}
+
+      return results;
+    });
+
+    const title = await page.title();
+    await page.close();
+
+    // Merge network + DOM videos, deduplicate
+    const allVideos = [];
+    const allSeen = new Set();
+    // Network-intercepted videos are highest confidence
+    for (const v of networkVideos) {
+      if (!allSeen.has(v.url)) { allVideos.push(v); allSeen.add(v.url); }
+    }
+    for (const v of domVideos) {
+      if (!allSeen.has(v.url)) { allVideos.push(v); allSeen.add(v.url); }
+    }
+
+    // Sort: mp4 > webm > m3u8, higher quality first
+    const typeOrder = { "video/mp4": 0, "video/webm": 1, "application/x-mpegURL": 2, "application/dash+xml": 3 };
+    allVideos.sort((a, b) => {
+      const ta = typeOrder[a.type] ?? (a.type === "iframe" ? 10 : 5);
+      const tb = typeOrder[b.type] ?? (b.type === "iframe" ? 10 : 5);
+      if (ta !== tb) return ta - tb;
+      const qa = parseInt(a.quality) || 0;
+      const qb = parseInt(b.quality) || 0;
+      return qb - qa;
+    });
+
+    console.log(`[video-extract] Found ${allVideos.length} videos on ${url} (${networkVideos.length} network, ${domVideos.length} DOM)`);
+    res.json({ videos: allVideos, title, url });
+  } catch (err) {
+    if (page) await page.close().catch(() => {});
+    console.error("[video-extract] Error:", err.message);
+    res.status(500).json({ error: err.message || "Video extraction failed", url });
   }
 });
 
