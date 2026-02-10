@@ -17,6 +17,10 @@ import {
   RefreshCw,
   Type,
   CornerDownLeft,
+  Brain,
+  Sparkles,
+  Search,
+  Server,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
@@ -25,7 +29,7 @@ import { Separator } from "@/components/ui/separator";
 import { useBrowserInfo } from "@/hooks/use-browser-info";
 import { useLocation } from "@/hooks/use-location";
 import { usePermissions } from "@/hooks/use-permissions";
-import type { AppSettings } from "@/types/chat";
+import type { AppSettings, AgentMode } from "@/types/chat";
 
 interface SettingsPanelProps {
   settings: AppSettings;
@@ -89,6 +93,12 @@ function StateIndicator({ state }: { state: string }) {
   );
 }
 
+const MODE_OPTIONS: { mode: AgentMode; icon: React.ElementType; label: string; desc: string }[] = [
+  { mode: "standard", icon: Sparkles, label: "Standard", desc: "Normal chat" },
+  { mode: "thinking", icon: Brain, label: "Thinking", desc: "Shows reasoning" },
+  { mode: "research", icon: Search, label: "Research", desc: "Deep search" },
+];
+
 export function SettingsPanel({
   settings,
   onSettingsChange,
@@ -111,6 +121,73 @@ export function SettingsPanel({
   return (
     <div className="scrollbar-thin h-full overflow-y-auto">
       <div className="space-y-4 px-3 py-3">
+        {/* AI Provider */}
+        <section>
+          <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-500">
+            <Server className="h-3.5 w-3.5" />
+            AI Provider
+          </h3>
+          <div className="glass-panel rounded-xl p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs text-zinc-400">
+                <Server className="h-3 w-3" />
+                <span>Prefer Ollama (local)</span>
+              </div>
+              <Switch
+                checked={settings.preferOllama}
+                onCheckedChange={(v) => updateSetting("preferOllama", v)}
+                className="scale-75"
+              />
+            </div>
+            {settings.preferOllama && (
+              <div className="space-y-1.5">
+                <span className="flex items-center gap-2 text-xs text-zinc-400">
+                  <Cpu className="h-3 w-3" />
+                  Ollama Model
+                </span>
+                <input
+                  type="text"
+                  value={settings.ollamaModel}
+                  onChange={(e) => updateSetting("ollamaModel", e.target.value)}
+                  placeholder="mistral"
+                  className="w-full rounded-lg bg-white/[0.04] border border-white/[0.06] px-3 py-1.5 text-xs text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-[var(--senko-accent)]/40 transition-colors"
+                />
+              </div>
+            )}
+          </div>
+        </section>
+
+        <Separator className="bg-white/[0.06]" />
+
+        {/* Default Agent Mode */}
+        <section>
+          <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-500">
+            <Brain className="h-3.5 w-3.5" />
+            Default Mode
+          </h3>
+          <div className="glass-panel rounded-xl p-3">
+            <div className="grid grid-cols-3 gap-1.5">
+              {MODE_OPTIONS.map(({ mode, icon: Icon, label, desc }) => (
+                <button
+                  key={mode}
+                  onClick={() => updateSetting("agentMode", mode)}
+                  className={`flex flex-col items-center gap-1 rounded-lg p-2.5 text-center transition-all border ${
+                    settings.agentMode === mode
+                      ? "bg-[var(--senko-accent)]/[0.08] border-[var(--senko-accent)]/20 text-[var(--senko-accent)]"
+                      : "bg-white/[0.02] border-white/[0.06] text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-400"
+                  }`}
+                >
+                  <Icon className="h-4 w-4" />
+                  <span className="text-[10px] font-medium">{label}</span>
+                  <span className="text-[9px] opacity-60">{desc}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <Separator className="bg-white/[0.06]" />
+
         {/* Device Info */}
         <section>
           <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-500">
@@ -226,7 +303,7 @@ export function SettingsPanel({
               size="sm"
               onClick={requestLocation}
               disabled={locationLoading}
-              className="mt-1 h-7 w-full gap-1.5 rounded-lg bg-[#ff9500]/15 text-xs text-[#ff9500] hover:bg-[#ff9500]/25"
+              className="mt-1 h-7 w-full gap-1.5 rounded-lg bg-[var(--senko-accent)]/15 text-xs text-[var(--senko-accent)] hover:bg-[var(--senko-accent)]/25"
             >
               <MapPin className="h-3 w-3" />
               {locationLoading
@@ -273,7 +350,7 @@ export function SettingsPanel({
                       size="sm"
                       variant="ghost"
                       onClick={() => requestPermission(perm.name)}
-                      className="h-5 rounded px-1.5 text-[10px] text-[#ff9500] hover:bg-[#ff9500]/10"
+                      className="h-5 rounded px-1.5 text-[10px] text-[var(--senko-accent)] hover:bg-[var(--senko-accent)]/10"
                     >
                       Request
                     </Button>
@@ -318,7 +395,7 @@ export function SettingsPanel({
                     onClick={() => updateSetting("fontSize", size)}
                     className={`h-6 flex-1 rounded-md text-[10px] capitalize ${
                       settings.fontSize === size
-                        ? "bg-[#ff9500]/15 text-[#ff9500]"
+                        ? "bg-[var(--senko-accent)]/15 text-[var(--senko-accent)]"
                         : "text-zinc-500 hover:bg-white/5 hover:text-zinc-400"
                     }`}
                   >

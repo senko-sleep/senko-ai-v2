@@ -1,47 +1,40 @@
 "use client";
 
+import { ExternalLink } from "lucide-react";
 import type { VideoEmbed as VideoEmbedType } from "@/types/chat";
 
 interface VideoEmbedProps {
   video: VideoEmbedType;
 }
 
-function getYouTubeEmbedUrl(video: VideoEmbedType): string | null {
-  if (video.embedId) {
-    return `https://www.youtube-nocookie.com/embed/${video.embedId}`;
-  }
-  const url = video.url;
-  // youtube.com/watch?v=ID
-  const watchMatch = url.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
-  if (watchMatch) return `https://www.youtube-nocookie.com/embed/${watchMatch[1]}`;
-  // youtu.be/ID
-  const shortMatch = url.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
-  if (shortMatch) return `https://www.youtube-nocookie.com/embed/${shortMatch[1]}`;
-  // youtube.com/embed/ID
-  const embedMatch = url.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/);
-  if (embedMatch) return `https://www.youtube-nocookie.com/embed/${embedMatch[1]}`;
-  return null;
-}
-
 export function VideoEmbed({ video }: VideoEmbedProps) {
-  if (video.platform === "youtube") {
-    const embedUrl = getYouTubeEmbedUrl(video);
-    if (!embedUrl) return null;
+  const isYouTube = video.platform === "youtube" && video.embedId;
 
+  if (isYouTube) {
     return (
-      <div className="mt-2 overflow-hidden rounded-lg border border-white/[0.06]">
+      <div className="mt-2 overflow-hidden rounded-xl border border-white/[0.08] hover:border-white/[0.12] transition-all duration-300 shadow-[0_2px_12px_rgba(0,0,0,0.3)]">
         <div className="relative w-full" style={{ paddingBottom: "56.25%" }}>
           <iframe
-            src={embedUrl}
+            src={`https://www.youtube.com/embed/${video.embedId}?rel=0`}
             title={video.title || "YouTube video"}
-            className="absolute inset-0 h-full w-full"
+            className="absolute inset-0 h-full w-full border-0"
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
             allowFullScreen
           />
         </div>
         {video.title && (
-          <div className="px-2 py-1 bg-white/[0.02]">
-            <p className="text-[11px] text-zinc-500 truncate">{video.title}</p>
+          <div className="flex items-center justify-between bg-white/[0.03] px-3 py-2 border-t border-white/[0.06]">
+            <span className="text-xs font-medium text-zinc-300 truncate">
+              {video.title}
+            </span>
+            <a
+              href={video.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-lg p-1 text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.06] transition-all flex-shrink-0"
+            >
+              <ExternalLink className="h-3 w-3" />
+            </a>
           </div>
         )}
       </div>
@@ -50,15 +43,31 @@ export function VideoEmbed({ video }: VideoEmbedProps) {
 
   // Generic video embed
   return (
-    <div className="mt-2 overflow-hidden rounded-lg border border-white/[0.06]">
-      <video
-        src={video.url}
-        controls
-        className="w-full max-h-64"
-        preload="metadata"
-      >
-        Your browser does not support video.
-      </video>
+    <div className="mt-2 overflow-hidden rounded-xl border border-white/[0.08] hover:border-white/[0.12] transition-all duration-300 shadow-[0_2px_12px_rgba(0,0,0,0.3)]">
+      <div className="relative w-full" style={{ paddingBottom: "56.25%" }}>
+        <iframe
+          src={video.url}
+          title={video.title || "Video"}
+          className="absolute inset-0 h-full w-full border-0"
+          allow="autoplay; fullscreen"
+          allowFullScreen
+        />
+      </div>
+      {video.title && (
+        <div className="flex items-center justify-between bg-white/[0.03] px-3 py-2 border-t border-white/[0.06]">
+          <span className="text-xs font-medium text-zinc-300 truncate">
+            {video.title}
+          </span>
+          <a
+            href={video.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-lg p-1 text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.06] transition-all flex-shrink-0"
+          >
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        </div>
+      )}
     </div>
   );
 }

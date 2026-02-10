@@ -92,6 +92,20 @@
   --senko-accent: #ff9500;
   --senko-accent-dim: rgba(255, 149, 0, 0.2);
   --senko-surface: rgba(8, 8, 8, 0.6);
+
+  /* Semantic design tokens */
+  --accent-glow: rgba(255, 149, 0, 0.15);
+  --accent-subtle: rgba(255, 149, 0, 0.06);
+  --accent-hover: rgba(255, 149, 0, 0.25);
+  --surface-elevated: rgba(10, 10, 10, 1);
+  --surface-overlay: rgba(0, 0, 0, 0.85);
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-medium: rgba(255, 255, 255, 0.10);
+  --border-accent: rgba(255, 149, 0, 0.20);
+  --text-primary: #ffffff;
+  --text-secondary: #a1a1a1;
+  --text-tertiary: #666666;
+  --text-accent: #ff9500;
 }
 
 @layer base {
@@ -103,23 +117,24 @@
   }
 }
 
+/* ─── Glass Panels ─── */
 .glass-panel {
   background: rgba(8, 8, 8, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-subtle);
   backdrop-filter: blur(24px) saturate(1.2);
   -webkit-backdrop-filter: blur(24px) saturate(1.2);
 }
 
 .glass-panel-solid {
   background: rgba(5, 5, 5, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-subtle);
   backdrop-filter: blur(32px) saturate(1.3);
   -webkit-backdrop-filter: blur(32px) saturate(1.3);
 }
 
 .glass-input {
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-subtle);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   transition: border-color 0.2s, box-shadow 0.2s;
@@ -127,9 +142,10 @@
 
 .glass-input:focus {
   border-color: rgba(255, 149, 0, 0.5);
-  box-shadow: 0 0 0 2px rgba(255, 149, 0, 0.12);
+  box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
+/* ─── Shadows ─── */
 .depth-shadow {
   box-shadow:
     0 0 0 1px rgba(255, 255, 255, 0.05),
@@ -145,9 +161,10 @@
 }
 
 .glow-accent {
-  box-shadow: 0 0 20px rgba(255, 149, 0, 0.15);
+  box-shadow: 0 0 20px var(--accent-glow);
 }
 
+/* ─── Scrollbars ─── */
 .scrollbar-thin::-webkit-scrollbar {
   width: 4px;
 }
@@ -165,7 +182,15 @@
   background: rgba(255, 255, 255, 0.2);
 }
 
-/* Senko thinking pulse animation */
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* ─── Thinking Animations ─── */
 @keyframes senko-pulse {
   0%, 100% { opacity: 0.4; transform: scale(1); }
   50% { opacity: 1; transform: scale(1.3); }
@@ -203,16 +228,139 @@
   box-shadow: 0 0 12px rgba(255, 149, 0, 0.08), 0 0 4px rgba(255, 179, 71, 0.06);
 }
 
-/* Hide scrollbar for horizontal scroll on mobile */
-.scrollbar-none {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-.scrollbar-none::-webkit-scrollbar {
-  display: none;
+/* ─── Modern Entrance Animations ─── */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-/* Mobile viewport height fix - use dvh where supported */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes slide-in-left {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.3s ease-out;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out;
+}
+
+.animate-scale-in {
+  animation: scale-in 0.25s ease-out;
+}
+
+.animate-slide-in-left {
+  animation: slide-in-left 0.3s ease-out;
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.3s ease-out;
+}
+
+/* ─── Fullscreen Lightbox ─── */
+.lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.92);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  animation: fade-in 0.2s ease-out;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ─── Thinking Mode Block ─── */
+.thinking-block {
+  background: linear-gradient(135deg, rgba(255, 149, 0, 0.04) 0%, rgba(255, 179, 71, 0.02) 100%);
+  border: 1px solid rgba(255, 149, 0, 0.08);
+  border-radius: 12px;
+}
+
+.thinking-block-content {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+/* ─── Agent Mode Pills ─── */
+.mode-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.mode-pill:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.mode-pill.active {
+  background: var(--accent-subtle);
+  border-color: var(--border-accent);
+  color: var(--text-accent);
+}
+
+/* ─── Mobile Viewport Fix ─── */
 @supports (height: 100dvh) {
   .h-screen-safe {
     height: 100dvh !important;

@@ -216,6 +216,15 @@ function extractGoogleResults(html: string): SearchResult[] {
  * then falls back to remote Puppeteer WS endpoint.
  */
 export async function searchPuppeteer(query: string): Promise<EngineResponse> {
+  // Quick bail: if neither ScraperAPI nor Puppeteer WS are configured, skip immediately
+  if (!config.scraperApiKey && !config.puppeteerWsEndpoint) {
+    return {
+      results: [],
+      status: 0,
+      error: "Neither SCRAPER_API_KEY nor PUPPETEER_WS_ENDPOINT configured — skipping Puppeteer fallback",
+    };
+  }
+
   // Strategy A: ScraperAPI (works on Vercel, no binary)
   const scraperResult = await scraperApiSearch(query);
   if (scraperResult.results.length > 0) {

@@ -7,7 +7,7 @@ function env(key: string, fallback: string): string {
 
 export const config = {
   get groqApiKey() { return env("GROQ_API_KEY", ""); },
-  get groqModel() { return env("GROQ_MODEL", "openai/gpt-oss-120b"); },
+  get groqModel() { return env("GROQ_MODEL", "llama-3.3-70b-versatile"); },
   groqUrl: "https://api.groq.com/openai/v1/chat/completions",
   get ollamaUrl() { return env("OLLAMA_URL", "http://localhost:11434"); },
   get ollamaModel() { return env("OLLAMA_MODEL", "mistral"); },

@@ -1270,16 +1270,9 @@ export default function Home() {
         const imageQueryPattern = /\b(images?|pics?|pictures?|photos?|show me|send me|wallpapers?)\b/i;
         const isImageQuery = imageQueryPattern.test(query);
 
-        // Phase 1: Fetch search results + enriched sources (always) and images (only for image queries)
-        const [searchRes, sourcesRes] = await Promise.all([
-          fetch(`/api/search?q=${encodeURIComponent(query)}`),
-          fetch(`/api/sources?q=${encodeURIComponent(query)}`).catch(() => null),
-        ]);
+        // Phase 1: Fetch search results (single search — no duplicate /api/sources call)
+        const searchRes = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
         const searchData = await searchRes.json();
-        let sourcesData: { sources?: { url: string; title: string; snippet: string; favicon: string }[] } = {};
-        if (sourcesRes && sourcesRes.ok) {
-          try { sourcesData = await sourcesRes.json(); } catch { /* sources parse failed */ }
-        }
 
         // Only fetch images for image-related queries — skip for weather, facts, etc.
         let imageData: { images?: { url: string; alt: string; source: string }[] } = {};
@@ -1292,30 +1285,19 @@ export default function Home() {
 
         removeThinkingMsg(convId, thinkId);
 
-        // Build sources — prefer enriched /api/sources data (has favicon, better titles), fall back to /api/search
+        // Build sources directly from search results (single search, no duplicate call)
         let sources: WebSource[] = [];
-        if (sourcesData.sources && sourcesData.sources.length > 0) {
-          sources = sourcesData.sources.map((s) => ({
-            url: s.url,
-            title: s.title,
-            snippet: s.snippet || "",
-            favicon: s.favicon || "",
-          }));
-        }
         if (searchData.results && searchData.results.length > 0) {
           searchResultsByConv.current[convId] = searchData.results.map(
             (r: { title: string; url: string }) => ({ url: r.url, title: r.title })
           );
-          // If /api/sources didn't return data, build sources from /api/search with safe favicon
-          if (sources.length === 0) {
-            sources = searchData.results.map(
-              (r: { title: string; url: string; snippet: string }) => {
-                let favicon = "";
-                try { favicon = `https://www.google.com/s2/favicons?domain=${new URL(r.url).hostname}&sz=16`; } catch { /* bad URL */ }
-                return { url: r.url, title: r.title, snippet: r.snippet || "", favicon };
-              }
-            );
-          }
+          sources = searchData.results.map(
+            (r: { title: string; url: string; snippet: string }) => {
+              let favicon = "";
+              try { favicon = `https://www.google.com/s2/favicons?domain=${new URL(r.url).hostname}&sz=16`; } catch { /* bad URL */ }
+              return { url: r.url, title: r.title, snippet: r.snippet || "", favicon };
+            }
+          );
         }
 
         // Build images from dedicated image search (only populated for image queries)
@@ -1391,28 +1373,23 @@ export default function Home() {
           return;
         }
 
-        // Phase 2: Deep research - scrape up to 25 results for actual content
-        const allResults = (searchData.results || []).slice(0, 25);
+        // Phase 2: Deep research - scrape top 8 results for actual content (fast)
+        const allResults = (searchData.results || []).slice(0, 8);
         const thinkId2 = addThinkingMsg(convId, `reading ${allResults.length} sources for "${query}"...`);
         const topUrls = allResults.map((r: { url: string }) => r.url);
 
-        // Scrape in batches of 5 to avoid overwhelming the server
-        const scrapedPages: { url: string; title: string; content: string; images: string[] }[] = [];
-        for (let i = 0; i < topUrls.length; i += 5) {
-          const batch = topUrls.slice(i, i + 5);
-          const batchResults = await Promise.all(
-            batch.map(async (url: string) => {
-              try {
-                const res = await fetch(`/api/scrape?url=${encodeURIComponent(url)}`);
-                const data = await res.json();
-                return { url, title: data.title || url, content: data.content || "", images: data.images || [] };
-              } catch {
-                return { url, title: url, content: "", images: [] };
-              }
-            })
-          );
-          scrapedPages.push(...batchResults);
-        }
+        // Scrape all 8 in parallel (small enough batch to be fast)
+        const scrapedPages: { url: string; title: string; content: string; images: string[] }[] = await Promise.all(
+          topUrls.map(async (url: string) => {
+            try {
+              const res = await fetch(`/api/scrape?url=${encodeURIComponent(url)}`);
+              const data = await res.json();
+              return { url, title: data.title || url, content: data.content || "", images: data.images || [] };
+            } catch {
+              return { url, title: url, content: "", images: [] };
+            }
+          })
+        );
         removeThinkingMsg(convId, thinkId2);
 
         // Collect additional images from ALL scraped pages
@@ -1545,15 +1522,14 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
     async (convId: string, messageId: string, query: string) => {
       try {
         console.log(`%c[sources] 🔗 Fetching sources for "${query}"`, "color: #00d4ff; font-weight: bold");
-        const res = await fetch(`/api/sources?q=${encodeURIComponent(query)}`);
+        const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
         const data = await res.json();
-        if (data.sources && data.sources.length > 0) {
-          const sources: WebSource[] = data.sources.slice(0, 6).map((s: { url: string; title: string; snippet: string; favicon: string }) => ({
-            url: s.url,
-            title: s.title,
-            snippet: s.snippet || "",
-            favicon: s.favicon || "",
-          }));
+        if (data.results && data.results.length > 0) {
+          const sources: WebSource[] = data.results.slice(0, 6).map((r: { url: string; title: string; snippet: string }) => {
+            let favicon = "";
+            try { favicon = `https://www.google.com/s2/favicons?domain=${new URL(r.url).hostname}&sz=16`; } catch { /* skip */ }
+            return { url: r.url, title: r.title, snippet: r.snippet || "", favicon };
+          });
           console.log(`%c[sources] ✅ Got ${sources.length} sources`, "color: #00ff88", sources.map((s) => s.title));
           updateConversation(convId, (conv) => ({
             ...conv,

@@ -29,6 +29,8 @@ export interface WebEmbed {
   title?: string;
 }
 
+export type AgentMode = "standard" | "thinking" | "research";
+
 export interface Message {
   id: string;
   role: "user" | "assistant" | "thinking";
@@ -42,6 +44,7 @@ export interface Message {
   webEmbeds?: WebEmbed[];
   tokenCount?: number;
   isThinking?: boolean;
+  thinkingContent?: string;
   error?: string;
 }
 
@@ -106,4 +109,7 @@ export interface AppSettings {
   clipboard: boolean;
   fontSize: "small" | "medium" | "large";
   sendWithEnter: boolean;
+  agentMode: AgentMode;
+  preferOllama: boolean;
+  ollamaModel: string;
 }

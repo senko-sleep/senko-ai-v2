@@ -20,8 +20,8 @@ interface ChatMessage {
 // Fallback models when primary hits rate limits (ordered by preference)
 const GROQ_FALLBACK_MODELS = [
   "llama-3.3-70b-versatile",
-  "openai/gpt-oss-20b",
   "llama-3.1-8b-instant",
+  "gemma2-9b-it",
 ];
 
 function isRateLimitError(text: string, status: number): boolean {

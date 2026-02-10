@@ -11,7 +11,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { ChatMessage } from "./chat-message";
 import { ChatInput } from "./chat-input";
-import type { Message, SenkoStatus, SenkoTab } from "@/types/chat";
+import type { Message, SenkoStatus, SenkoTab, AgentMode } from "@/types/chat";
 
 const STATUS_ICON_MAP: Record<string, LucideIcon> = {
   happy: Smile,
@@ -49,6 +49,8 @@ interface ChatAreaProps {
   tabs?: SenkoTab[];
   onCloseTab?: (tabId: string) => void;
   onSwitchTab?: (tabId: string) => void;
+  agentMode?: AgentMode;
+  onModeChange?: (mode: AgentMode) => void;
 }
 
 function TabBar({ tabs, onClose, onSwitch }: { tabs: SenkoTab[]; onClose?: (id: string) => void; onSwitch?: (id: string) => void }) {
@@ -59,11 +61,10 @@ function TabBar({ tabs, onClose, onSwitch }: { tabs: SenkoTab[]; onClose?: (id: 
         <div
           key={tab.id}
           onClick={() => onSwitch?.(tab.id)}
-          className={`group/tab flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] cursor-pointer transition-all shrink-0 max-w-[180px] border ${
-            tab.active
-              ? "bg-[#ff9500]/[0.08] border-[#ff9500]/20 text-white"
+          className={`group/tab flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] cursor-pointer transition-all shrink-0 max-w-[180px] border ${tab.active
+              ? "bg-[var(--senko-accent)]/[0.08] border-[var(--senko-accent)]/20 text-white"
               : "bg-white/[0.03] border-white/[0.06] text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-300"
-          }`}
+            }`}
         >
           {tab.favicon ? (
             /* eslint-disable-next-line @next/next/no-img-element */
@@ -93,19 +94,20 @@ function StatusPill({ status }: { status: SenkoStatus }) {
   const IconComponent = STATUS_ICON_MAP[status.icon] || Sparkles;
   return (
     <div
-      className="flex items-center gap-2 rounded-full px-3.5 py-1.5 border transition-all duration-500"
+      className="flex items-center gap-2 rounded-xl px-4 py-2 border transition-all duration-500 backdrop-blur-md shadow-lg"
       style={{
-        backgroundColor: `${status.color}08`,
-        borderColor: `${status.color}20`,
+        backgroundColor: "rgba(16, 185, 129, 0.08)",
+        borderColor: "rgba(16, 185, 129, 0.25)",
+        boxShadow: "0 2px 12px rgba(16, 185, 129, 0.1), 0 0 0 1px rgba(16, 185, 129, 0.08)",
       }}
     >
       <IconComponent
         className="h-3.5 w-3.5 shrink-0"
-        style={{ color: status.color }}
+        style={{ color: "#10b981" }}
       />
       <span
-        className="text-[11px] italic"
-        style={{ color: `${status.color}cc` }}
+        className="text-[11px] italic font-medium"
+        style={{ color: "rgba(16, 185, 129, 0.85)" }}
       >
         {status.text}
       </span>
@@ -131,6 +133,8 @@ export function ChatArea({
   tabs = [],
   onCloseTab,
   onSwitchTab,
+  agentMode = "standard",
+  onModeChange,
 }: ChatAreaProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isAtBottom = useRef(true);
@@ -161,7 +165,7 @@ export function ChatArea({
     <div className="flex h-full flex-col">
       {/* Token counter bar - hidden on mobile */}
       {tokenCount > 0 && (
-        <div className="hidden sm:flex items-center justify-end border-b border-white/[0.04] px-4 py-1">
+        <div className="hidden sm:flex items-center justify-end border-b border-white/[0.04] px-4 py-1.5">
           <span className="text-[10px] text-zinc-600">
             Context: {tokenCount.toLocaleString()} tokens
           </span>
@@ -169,10 +173,10 @@ export function ChatArea({
       )}
 
       <div className="relative flex-1 overflow-hidden">
-        {/* Fixed status pill + tab bar overlay - always visible at top during conversation */}
+        {/* Fixed status pill + tab bar overlay — z-30 so it never blends with chat */}
         {messages.length > 0 && (
-          <div className="absolute top-0 left-0 right-0 z-10 pointer-events-none bg-gradient-to-b from-black/80 via-black/40 to-transparent pb-6">
-            <div className="flex justify-center py-2">
+          <div className="absolute top-0 left-0 right-0 z-30 pointer-events-none bg-gradient-to-b from-black/90 via-black/60 to-transparent pb-8">
+            <div className="flex justify-center py-2.5">
               <div className="pointer-events-auto">
                 <StatusPill status={currentStatus} />
               </div>
@@ -191,40 +195,53 @@ export function ChatArea({
           className="scrollbar-thin h-full overflow-y-auto"
         >
           {messages.length === 0 ? (
-            <div className="flex h-full flex-col items-center justify-center gap-3 px-4 sm:gap-4">
-              <div className="glass-panel depth-shadow flex h-14 w-14 items-center justify-center rounded-2xl sm:h-16 sm:w-16">
-                <Bot className="h-7 w-7 text-[#ff9500] sm:h-8 sm:w-8" />
+            /* ─── Welcome Screen ─── */
+            <div className="flex h-full flex-col items-center justify-center gap-4 px-4 sm:gap-6">
+              {/* Logo */}
+              <div className="relative animate-scale-in">
+                <div className="glass-panel depth-shadow flex h-16 w-16 items-center justify-center rounded-2xl sm:h-20 sm:w-20">
+                  <Bot className="h-8 w-8 text-[var(--senko-accent)] sm:h-10 sm:w-10" />
+                </div>
+                <div className="absolute -inset-3 rounded-3xl bg-[var(--senko-accent)]/[0.06] blur-xl -z-10" />
               </div>
-              <div className="text-center">
-                <h2 className="text-base font-semibold text-white sm:text-lg">
-                  Hii~ I&apos;m Senko!
+
+              {/* Hero text */}
+              <div className="text-center animate-fade-in-up" style={{ animationDelay: "0.1s" }}>
+                <h2 className="text-xl font-bold text-white sm:text-2xl">
+                  Hii~ I&apos;m <span className="text-[var(--senko-accent)]">Senko</span>!
                 </h2>
-                <p className="mt-1 max-w-sm text-xs text-zinc-500 sm:text-sm">
+                <p className="mt-2 max-w-md text-sm text-zinc-500 leading-relaxed">
                   Talk to me about anything~ I can search stuff, vibe,
                   play games, or just hang out ^w^
                 </p>
               </div>
-              {/* Sub-status pill */}
-              <StatusPill status={currentStatus} />
-              <div className="mt-2 grid w-full max-w-md grid-cols-1 gap-2 sm:mt-4 sm:grid-cols-2">
+
+              {/* Status pill */}
+              <div className="animate-fade-in" style={{ animationDelay: "0.2s" }}>
+                <StatusPill status={currentStatus} />
+              </div>
+
+              {/* Suggestion cards */}
+              <div className="mt-2 grid w-full max-w-lg grid-cols-1 gap-2 sm:mt-4 sm:grid-cols-2 animate-fade-in-up" style={{ animationDelay: "0.3s" }}>
                 {[
-                  "Tell me something interesting",
-                  "Let's play a game!",
-                  "I had the worst day ever...",
-                  "Look up the latest anime news",
+                  { text: "Tell me something interesting", icon: "✨" },
+                  { text: "Let's play a game!", icon: "🎮" },
+                  { text: "I had the worst day ever...", icon: "💭" },
+                  { text: "Look up the latest anime news", icon: "🔍" },
                 ].map((suggestion) => (
                   <button
-                    key={suggestion}
-                    onClick={() => onSendMessage(suggestion)}
-                    className="glass-panel rounded-xl px-3 py-2.5 text-left text-xs text-zinc-400 transition-colors hover:bg-white/[0.06] hover:text-zinc-300 active:bg-white/[0.08]"
+                    key={suggestion.text}
+                    onClick={() => onSendMessage(suggestion.text)}
+                    className="glass-panel rounded-xl px-4 py-3 text-left text-sm text-zinc-400 transition-all hover:bg-white/[0.06] hover:text-zinc-300 hover:border-white/[0.12] active:bg-white/[0.08] group"
                   >
-                    {suggestion}
+                    <span className="mr-2 opacity-60 group-hover:opacity-100 transition-opacity">{suggestion.icon}</span>
+                    {suggestion.text}
                   </button>
                 ))}
               </div>
             </div>
           ) : (
-            <div className="mx-auto max-w-4xl px-2 py-3 sm:px-0 sm:py-4">
+            <div className="mx-auto max-w-4xl px-1 pt-16 pb-3 sm:px-0 sm:pt-18 sm:pb-4">
               {messages.map((message) => (
                 <ChatMessage
                   key={message.id}
@@ -247,7 +264,7 @@ export function ChatArea({
           <Button
             size="sm"
             onClick={scrollToBottom}
-            className="absolute bottom-2 left-1/2 -translate-x-1/2 h-7 gap-1 rounded-full bg-white/[0.08] px-3 text-[10px] text-zinc-400 hover:bg-white/[0.12] backdrop-blur-sm border border-white/[0.06]"
+            className="absolute bottom-2 left-1/2 -translate-x-1/2 h-8 gap-1.5 rounded-full bg-white/[0.08] px-4 text-[11px] text-zinc-400 hover:bg-white/[0.12] backdrop-blur-sm border border-white/[0.06] animate-fade-in-up"
           >
             <ArrowDown className="h-3 w-3" />
             Scroll down
@@ -262,7 +279,7 @@ export function ChatArea({
             <Button
               size="sm"
               onClick={onStopGeneration}
-              className="h-7 gap-1.5 rounded-lg bg-red-500/10 px-3 text-xs text-red-400 hover:bg-red-500/20 border border-red-500/25"
+              className="h-8 gap-1.5 rounded-lg bg-red-500/10 px-4 text-xs text-red-400 hover:bg-red-500/20 border border-red-500/25"
             >
               <Square className="h-3 w-3" />
               Stop generating
@@ -272,7 +289,7 @@ export function ChatArea({
             <Button
               size="sm"
               onClick={onContinueGeneration}
-              className="h-7 gap-1.5 rounded-lg bg-[#ff9500]/10 px-3 text-xs text-[#ff9500] hover:bg-[#ff9500]/20 border border-[#ff9500]/20"
+              className="h-8 gap-1.5 rounded-lg bg-[var(--senko-accent)]/10 px-4 text-xs text-[var(--senko-accent)] hover:bg-[var(--senko-accent)]/20 border border-[var(--senko-accent)]/20"
             >
               Continue generating
             </Button>
@@ -284,6 +301,8 @@ export function ChatArea({
         onSend={onSendMessage}
         sendWithEnter={sendWithEnter}
         disabled={isStreaming}
+        agentMode={agentMode}
+        onModeChange={onModeChange}
       />
     </div>
   );
