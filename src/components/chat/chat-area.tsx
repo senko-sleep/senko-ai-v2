@@ -1,8 +1,8 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 import {
-  Bot, Square, ArrowDown, X, Globe,
+  Bot, Square, ArrowDown,
   Smile, Frown, Angry, PartyPopper, Moon, Utensils,
   Heart, Skull, Coffee, Brain, Gamepad2, Music,
   Sparkles, Flame, Droplets, Zap,
@@ -10,8 +10,8 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ChatMessage } from "./chat-message";
-import { ChatInput } from "./chat-input";
-import type { Message, SenkoStatus, SenkoTab, AgentMode } from "@/types/chat";
+import { ChatInput, type AgentMode } from "./chat-input";
+import type { Message, SenkoStatus } from "@/types/chat";
 
 const STATUS_ICON_MAP: Record<string, LucideIcon> = {
   happy: Smile,
@@ -46,68 +46,27 @@ interface ChatAreaProps {
   tokenCount?: number;
   wasCutOff?: boolean;
   status?: SenkoStatus;
-  tabs?: SenkoTab[];
-  onCloseTab?: (tabId: string) => void;
-  onSwitchTab?: (tabId: string) => void;
   agentMode?: AgentMode;
-  onModeChange?: (mode: AgentMode) => void;
-}
-
-function TabBar({ tabs, onClose, onSwitch }: { tabs: SenkoTab[]; onClose?: (id: string) => void; onSwitch?: (id: string) => void }) {
-  if (tabs.length === 0) return null;
-  return (
-    <div className="flex items-center gap-1 overflow-x-auto scrollbar-none py-1 px-2">
-      {tabs.map((tab) => (
-        <div
-          key={tab.id}
-          onClick={() => onSwitch?.(tab.id)}
-          className={`group/tab flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] cursor-pointer transition-all shrink-0 max-w-[180px] border ${tab.active
-              ? "bg-[var(--senko-accent)]/[0.08] border-[var(--senko-accent)]/20 text-white"
-              : "bg-white/[0.03] border-white/[0.06] text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-300"
-            }`}
-        >
-          {tab.favicon ? (
-            /* eslint-disable-next-line @next/next/no-img-element */
-            <img
-              src={tab.favicon}
-              alt=""
-              className="h-3 w-3 rounded-sm shrink-0"
-              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-            />
-          ) : (
-            <Globe className="h-3 w-3 shrink-0 text-zinc-500" />
-          )}
-          <span className="truncate">{tab.title}</span>
-          <button
-            onClick={(e) => { e.stopPropagation(); onClose?.(tab.id); }}
-            className="ml-auto rounded p-0.5 opacity-0 group-hover/tab:opacity-100 hover:bg-white/[0.08] transition-all shrink-0"
-          >
-            <X className="h-2.5 w-2.5" />
-          </button>
-        </div>
-      ))}
-    </div>
-  );
+  onAgentModeChange?: (mode: AgentMode) => void;
 }
 
 function StatusPill({ status }: { status: SenkoStatus }) {
   const IconComponent = STATUS_ICON_MAP[status.icon] || Sparkles;
   return (
     <div
-      className="flex items-center gap-2 rounded-xl px-4 py-2 border transition-all duration-500 backdrop-blur-md shadow-lg"
+      className="flex items-center gap-2.5 rounded-full px-4 py-2 border transition-all duration-500"
       style={{
-        backgroundColor: "rgba(16, 185, 129, 0.08)",
-        borderColor: "rgba(16, 185, 129, 0.25)",
-        boxShadow: "0 2px 12px rgba(16, 185, 129, 0.1), 0 0 0 1px rgba(16, 185, 129, 0.08)",
+        backgroundColor: `${status.color}0a`,
+        borderColor: `${status.color}22`,
       }}
     >
       <IconComponent
-        className="h-3.5 w-3.5 shrink-0"
-        style={{ color: "#10b981" }}
+        className="h-4 w-4 shrink-0"
+        style={{ color: status.color }}
       />
       <span
-        className="text-[11px] italic font-medium"
-        style={{ color: "rgba(16, 185, 129, 0.85)" }}
+        className="text-[13px] italic font-medium"
+        style={{ color: `${status.color}cc` }}
       >
         {status.text}
       </span>
@@ -130,31 +89,28 @@ export function ChatArea({
   tokenCount = 0,
   wasCutOff = false,
   status,
-  tabs = [],
-  onCloseTab,
-  onSwitchTab,
-  agentMode = "standard",
-  onModeChange,
+  agentMode,
+  onAgentModeChange,
 }: ChatAreaProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const isAtBottom = useRef(true);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
 
   useEffect(() => {
-    if (scrollRef.current && isAtBottom.current) {
+    if (scrollRef.current && !showScrollBtn) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, showScrollBtn]);
 
   const handleScroll = () => {
     if (!scrollRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
-    isAtBottom.current = scrollHeight - scrollTop - clientHeight < 80;
+    setShowScrollBtn(scrollHeight - scrollTop - clientHeight > 80);
   };
 
   const scrollToBottom = () => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-      isAtBottom.current = true;
+      setShowScrollBtn(false);
     }
   };
 
@@ -163,85 +119,60 @@ export function ChatArea({
 
   return (
     <div className="flex h-full flex-col">
-      {/* Token counter bar - hidden on mobile */}
-      {tokenCount > 0 && (
-        <div className="hidden sm:flex items-center justify-end border-b border-white/[0.04] px-4 py-1.5">
-          <span className="text-[10px] text-zinc-600">
-            Context: {tokenCount.toLocaleString()} tokens
-          </span>
+      {/* ── HEADER BAR: status pill + tabs + token count ── */}
+      {/* This is a proper fixed header, NOT floating over chat */}
+      <div className="shrink-0 border-b border-white/[0.06] bg-black/90 backdrop-blur-md">
+        {/* Status pill row */}
+        <div className="relative flex items-center justify-center py-2 px-4">
+          <StatusPill status={currentStatus} />
+          {tokenCount > 0 && (
+            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[11px] text-zinc-600 font-medium hidden sm:block">
+              {tokenCount.toLocaleString()} tokens
+            </span>
+          )}
         </div>
-      )}
+      </div>
 
+      {/* ── CHAT AREA: scrollable messages ── */}
       <div className="relative flex-1 overflow-hidden">
-        {/* Fixed status pill + tab bar overlay — z-30 so it never blends with chat */}
-        {messages.length > 0 && (
-          <div className="absolute top-0 left-0 right-0 z-30 pointer-events-none bg-gradient-to-b from-black/90 via-black/60 to-transparent pb-8">
-            <div className="flex justify-center py-2.5">
-              <div className="pointer-events-auto">
-                <StatusPill status={currentStatus} />
-              </div>
-            </div>
-            {tabs.length > 0 && (
-              <div className="pointer-events-auto">
-                <TabBar tabs={tabs} onClose={onCloseTab} onSwitch={onSwitchTab} />
-              </div>
-            )}
-          </div>
-        )}
-
         <div
           ref={scrollRef}
           onScroll={handleScroll}
           className="scrollbar-thin h-full overflow-y-auto"
         >
           {messages.length === 0 ? (
-            /* ─── Welcome Screen ─── */
-            <div className="flex h-full flex-col items-center justify-center gap-4 px-4 sm:gap-6">
-              {/* Logo */}
-              <div className="relative animate-scale-in">
-                <div className="glass-panel depth-shadow flex h-16 w-16 items-center justify-center rounded-2xl sm:h-20 sm:w-20">
-                  <Bot className="h-8 w-8 text-[var(--senko-accent)] sm:h-10 sm:w-10" />
-                </div>
-                <div className="absolute -inset-3 rounded-3xl bg-[var(--senko-accent)]/[0.06] blur-xl -z-10" />
+            <div className="flex h-full flex-col items-center justify-center gap-4 px-5 sm:gap-5">
+              <div className="glass-panel depth-shadow-lg flex h-18 w-18 items-center justify-center rounded-2xl sm:h-20 sm:w-20 glow-accent">
+                <Bot className="h-9 w-9 text-[var(--senko-accent)] sm:h-10 sm:w-10" />
               </div>
-
-              {/* Hero text */}
-              <div className="text-center animate-fade-in-up" style={{ animationDelay: "0.1s" }}>
+              <div className="text-center">
                 <h2 className="text-xl font-bold text-white sm:text-2xl">
-                  Hii~ I&apos;m <span className="text-[var(--senko-accent)]">Senko</span>!
+                  Hii~ I&apos;m Senko!
                 </h2>
-                <p className="mt-2 max-w-md text-sm text-zinc-500 leading-relaxed">
+                <p className="mt-2 max-w-md text-[14px] text-zinc-400 sm:text-[15px] leading-relaxed">
                   Talk to me about anything~ I can search stuff, vibe,
                   play games, or just hang out ^w^
                 </p>
               </div>
-
-              {/* Status pill */}
-              <div className="animate-fade-in" style={{ animationDelay: "0.2s" }}>
-                <StatusPill status={currentStatus} />
-              </div>
-
-              {/* Suggestion cards */}
-              <div className="mt-2 grid w-full max-w-lg grid-cols-1 gap-2 sm:mt-4 sm:grid-cols-2 animate-fade-in-up" style={{ animationDelay: "0.3s" }}>
+              <div className="mt-3 grid w-full max-w-lg grid-cols-1 gap-2.5 sm:mt-5 sm:grid-cols-2">
                 {[
-                  { text: "Tell me something interesting", icon: "✨" },
-                  { text: "Let's play a game!", icon: "🎮" },
-                  { text: "I had the worst day ever...", icon: "💭" },
-                  { text: "Look up the latest anime news", icon: "🔍" },
+                  "Tell me something interesting",
+                  "Let's play a game!",
+                  "I had the worst day ever...",
+                  "Look up the latest anime news",
                 ].map((suggestion) => (
                   <button
-                    key={suggestion.text}
-                    onClick={() => onSendMessage(suggestion.text)}
-                    className="glass-panel rounded-xl px-4 py-3 text-left text-sm text-zinc-400 transition-all hover:bg-white/[0.06] hover:text-zinc-300 hover:border-white/[0.12] active:bg-white/[0.08] group"
+                    key={suggestion}
+                    onClick={() => onSendMessage(suggestion)}
+                    className="glass-panel rounded-xl px-4 py-3.5 text-left text-[14px] text-zinc-400 transition-all hover:bg-white/[0.06] hover:text-zinc-300 active:bg-white/[0.08] hover:border-white/[0.12]"
                   >
-                    <span className="mr-2 opacity-60 group-hover:opacity-100 transition-opacity">{suggestion.icon}</span>
-                    {suggestion.text}
+                    {suggestion}
                   </button>
                 ))}
               </div>
             </div>
           ) : (
-            <div className="mx-auto max-w-4xl px-1 pt-16 pb-3 sm:px-0 sm:pt-18 sm:pb-4">
+            <div className="mx-auto max-w-4xl px-1 py-4 sm:px-0 sm:py-5">
               {messages.map((message) => (
                 <ChatMessage
                   key={message.id}
@@ -260,28 +191,28 @@ export function ChatArea({
         </div>
 
         {/* Scroll to bottom button */}
-        {!isAtBottom.current && messages.length > 0 && (
+        {showScrollBtn && messages.length > 0 && (
           <Button
             size="sm"
             onClick={scrollToBottom}
-            className="absolute bottom-2 left-1/2 -translate-x-1/2 h-8 gap-1.5 rounded-full bg-white/[0.08] px-4 text-[11px] text-zinc-400 hover:bg-white/[0.12] backdrop-blur-sm border border-white/[0.06] animate-fade-in-up"
+            className="absolute bottom-3 left-1/2 -translate-x-1/2 h-8 gap-1.5 rounded-full bg-white/[0.08] px-4 text-[12px] text-zinc-400 hover:bg-white/[0.12] backdrop-blur-sm border border-white/[0.06]"
           >
-            <ArrowDown className="h-3 w-3" />
+            <ArrowDown className="h-3.5 w-3.5" />
             Scroll down
           </Button>
         )}
       </div>
 
-      {/* Stop / Continue bar */}
+      {/* ── STOP / CONTINUE BAR ── */}
       {(isStreaming || showContinue) && (
-        <div className="flex justify-center gap-2 border-t border-white/[0.04] py-2">
+        <div className="shrink-0 flex justify-center gap-3 border-t border-white/[0.04] py-3">
           {isStreaming && onStopGeneration && (
             <Button
               size="sm"
               onClick={onStopGeneration}
-              className="h-8 gap-1.5 rounded-lg bg-red-500/10 px-4 text-xs text-red-400 hover:bg-red-500/20 border border-red-500/25"
+              className="h-9 gap-2 rounded-xl bg-red-500/10 px-4 text-[13px] text-red-400 hover:bg-red-500/20 border border-red-500/20 font-medium transition-all"
             >
-              <Square className="h-3 w-3" />
+              <Square className="h-3.5 w-3.5" />
               Stop generating
             </Button>
           )}
@@ -289,7 +220,7 @@ export function ChatArea({
             <Button
               size="sm"
               onClick={onContinueGeneration}
-              className="h-8 gap-1.5 rounded-lg bg-[var(--senko-accent)]/10 px-4 text-xs text-[var(--senko-accent)] hover:bg-[var(--senko-accent)]/20 border border-[var(--senko-accent)]/20"
+              className="h-9 gap-2 rounded-xl bg-[var(--senko-accent)]/10 px-4 text-[13px] text-[var(--senko-accent)] hover:bg-[var(--senko-accent)]/20 border border-[var(--senko-accent)]/20 font-medium transition-all"
             >
               Continue generating
             </Button>
@@ -297,12 +228,13 @@ export function ChatArea({
         </div>
       )}
 
+      {/* ── INPUT BAR ── */}
       <ChatInput
         onSend={onSendMessage}
         sendWithEnter={sendWithEnter}
         disabled={isStreaming}
         agentMode={agentMode}
-        onModeChange={onModeChange}
+        onAgentModeChange={onAgentModeChange}
       />
     </div>
   );

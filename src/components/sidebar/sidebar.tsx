@@ -67,37 +67,37 @@ export function Sidebar({
           )}
         >
           {/* Mobile header */}
-          <div className="flex items-center justify-between border-b border-white/[0.06] px-4 py-3">
-            <div className="flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#ff9500]/15">
-                <Bot className="h-4.5 w-4.5 text-[#ff9500]" />
+          <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--senko-accent)]/15 glow-accent">
+                <Bot className="h-5 w-5 text-[var(--senko-accent)]" />
               </div>
-              <span className="text-sm font-semibold text-zinc-200">Senko AI</span>
+              <span className="text-[15px] font-bold text-zinc-200">Senko AI</span>
             </div>
             <Button
               size="sm"
               variant="ghost"
               onClick={onClose}
-              className="h-8 w-8 rounded-lg p-0 text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
+              className="h-9 w-9 rounded-xl p-0 text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
             >
-              <X className="h-4.5 w-4.5" />
+              <X className="h-5 w-5" />
             </Button>
           </div>
 
           {/* Tab Buttons */}
-          <div className="flex gap-1 border-b border-white/[0.06] px-3 py-2">
+          <div className="flex gap-1.5 border-b border-white/[0.06] px-4 py-2.5">
             <Button
               size="sm"
               variant="ghost"
               onClick={() => setActiveTab("history")}
               className={cn(
-                "h-8 flex-1 gap-1.5 rounded-lg text-xs",
+                "h-9 flex-1 gap-2 rounded-xl text-[13px] font-medium",
                 activeTab === "history"
-                  ? "bg-[#ff9500]/10 text-[#ff9500]"
+                  ? "bg-[var(--senko-accent)]/10 text-[var(--senko-accent)]"
                   : "text-zinc-500 hover:bg-white/5 hover:text-zinc-400"
               )}
             >
-              <History className="h-3.5 w-3.5" />
+              <History className="h-4 w-4" />
               History
             </Button>
             <Button
@@ -105,13 +105,13 @@ export function Sidebar({
               variant="ghost"
               onClick={() => setActiveTab("settings")}
               className={cn(
-                "h-8 flex-1 gap-1.5 rounded-lg text-xs",
+                "h-9 flex-1 gap-2 rounded-xl text-[13px] font-medium",
                 activeTab === "settings"
-                  ? "bg-[#ff9500]/10 text-[#ff9500]"
+                  ? "bg-[var(--senko-accent)]/10 text-[var(--senko-accent)]"
                   : "text-zinc-500 hover:bg-white/5 hover:text-zinc-400"
               )}
             >
-              <Settings className="h-3.5 w-3.5" />
+              <Settings className="h-4 w-4" />
               Settings
             </Button>
           </div>
@@ -147,13 +147,13 @@ export function Sidebar({
       )}
     >
       {/* Header */}
-      <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-3">
+      <div className="flex items-center gap-2.5 border-b border-white/[0.06] px-4 py-3.5">
         {!collapsed && (
-          <div className="flex flex-1 items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#ff9500]/15">
-              <Bot className="h-4 w-4 text-[#ff9500]" />
+          <div className="flex flex-1 items-center gap-2.5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--senko-accent)]/15 glow-accent">
+              <Bot className="h-5 w-5 text-[var(--senko-accent)]" />
             </div>
-            <span className="text-sm font-semibold text-zinc-200">
+            <span className="text-[15px] font-bold text-zinc-200">
               Senko AI
             </span>
           </div>
@@ -162,31 +162,31 @@ export function Sidebar({
           size="sm"
           variant="ghost"
           onClick={() => setCollapsed(!collapsed)}
-          className="h-7 w-7 shrink-0 rounded-lg p-0 text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
+          className="h-8 w-8 shrink-0 rounded-xl p-0 text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
         >
           {collapsed ? (
-            <PanelLeft className="h-4 w-4" />
+            <PanelLeft className="h-4.5 w-4.5" />
           ) : (
-            <PanelLeftClose className="h-4 w-4" />
+            <PanelLeftClose className="h-4.5 w-4.5" />
           )}
         </Button>
       </div>
 
       {/* Tab Buttons */}
       {!collapsed && (
-        <div className="flex gap-1 border-b border-white/[0.06] px-3 py-2">
+        <div className="flex gap-1.5 border-b border-white/[0.06] px-4 py-2.5">
           <Button
             size="sm"
             variant="ghost"
             onClick={() => setActiveTab("history")}
             className={cn(
-              "h-7 flex-1 gap-1.5 rounded-lg text-xs",
+              "h-8 flex-1 gap-2 rounded-xl text-[13px] font-medium",
               activeTab === "history"
-                ? "bg-[#ff9500]/10 text-[#ff9500]"
+                ? "bg-[var(--senko-accent)]/10 text-[var(--senko-accent)]"
                 : "text-zinc-500 hover:bg-white/5 hover:text-zinc-400"
             )}
           >
-            <History className="h-3.5 w-3.5" />
+            <History className="h-4 w-4" />
             History
           </Button>
           <Button
@@ -194,13 +194,13 @@ export function Sidebar({
             variant="ghost"
             onClick={() => setActiveTab("settings")}
             className={cn(
-              "h-7 flex-1 gap-1.5 rounded-lg text-xs",
+              "h-8 flex-1 gap-2 rounded-xl text-[13px] font-medium",
               activeTab === "settings"
-                ? "bg-[#ff9500]/10 text-[#ff9500]"
+                ? "bg-[var(--senko-accent)]/10 text-[var(--senko-accent)]"
                 : "text-zinc-500 hover:bg-white/5 hover:text-zinc-400"
             )}
           >
-            <Settings className="h-3.5 w-3.5" />
+            <Settings className="h-4 w-4" />
             Settings
           </Button>
         </div>
@@ -219,7 +219,7 @@ export function Sidebar({
             className={cn(
               "h-8 w-8 rounded-lg p-0",
               activeTab === "history"
-                ? "bg-[#ff9500]/10 text-[#ff9500]"
+                ? "bg-[var(--senko-accent)]/10 text-[var(--senko-accent)]"
                 : "text-zinc-500 hover:bg-white/5 hover:text-zinc-400"
             )}
           >
@@ -235,7 +235,7 @@ export function Sidebar({
             className={cn(
               "h-8 w-8 rounded-lg p-0",
               activeTab === "settings"
-                ? "bg-[#ff9500]/10 text-[#ff9500]"
+                ? "bg-[var(--senko-accent)]/10 text-[var(--senko-accent)]"
                 : "text-zinc-500 hover:bg-white/5 hover:text-zinc-400"
             )}
           >

@@ -47,59 +47,59 @@ export function HistoryPanel({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between px-3 py-3">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
+      <div className="flex items-center justify-between px-4 py-3.5">
+        <h2 className="text-[11px] font-bold uppercase tracking-[0.12em] text-zinc-500">
           History
         </h2>
         <Button
           size="sm"
           onClick={onNewConversation}
-          className="h-7 gap-1.5 rounded-lg bg-[#ff9500]/15 px-2.5 text-xs text-[#ff9500] hover:bg-[#ff9500]/25"
+          className="h-8 gap-2 rounded-xl bg-[var(--senko-accent)]/15 px-3 text-[12px] font-medium text-[var(--senko-accent)] hover:bg-[var(--senko-accent)]/25 transition-all"
         >
-          <Plus className="h-3 w-3" />
+          <Plus className="h-3.5 w-3.5" />
           New
         </Button>
       </div>
 
-      <div className="px-3 pb-2">
+      <div className="px-4 pb-2.5">
         <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-600" />
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-600" />
           <Input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search conversations..."
-            className="glass-input h-8 rounded-lg pl-8 text-xs text-zinc-300 placeholder:text-zinc-600"
+            className="glass-input h-9 rounded-xl pl-9 text-[13px] text-zinc-300 placeholder:text-zinc-600"
           />
         </div>
       </div>
 
-      <div className="scrollbar-thin flex-1 overflow-y-auto px-2">
+      <div className="scrollbar-thin flex-1 overflow-y-auto px-3">
         {filtered.length === 0 ? (
-          <div className="px-3 py-8 text-center">
-            <MessageSquare className="mx-auto mb-2 h-5 w-5 text-zinc-700" />
-            <p className="text-xs text-zinc-600">
+          <div className="px-3 py-10 text-center">
+            <MessageSquare className="mx-auto mb-3 h-6 w-6 text-zinc-700" />
+            <p className="text-[13px] text-zinc-600">
               {searchQuery ? "No matching conversations" : "No conversations yet"}
             </p>
           </div>
         ) : (
-          <div className="space-y-0.5">
+          <div className="space-y-1">
             {filtered.map((conversation) => (
               <button
                 key={conversation.id}
                 onClick={() => onSelectConversation(conversation.id)}
                 className={cn(
-                  "group flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors",
+                  "group flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left transition-all",
                   activeConversationId === conversation.id
-                    ? "bg-[#ff9500]/10 text-white"
+                    ? "bg-[var(--senko-accent)]/10 text-white"
                     : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-300"
                 )}
               >
-                <MessageSquare className="h-3.5 w-3.5 shrink-0 text-zinc-600" />
+                <MessageSquare className="h-4 w-4 shrink-0 text-zinc-600" />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs font-medium">
+                  <p className="truncate text-[13px] font-medium">
                     {conversation.title}
                   </p>
-                  <p className="text-[10px] text-zinc-600">
+                  <p className="text-[11px] text-zinc-600">
                     {formatRelativeDate(new Date(conversation.updatedAt))}
                     {" -- "}
                     {conversation.messages.length} msg
@@ -119,9 +119,9 @@ export function HistoryPanel({
                       onDeleteConversation(conversation.id);
                     }
                   }}
-                  className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded p-0 text-zinc-700 opacity-0 transition-opacity hover:bg-red-500/10 hover:text-red-400 group-hover:opacity-100 cursor-pointer"
+                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg p-0 text-zinc-700 opacity-0 transition-opacity hover:bg-red-500/10 hover:text-red-400 group-hover:opacity-100 cursor-pointer"
                 >
-                  <Trash2 className="h-3 w-3" />
+                  <Trash2 className="h-3.5 w-3.5" />
                 </span>
               </button>
             ))}

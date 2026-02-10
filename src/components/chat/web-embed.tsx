@@ -1,8 +1,46 @@
 "use client";
 
 import { useState, useRef, useCallback } from "react";
-import { ExternalLink, Maximize2, Minimize2, RefreshCw, AlertTriangle, Globe } from "lucide-react";
+import { ExternalLink, Maximize2, Minimize2, RefreshCw, AlertTriangle, Play, Globe } from "lucide-react";
 import type { WebEmbed as WebEmbedType } from "@/types/chat";
+
+// Sites whose JS-driven video players / heavy dynamic content break through the HTML proxy.
+// For these, show a clean link card instead of a broken iframe.
+const UNEMBEDDABLE_PATTERNS = [
+  /rule34video\./i,
+  /rule34\.xxx/i,
+  /xvideos\./i,
+  /xnxx\./i,
+  /pornhub\./i,
+  /xhamster\./i,
+  /redtube\./i,
+  /youporn\./i,
+  /spankbang\./i,
+  /eporner\./i,
+  /tnaflix\./i,
+  /hentaihaven\./i,
+  /hanime\./i,
+  /nhentai\./i,
+  /e621\./i,
+  /gelbooru\./i,
+  /danbooru\./i,
+  /sankaku/i,
+  /hitomi\.la/i,
+  /iwara\./i,
+  /newgrounds\.com/i,
+  /dailymotion\./i,
+  /vimeo\./i,
+  /twitch\.tv/i,
+  /tiktok\./i,
+  /instagram\./i,
+  /facebook\.com\/.*video/i,
+  /twitter\.com/i,
+  /x\.com/i,
+];
+
+function isUnembeddable(url: string): boolean {
+  return UNEMBEDDABLE_PATTERNS.some((p) => p.test(url));
+}
 
 interface WebEmbedProps {
   embed: WebEmbedType;
@@ -10,29 +48,56 @@ interface WebEmbedProps {
 
 export function WebEmbed({ embed }: WebEmbedProps) {
   const [expanded, setExpanded] = useState(false);
-  const [fullscreen, setFullscreen] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const loadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   let hostname = "";
-  try {
-    hostname = new URL(embed.url).hostname;
-  } catch {
-    /* skip */
+  try { hostname = new URL(embed.url).hostname; } catch { /* skip */ }
+
+  const skipIframe = isUnembeddable(embed.url);
+
+  // For sites that can't be proxied, render a compact link card
+  if (skipIframe) {
+    return (
+      <div className="mt-2 w-full max-w-md overflow-hidden rounded-2xl relative group/embed">
+        <div className="absolute -inset-[1px] rounded-2xl bg-gradient-to-br from-[var(--senko-accent)]/30 via-white/[0.08] to-[var(--senko-accent)]/10 pointer-events-none" />
+        <a
+          href={embed.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="relative flex items-center gap-4 rounded-2xl bg-black hover:bg-white/[0.03] transition-colors px-5 py-4"
+        >
+          <div className="flex-shrink-0 h-11 w-11 rounded-xl bg-[var(--senko-accent)]/10 flex items-center justify-center">
+            <Play className="h-5 w-5 text-[var(--senko-accent)]" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[14px] text-zinc-200 font-medium truncate">
+              {embed.title || "Open link"}
+            </p>
+            <p className="text-[11px] text-zinc-500 truncate mt-0.5 flex items-center gap-1.5">
+              <Globe className="h-3 w-3 flex-shrink-0" />
+              {hostname}
+            </p>
+          </div>
+          <ExternalLink className="h-4 w-4 text-zinc-500 flex-shrink-0" />
+        </a>
+      </div>
+    );
   }
 
   const handleLoad = useCallback(() => {
     if (loadTimerRef.current) clearTimeout(loadTimerRef.current);
     setLoaded(true);
+    // Check if the iframe loaded an error page by trying to read its content
     try {
       const doc = iframeRef.current?.contentDocument;
       if (doc && doc.title && doc.title.toLowerCase().includes("error")) {
         setError(true);
       }
     } catch {
-      // Cross-origin -- that's fine
+      // Cross-origin -- that's fine, it means content loaded
     }
   }, []);
 
@@ -44,172 +109,119 @@ export function WebEmbed({ embed }: WebEmbedProps) {
     }
   }, [embed.url]);
 
-  const handleIframeRef = useCallback(
-    (el: HTMLIFrameElement | null) => {
-      (iframeRef as React.MutableRefObject<HTMLIFrameElement | null>).current = el;
-      if (el) {
-        loadTimerRef.current = setTimeout(() => {
-          if (!loaded) setLoaded(true);
-        }, 20000);
-      }
-    },
-    [loaded]
-  );
-
-  const toggleFullscreen = () => {
-    if (!fullscreen) {
-      setFullscreen(true);
-      document.body.style.overflow = "hidden";
-    } else {
-      setFullscreen(false);
-      document.body.style.overflow = "";
+  // Set a timeout to detect if the iframe never loads
+  const handleIframeRef = useCallback((el: HTMLIFrameElement | null) => {
+    (iframeRef as React.MutableRefObject<HTMLIFrameElement | null>).current = el;
+    if (el) {
+      loadTimerRef.current = setTimeout(() => {
+        if (!loaded) {
+          setLoaded(true);
+          // Don't set error -- the proxy returns a styled error page on failure
+        }
+      }, 20000);
     }
-  };
+  }, [loaded]);
 
-  const embedContent = (
-    <div
-      className={
-        fullscreen
-          ? "fixed inset-0 z-50 flex flex-col bg-black animate-in fade-in duration-200"
-          : "mt-2 overflow-hidden rounded-xl border border-white/[0.08] hover:border-white/[0.12] transition-colors duration-300 shadow-[0_2px_12px_rgba(0,0,0,0.3)]"
-      }
-    >
-      {/* Header bar */}
-      <div className="flex items-center justify-between bg-white/[0.04] px-3 py-2 border-b border-white/[0.06]">
-        <div className="flex items-center gap-2 min-w-0">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={`https://www.google.com/s2/favicons?domain=${hostname}&sz=32`}
-            alt=""
-            className="h-4 w-4 rounded-sm flex-shrink-0"
-            onError={(e) => {
-              (e.target as HTMLImageElement).style.display = "none";
-            }}
-          />
-          <div className="min-w-0">
-            <span className="text-xs font-medium text-zinc-300 truncate block">
-              {embed.title || hostname || embed.url}
-            </span>
-            {embed.title && hostname && (
-              <span className="text-[10px] text-zinc-500 truncate block">
+  return (
+    <div className="mt-2 w-full overflow-hidden rounded-2xl relative group/embed">
+      {/* Gradient border effect */}
+      <div className="absolute -inset-[1px] rounded-2xl bg-gradient-to-br from-[var(--senko-accent)]/30 via-white/[0.08] to-[var(--senko-accent)]/10 pointer-events-none" />
+      <div className="relative rounded-2xl overflow-hidden bg-black">
+        {/* Header bar */}
+        <div className="flex items-center justify-between bg-gradient-to-r from-white/[0.04] to-white/[0.02] px-4 py-2.5 border-b border-white/[0.06]">
+          <div className="flex items-center gap-2.5 min-w-0">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={`https://www.google.com/s2/favicons?domain=${hostname}&sz=16`}
+              alt=""
+              className="h-4 w-4 rounded-sm flex-shrink-0"
+              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+            />
+            <div className="min-w-0">
+              <span className="text-[12px] text-zinc-300 font-medium truncate block">
+                {embed.title || hostname || "Web page"}
+              </span>
+              <span className="text-[10px] text-zinc-600 truncate block">
                 {hostname}
               </span>
-            )}
-          </div>
-        </div>
-        <div className="flex items-center gap-1 flex-shrink-0">
-          {error && (
-            <button
-              onClick={handleRetry}
-              className="rounded-lg p-1.5 text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.06] transition-all"
-              title="Retry"
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-            </button>
-          )}
-          <button
-            onClick={() => setExpanded(!expanded)}
-            className="rounded-lg p-1.5 text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.06] transition-all hidden sm:flex"
-            title={expanded ? "Compact" : "Expand"}
-          >
-            {expanded ? (
-              <Minimize2 className="h-3.5 w-3.5" />
-            ) : (
-              <Maximize2 className="h-3.5 w-3.5" />
-            )}
-          </button>
-          <button
-            onClick={toggleFullscreen}
-            className="rounded-lg p-1.5 text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.06] transition-all"
-            title={fullscreen ? "Exit fullscreen" : "Fullscreen"}
-          >
-            {fullscreen ? (
-              <Minimize2 className="h-3.5 w-3.5" />
-            ) : (
-              <Maximize2 className="h-3.5 w-3.5" />
-            )}
-          </button>
-          <a
-            href={embed.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="rounded-lg p-1.5 text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.06] transition-all"
-            title="Open in browser"
-          >
-            <ExternalLink className="h-3.5 w-3.5" />
-          </a>
-        </div>
-      </div>
-
-      {/* iframe container */}
-      <div
-        className="relative w-full bg-[#0a0a0a] transition-all duration-300 flex-1"
-        style={fullscreen ? undefined : { height: expanded ? "600px" : "400px" }}
-      >
-        {/* Loading skeleton */}
-        {!loaded && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0a0a0a] z-10 gap-3">
-            <div className="relative">
-              <div className="h-8 w-8 rounded-full border-2 border-white/[0.08]" />
-              <div className="absolute inset-0 h-8 w-8 rounded-full border-2 border-transparent border-t-[var(--senko-accent)] animate-spin" />
-            </div>
-            <div className="flex items-center gap-1.5">
-              <Globe className="h-3 w-3 text-zinc-600" />
-              <span className="text-xs text-zinc-500">
-                Loading {hostname || "site"}...
-              </span>
-            </div>
-            {/* Skeleton bars */}
-            <div className="w-48 space-y-2 mt-2">
-              <div className="h-2 rounded-full bg-white/[0.04] animate-pulse" />
-              <div className="h-2 rounded-full bg-white/[0.03] animate-pulse w-3/4" />
-              <div className="h-2 rounded-full bg-white/[0.02] animate-pulse w-1/2" />
             </div>
           </div>
-        )}
-
-        {/* Error state */}
-        {error && (
-          <div className="absolute inset-0 flex items-center justify-center bg-[#0a0a0a] z-10">
-            <div className="text-center space-y-3">
-              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--senko-accent)]/10 border border-[var(--senko-accent)]/20">
-                <AlertTriangle className="h-5 w-5 text-[var(--senko-accent)]/70" />
-              </div>
-              <div>
-                <p className="text-sm text-zinc-400">Can&apos;t embed this site</p>
-                <p className="text-xs text-zinc-600 mt-0.5">
-                  Some sites block iframe embedding
-                </p>
-              </div>
-              <a
-                href={embed.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-xs text-[var(--senko-accent)] hover:text-[#ffcc80] transition-colors"
+          <div className="flex items-center gap-1 flex-shrink-0">
+            {error && (
+              <button
+                onClick={handleRetry}
+                className="rounded-lg p-1.5 text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.06] transition-all"
+                title="Retry"
               >
-                <ExternalLink className="h-3 w-3" />
-                Open in browser instead
-              </a>
-            </div>
+                <RefreshCw className="h-3.5 w-3.5" />
+              </button>
+            )}
+            <button
+              onClick={() => setExpanded(!expanded)}
+              className="rounded-lg p-1.5 text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.06] transition-all"
+              title={expanded ? "Minimize" : "Expand"}
+            >
+              {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+            </button>
+            <a
+              href={embed.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-lg p-1.5 text-zinc-500 hover:text-[var(--senko-accent)] hover:bg-[var(--senko-accent)]/10 transition-all"
+              title="Open in browser"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
           </div>
-        )}
+        </div>
 
-        <iframe
-          ref={handleIframeRef}
-          src={`/api/proxy?url=${encodeURIComponent(embed.url)}`}
-          title={embed.title || embed.url}
-          className="h-full w-full border-0"
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
-          referrerPolicy="no-referrer"
-          onLoad={handleLoad}
-          onError={() => {
-            setLoaded(true);
-            setError(true);
-          }}
-        />
+        {/* iframe */}
+        <div
+          className="relative w-full bg-black transition-all duration-300"
+          style={{ height: expanded ? "85vh" : "500px" }}
+        >
+          {!loaded && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/95 z-10">
+              <div className="flex flex-col items-center gap-3">
+                <div className="h-5 w-5 border-2 border-zinc-700 border-t-[var(--senko-accent)] rounded-full animate-spin" />
+                <span className="text-xs text-zinc-500">Loading {hostname || "site"}...</span>
+              </div>
+            </div>
+          )}
+          {error && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/95 z-10">
+              <div className="text-center space-y-3">
+                <div className="mx-auto h-10 w-10 rounded-xl bg-[var(--senko-accent)]/10 flex items-center justify-center">
+                  <AlertTriangle className="h-5 w-5 text-[var(--senko-accent)]/60" />
+                </div>
+                <div>
+                  <p className="text-sm text-zinc-400 font-medium">Can&apos;t embed this site</p>
+                  <p className="text-xs text-zinc-600 mt-1">The site may block iframe embedding</p>
+                </div>
+                <a
+                  href={embed.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-xs text-[var(--senko-accent)] hover:text-[#ffcc80] transition-colors font-medium"
+                >
+                  Open in browser
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              </div>
+            </div>
+          )}
+          <iframe
+            ref={handleIframeRef}
+            src={`/api/proxy?url=${encodeURIComponent(embed.url)}`}
+            title={embed.title || embed.url}
+            className="h-full w-full border-0"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+            referrerPolicy="no-referrer"
+            onLoad={handleLoad}
+            onError={() => { setLoaded(true); setError(true); }}
+          />
+        </div>
       </div>
     </div>
   );
-
-  return embedContent;
 }

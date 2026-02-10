@@ -17,10 +17,6 @@ import {
   RefreshCw,
   Type,
   CornerDownLeft,
-  Brain,
-  Sparkles,
-  Search,
-  Server,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
@@ -29,7 +25,7 @@ import { Separator } from "@/components/ui/separator";
 import { useBrowserInfo } from "@/hooks/use-browser-info";
 import { useLocation } from "@/hooks/use-location";
 import { usePermissions } from "@/hooks/use-permissions";
-import type { AppSettings, AgentMode } from "@/types/chat";
+import type { AppSettings } from "@/types/chat";
 
 interface SettingsPanelProps {
   settings: AppSettings;
@@ -60,12 +56,12 @@ function getOSName(platform: string): string {
 }
 
 const permissionIcons: Record<string, React.ReactNode> = {
-  geolocation: <MapPin className="h-3.5 w-3.5" />,
-  notifications: <Bell className="h-3.5 w-3.5" />,
-  camera: <Camera className="h-3.5 w-3.5" />,
-  microphone: <Mic className="h-3.5 w-3.5" />,
-  "clipboard-read": <Clipboard className="h-3.5 w-3.5" />,
-  "clipboard-write": <Clipboard className="h-3.5 w-3.5" />,
+  geolocation: <MapPin className="h-4 w-4" />,
+  notifications: <Bell className="h-4 w-4" />,
+  camera: <Camera className="h-4 w-4" />,
+  microphone: <Mic className="h-4 w-4" />,
+  "clipboard-read": <Clipboard className="h-4 w-4" />,
+  "clipboard-write": <Clipboard className="h-4 w-4" />,
 };
 
 const permissionLabels: Record<string, string> = {
@@ -86,18 +82,12 @@ function StateIndicator({ state }: { state: string }) {
   return (
     <Badge
       variant="outline"
-      className={`rounded-md px-1.5 py-0 text-[10px] font-medium ${colors[state] || colors.prompt}`}
+      className={`rounded-lg px-2 py-0.5 text-[11px] font-medium ${colors[state] || colors.prompt}`}
     >
       {state}
     </Badge>
   );
 }
-
-const MODE_OPTIONS: { mode: AgentMode; icon: React.ElementType; label: string; desc: string }[] = [
-  { mode: "standard", icon: Sparkles, label: "Standard", desc: "Normal chat" },
-  { mode: "thinking", icon: Brain, label: "Thinking", desc: "Shows reasoning" },
-  { mode: "research", icon: Search, label: "Research", desc: "Deep search" },
-];
 
 export function SettingsPanel({
   settings,
@@ -120,81 +110,14 @@ export function SettingsPanel({
 
   return (
     <div className="scrollbar-thin h-full overflow-y-auto">
-      <div className="space-y-4 px-3 py-3">
-        {/* AI Provider */}
-        <section>
-          <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-500">
-            <Server className="h-3.5 w-3.5" />
-            AI Provider
-          </h3>
-          <div className="glass-panel rounded-xl p-3 space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-xs text-zinc-400">
-                <Server className="h-3 w-3" />
-                <span>Prefer Ollama (local)</span>
-              </div>
-              <Switch
-                checked={settings.preferOllama}
-                onCheckedChange={(v) => updateSetting("preferOllama", v)}
-                className="scale-75"
-              />
-            </div>
-            {settings.preferOllama && (
-              <div className="space-y-1.5">
-                <span className="flex items-center gap-2 text-xs text-zinc-400">
-                  <Cpu className="h-3 w-3" />
-                  Ollama Model
-                </span>
-                <input
-                  type="text"
-                  value={settings.ollamaModel}
-                  onChange={(e) => updateSetting("ollamaModel", e.target.value)}
-                  placeholder="mistral"
-                  className="w-full rounded-lg bg-white/[0.04] border border-white/[0.06] px-3 py-1.5 text-xs text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-[var(--senko-accent)]/40 transition-colors"
-                />
-              </div>
-            )}
-          </div>
-        </section>
-
-        <Separator className="bg-white/[0.06]" />
-
-        {/* Default Agent Mode */}
-        <section>
-          <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-500">
-            <Brain className="h-3.5 w-3.5" />
-            Default Mode
-          </h3>
-          <div className="glass-panel rounded-xl p-3">
-            <div className="grid grid-cols-3 gap-1.5">
-              {MODE_OPTIONS.map(({ mode, icon: Icon, label, desc }) => (
-                <button
-                  key={mode}
-                  onClick={() => updateSetting("agentMode", mode)}
-                  className={`flex flex-col items-center gap-1 rounded-lg p-2.5 text-center transition-all border ${
-                    settings.agentMode === mode
-                      ? "bg-[var(--senko-accent)]/[0.08] border-[var(--senko-accent)]/20 text-[var(--senko-accent)]"
-                      : "bg-white/[0.02] border-white/[0.06] text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-400"
-                  }`}
-                >
-                  <Icon className="h-4 w-4" />
-                  <span className="text-[10px] font-medium">{label}</span>
-                  <span className="text-[9px] opacity-60">{desc}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        <Separator className="bg-white/[0.06]" />
-
+      <div className="space-y-5 px-4 py-4">
         {/* Device Info */}
         <section>
-          <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-500">
-            <Monitor className="h-3.5 w-3.5" />
+          <h3 className="mb-2.5 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.12em] text-zinc-500">
+            <Monitor className="h-4 w-4" />
             Device Info
           </h3>
-          <div className="glass-panel rounded-xl p-3 space-y-2">
+          <div className="glass-panel rounded-xl p-4 space-y-2.5">
             {browserInfo ? (
               <>
                 <InfoRow
@@ -265,11 +188,11 @@ export function SettingsPanel({
 
         {/* Location */}
         <section>
-          <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-500">
-            <MapPin className="h-3.5 w-3.5" />
+          <h3 className="mb-2.5 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.12em] text-zinc-500">
+            <MapPin className="h-4 w-4" />
             Location
           </h3>
-          <div className="glass-panel rounded-xl p-3 space-y-2">
+          <div className="glass-panel rounded-xl p-4 space-y-2.5">
             {location.status === "granted" && location.latitude !== null ? (
               <>
                 <InfoRow
@@ -303,9 +226,9 @@ export function SettingsPanel({
               size="sm"
               onClick={requestLocation}
               disabled={locationLoading}
-              className="mt-1 h-7 w-full gap-1.5 rounded-lg bg-[var(--senko-accent)]/15 text-xs text-[var(--senko-accent)] hover:bg-[var(--senko-accent)]/25"
+              className="mt-2 h-8 w-full gap-2 rounded-xl bg-[var(--senko-accent)]/15 text-[12px] font-medium text-[var(--senko-accent)] hover:bg-[var(--senko-accent)]/25 transition-all"
             >
-              <MapPin className="h-3 w-3" />
+              <MapPin className="h-3.5 w-3.5" />
               {locationLoading
                 ? "Requesting..."
                 : location.status === "granted"
@@ -320,26 +243,26 @@ export function SettingsPanel({
         {/* Browser Permissions */}
         <section>
           <div className="mb-2 flex items-center justify-between">
-            <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-500">
-              <Shield className="h-3.5 w-3.5" />
+            <h3 className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.12em] text-zinc-500">
+              <Shield className="h-4 w-4" />
               Permissions
             </h3>
             <Button
               size="sm"
               variant="ghost"
               onClick={() => refreshPermissions()}
-              className="h-6 w-6 rounded-md p-0 text-zinc-600 hover:bg-white/5 hover:text-zinc-400"
+              className="h-7 w-7 rounded-lg p-0 text-zinc-600 hover:bg-white/5 hover:text-zinc-400"
             >
-              <RefreshCw className="h-3 w-3" />
+              <RefreshCw className="h-3.5 w-3.5" />
             </Button>
           </div>
-          <div className="glass-panel rounded-xl p-3 space-y-2">
+          <div className="glass-panel rounded-xl p-4 space-y-2.5">
             {permissions.map((perm) => (
               <div
                 key={perm.name}
                 className="flex items-center justify-between"
               >
-                <div className="flex items-center gap-2 text-xs text-zinc-400">
+                <div className="flex items-center gap-2.5 text-[13px] text-zinc-400">
                   {permissionIcons[perm.name]}
                   <span>{permissionLabels[perm.name] || perm.name}</span>
                 </div>
@@ -350,7 +273,7 @@ export function SettingsPanel({
                       size="sm"
                       variant="ghost"
                       onClick={() => requestPermission(perm.name)}
-                      className="h-5 rounded px-1.5 text-[10px] text-[var(--senko-accent)] hover:bg-[var(--senko-accent)]/10"
+                      className="h-5 rounded px-1.5 text-[10px] text-[var(--senko-accent)] hover:bg-[var(--senko-accent)]/10 transition-all"
                     >
                       Request
                     </Button>
@@ -365,11 +288,11 @@ export function SettingsPanel({
 
         {/* App Settings */}
         <section>
-          <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-500">
-            <Type className="h-3.5 w-3.5" />
+          <h3 className="mb-2.5 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.12em] text-zinc-500">
+            <Type className="h-4 w-4" />
             Preferences
           </h3>
-          <div className="glass-panel rounded-xl p-3 space-y-3">
+          <div className="glass-panel rounded-xl p-4 space-y-3.5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-xs text-zinc-400">
                 <CornerDownLeft className="h-3 w-3" />
@@ -393,7 +316,7 @@ export function SettingsPanel({
                     size="sm"
                     variant="ghost"
                     onClick={() => updateSetting("fontSize", size)}
-                    className={`h-6 flex-1 rounded-md text-[10px] capitalize ${
+                    className={`h-7 flex-1 rounded-lg text-[11px] capitalize font-medium transition-all ${
                       settings.fontSize === size
                         ? "bg-[var(--senko-accent)]/15 text-[var(--senko-accent)]"
                         : "text-zinc-500 hover:bg-white/5 hover:text-zinc-400"

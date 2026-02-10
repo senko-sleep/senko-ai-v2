@@ -12,6 +12,11 @@ export const config = {
   get ollamaUrl() { return env("OLLAMA_URL", "http://localhost:11434"); },
   get ollamaModel() { return env("OLLAMA_MODEL", "mistral"); },
   
+  // OpenRouter - Fallback AI (free models, OpenAI-compatible API)
+  get openRouterApiKey() { return env("OPENROUTER_API_KEY", ""); },
+  get openRouterModel() { return env("OPENROUTER_MODEL", "deepseek/deepseek-r1-0528:free"); },
+  openRouterUrl: "https://openrouter.ai/api/v1/chat/completions",
+  
   // Render.com search API (primary — runs Puppeteer + multi-engine scraping)
   get searchApiUrl() { return env("SEARCH_API_URL", ""); },
   
