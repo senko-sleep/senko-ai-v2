@@ -162,9 +162,19 @@ function isAdDomain(testUrl: string): boolean {
 }
 
 export async function GET(req: NextRequest) {
-  const url = req.nextUrl.searchParams.get("url");
+  let url = req.nextUrl.searchParams.get("url");
   if (!url) {
-    return new Response("url required", { status: 400 });
+    return new Response("URL parameter is missing", { status: 400 });
+  }
+
+  // Basic validation and protocol fixing
+  try {
+    if (!url.startsWith("http")) {
+      url = "https://" + url;
+    }
+    new URL(url); // Validate
+  } catch {
+    return new Response("Invalid URL provided", { status: 400 });
   }
 
   // Block ad/tracker requests
@@ -172,10 +182,23 @@ export async function GET(req: NextRequest) {
     return new Response("", { status: 204 });
   }
 
+  // Unwrap search engine redirects (Google, Bing, etc.)
+  // Often search results are wrapped: https://www.google.com/url?q=https://real-site.com
+  try {
+    const parsed = new URL(url);
+    if ((parsed.hostname.includes("google.") || parsed.hostname.includes("bing.com")) && parsed.pathname === "/url") {
+      const target = parsed.searchParams.get("q") || parsed.searchParams.get("url");
+      if (target && target.startsWith("http")) {
+        console.log(`%c[PROXY] 🔄 Unwrapping redirect: ${url} -> ${target}`, "color: #ffaa00");
+        url = target;
+      }
+    }
+  } catch { /* skip unwrapping on error */ }
+
   const isSubResource = req.nextUrl.searchParams.get("asset") === "1";
 
   try {
-    const res = await fetch(url, {
+    const res = await fetch(url!, {
       headers: {
         "User-Agent": UA,
         Accept: isSubResource
@@ -183,9 +206,9 @@ export async function GET(req: NextRequest) {
           : "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "identity",
-        Referer: new URL(url).origin + "/",
+        Referer: new URL(url!).origin + "/",
       },
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(20000),
       redirect: "follow",
     });
 
