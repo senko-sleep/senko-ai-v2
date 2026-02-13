@@ -338,6 +338,8 @@ Available actions:
   [ACTION:LIST_TABS:any] - List all currently open tabs. Use when user asks "what tabs are open" or similar.
   [ACTION:CLICK_IN_TAB:link text] - Find and click a link on the currently active tab's page. Searches the page for a link matching the text and opens it.
   [ACTION:OPEN_TAB:topic] - Open a new tab by searching for a topic and opening the top result. Use when the user wants you to open tabs for specific topics, people, characters, etc. You can use MULTIPLE OPEN_TAB actions in one message to open several tabs at once. Example: "open tabs for the main characters" -> use [ACTION:OPEN_TAB:Anya Forger] [ACTION:OPEN_TAB:Loid Forger] [ACTION:OPEN_TAB:Yor Briar]
+  [ACTION:LIST_VIDEOS:url] - Deeply scan a webpage using Puppeteer to extract all video sources (mp4, webm, m3u8, HLS, etc.). Returns a numbered list of videos with quality/format info. Use this when the user wants to see what videos are available on a page. The system stores the list so you can play specific videos by number afterward.
+  [ACTION:PLAY_VIDEO:listId:N] - Play video number N from a previously listed video set. The listId is provided in the LIST_VIDEOS response. Use this after LIST_VIDEOS to play a specific video the user chooses. Example: After LIST_VIDEOS returns list ID "conv123_456", use [ACTION:PLAY_VIDEO:conv123_456:3] to play the 3rd video.
 
 COMPLEX BROWSING:
 You are a full browser agent. You can chain multiple actions to accomplish complex tasks on websites:
@@ -357,6 +359,13 @@ You are a full browser agent. You can chain multiple actions to accomplish compl
    - "go to page 4" -> [ACTION:READ_URL:https://site.com/?p=4] or [ACTION:OPEN_URL:https://site.com/page/4]
 
 5. **Click things on a page**: Use READ_URL to scan the page, find the right link, then OPEN_URL it.
+
+6. **Discover and play videos**: Use LIST_VIDEOS to scan a page for all video sources, then PLAY_VIDEO to play a specific one.
+   - "list videos on that site" -> [ACTION:LIST_VIDEOS:https://site.com] -> system returns numbered list with listId
+   - User: "play the first one" -> [ACTION:PLAY_VIDEO:listId:1]
+   - "show me videos from X site" -> [ACTION:READ_URL:https://site.com/search?q=topic] -> find the page URL -> [ACTION:LIST_VIDEOS:page_url]
+   - This prevents fabricating fake video URLs. You MUST use LIST_VIDEOS first to get real video sources, then PLAY_VIDEO to play them.
+
 
 When the system feeds you page content after a READ_URL, you MUST look at the links and use another action to navigate deeper. You can use [ACTION:OPEN_URL:...], [ACTION:EMBED:...], or another [ACTION:READ_URL:...] in your follow-up response. This is how you chain actions to accomplish complex browsing tasks.
 
@@ -999,7 +1008,7 @@ export default function Home() {
       const content = contentToParse;
       console.log(`%c[processActions] \u{1F4DD} Message content length: ${content.length}`, "color: #cc88ff", { fromParam: !!finalContent, preview: content.slice(0, 80) });
       // Match both [ACTION:TYPE:value] and malformed [TYPE:value] patterns
-      const actionRegex = /\[ACTION:(OPEN_URL|SEARCH|IMAGE|OPEN_RESULT|OPEN_APP|SCREENSHOT|EMBED|SCRAPE_IMAGES|READ_URL|CLOSE_TAB|SWITCH_TAB|LIST_TABS|CLICK_IN_TAB|OPEN_TAB):([^\]]+)\]/g;
+      const actionRegex = /\[ACTION:(OPEN_URL|SEARCH|IMAGE|OPEN_RESULT|OPEN_APP|SCREENSHOT|EMBED|SCRAPE_IMAGES|READ_URL|CLOSE_TAB|SWITCH_TAB|LIST_TABS|CLICK_IN_TAB|OPEN_TAB|LIST_VIDEOS|PLAY_VIDEO):([^\]]+)\]/g;
       let match;
       const actions: { type: string; value: string }[] = [];
       while ((match = actionRegex.exec(content)) !== null) {
@@ -2000,6 +2009,147 @@ export default function Home() {
             }
           })();
         }
+
+        // LIST_VIDEOS action: Scan a webpage and list all available videos
+        if (action.type === "LIST_VIDEOS") {
+          const url = action.value.trim();
+          console.log(`%c[VIDEO] 📹 Listing videos from`, "color: #ff6600; font-weight: bold", url);
+          (async () => {
+            const thinkId = addThinkingMsg(convId, `scanning ${url} for videos...`);
+            try {
+              const searchApiUrl = process.env.NEXT_PUBLIC_SEARCH_API_URL || "http://localhost:3010";
+              const res = await fetch(`${searchApiUrl}/video-extract?url=${encodeURIComponent(url)}`);
+              const data = await res.json();
+              removeThinkingMsg(convId, thinkId);
+
+              if (data.error || !data.videos || data.videos.length === 0) {
+                updateConversation(convId, (conv) => ({
+                  ...conv,
+                  messages: conv.messages.map((m) =>
+                    m.id === messageId
+                      ? { ...m, content: (m.content || "") + `\n\nSorry, couldn't find any videos on that page >_<` }
+                      : m
+                  ),
+                }));
+                return;
+              }
+
+              // Store the video list in window object for PLAY_VIDEO to access
+              if (typeof window !== "undefined") {
+                if (!window.__senkoVideoLists) {
+                  window.__senkoVideoLists = new Map();
+                }
+                const listId = `${convId}_${Date.now()}`;
+                window.__senkoVideoLists.set(listId, {
+                  videos: data.videos,
+                  sourceUrl: url,
+                  title: data.title || url,
+                  timestamp: Date.now(),
+                });
+
+                // Format the video list for the AI to present
+                const videoList = data.videos.slice(0, 20).map((v: any, idx: number) => {
+                  const format = v.type ? v.type.replace("video/", "").replace("application/x-mpegURL", "HLS").replace("application/dash+xml", "DASH").toUpperCase() : "UNKNOWN";
+                  const quality = v.quality || "?";
+                  const source = v.source || "dom";
+                  return `${idx + 1}. [${format}${quality !== "?" ? ` ${quality}` : ""}] ${v.url.length > 80 ? v.url.substring(0, 77) + "..." : v.url}`;
+                }).join("\n");
+
+                // Update the message with the list
+                updateConversation(convId, (conv) => ({
+                  ...conv,
+                  messages: conv.messages.map((m) =>
+                    m.id === messageId
+                      ? {
+                        ...m,
+                        content: (m.content || "") + `\n\nFound ${data.videos.length} video(s) on **${data.title || url}**:\n\n\`\`\`\n${videoList}\n\`\`\`\n\n_Use [ACTION:PLAY_VIDEO:${listId}:N] to play video N (e.g., [ACTION:PLAY_VIDEO:${listId}:1] for the first one)_`,
+                      }
+                      : m
+                  ),
+                }));
+
+                console.log(`%c[VIDEO] ✅ Listed ${data.videos.length} videos, stored as ${listId}`, "color: #00ff88", data.videos);
+              }
+            } catch (err) {
+              console.error("[VIDEO] Error listing videos:", err);
+              removeThinkingMsg(convId, thinkId);
+              updateConversation(convId, (conv) => ({
+                ...conv,
+                messages: conv.messages.map((m) =>
+                  m.id === messageId
+                    ? { ...m, content: (m.content || "") + `\n\nError scanning for videos: ${err instanceof Error ? err.message : "Unknown error"}` }
+                    : m
+                ),
+              }));
+            }
+          })();
+        }
+
+        // PLAY_VIDEO action: Play a specific video from a previously listed set
+        if (action.type === "PLAY_VIDEO") {
+          const parts = action.value.split(":");
+          if (parts.length < 2) {
+            console.error("[VIDEO] PLAY_VIDEO requires format: listId:index");
+            return;
+          }
+          const listId = parts[0].trim();
+          const indexStr = parts[1].trim();
+          const index = parseInt(indexStr, 10) - 1; // Convert to 0-based index
+
+          console.log(`%c[VIDEO] ▶️ Playing video #${index + 1} from list ${listId}`, "color: #ff6600; font-weight: bold");
+
+          if (typeof window !== "undefined" && window.__senkoVideoLists) {
+            const videoList = window.__senkoVideoLists.get(listId);
+            if (!videoList) {
+              updateConversation(convId, (conv) => ({
+                ...conv,
+                messages: conv.messages.map((m) =>
+                  m.id === messageId
+                    ? { ...m, content: (m.content || "") + `\n\nCouldn't find that video list. Try using LIST_VIDEOS first!` }
+                    : m
+                ),
+              }));
+              return;
+            }
+
+            if (index < 0 || index >= videoList.videos.length) {
+              updateConversation(convId, (conv) => ({
+                ...conv,
+                messages: conv.messages.map((m) =>
+                  m.id === messageId
+                    ? { ...m, content: (m.content || "") + `\n\nVideo #${index + 1} doesn't exist. There are only ${videoList.videos.length} videos in this list.` }
+                    : m
+                ),
+              }));
+              return;
+            }
+
+            const video = videoList.videos[index];
+            console.log(`%c[VIDEO] ✅ Playing video`, "color: #00ff88", video);
+
+            // Add the video to the message's video attachments
+            updateConversation(convId, (conv) => ({
+              ...conv,
+              messages: conv.messages.map((m) =>
+                m.id === messageId
+                  ? {
+                    ...m,
+                    videos: [
+                      ...(m.videos || []),
+                      {
+                        url: video.url,
+                        platform: "other" as const,
+                        title: `Video #${index + 1} from ${videoList.title}`,
+                        poster: video.poster,
+                      },
+                    ],
+                  }
+                  : m
+              ),
+            }));
+          }
+        }
+
       }
 
       // Scrape the first opened page and auto-summarize (with welcome)
