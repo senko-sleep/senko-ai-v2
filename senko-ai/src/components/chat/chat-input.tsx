@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Send, Paperclip, Mic, Brain, MoreHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -33,6 +33,24 @@ export function ChatInput({
   const [showMenu, setShowMenu] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
+
+  // Close menu on click outside
+  const handleClickOutside = useCallback((e: MouseEvent) => {
+    if (
+      menuRef.current && !menuRef.current.contains(e.target as Node) &&
+      menuBtnRef.current && !menuBtnRef.current.contains(e.target as Node)
+    ) {
+      setShowMenu(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (showMenu) {
+      document.addEventListener("mousedown", handleClickOutside);
+      return () => document.removeEventListener("mousedown", handleClickOutside);
+    }
+  }, [showMenu, handleClickOutside]);
 
   const handleSend = () => {
     if (content.trim() && !disabled) {
@@ -69,6 +87,7 @@ export function ChatInput({
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
+                  ref={menuBtnRef}
                   size="sm"
                   variant="ghost"
                   onClick={() => setShowMenu(!showMenu)}
@@ -173,8 +192,9 @@ export function ChatInput({
         </div>
       </div>
 
-      <p className="mt-2 text-center text-[11px] text-zinc-600 hidden sm:block">
-        Senko can search the web, open apps, browse sites, and more~ but double-check important stuff!
+      <p className="mt-2 text-center text-[11px] text-zinc-600">
+        <span className="hidden sm:inline">Senko can search the web, open apps, browse sites, and more~ but double-check important stuff!</span>
+        <span className="sm:hidden">Senko can make mistakes — double-check important stuff!</span>
       </p>
     </div>
   );

@@ -1,9 +1,13 @@
 services:
   - type: web
-    name: senko-search-api
+    name: senko-ai-v2
     runtime: docker
     plan: free
+    rootDir: search-api
     dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: oregon
+    healthCheckPath: /health
     envVars:
       - key: PORT
         value: 3001

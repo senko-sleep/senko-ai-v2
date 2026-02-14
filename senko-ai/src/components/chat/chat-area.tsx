@@ -54,18 +54,18 @@ function StatusPill({ status }: { status: SenkoStatus }) {
   const IconComponent = STATUS_ICON_MAP[status.icon] || Sparkles;
   return (
     <div
-      className="flex items-center gap-2.5 rounded-full px-4 py-2 border transition-all duration-500"
+      className="flex items-center gap-2.5 rounded-full px-4 py-2 border transition-all duration-700 ease-out"
       style={{
         backgroundColor: `${status.color}0a`,
         borderColor: `${status.color}22`,
       }}
     >
       <IconComponent
-        className="h-4 w-4 shrink-0"
+        className="h-4 w-4 shrink-0 transition-colors duration-500"
         style={{ color: status.color }}
       />
       <span
-        className="text-[13px] italic font-medium"
+        className="text-[13px] italic font-medium transition-colors duration-500"
         style={{ color: `${status.color}cc` }}
       >
         {status.text}
@@ -142,14 +142,14 @@ export function ChatArea({
         >
           {messages.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-4 px-5 sm:gap-5">
-              <div className="glass-panel depth-shadow-lg flex h-18 w-18 items-center justify-center rounded-2xl sm:h-20 sm:w-20 glow-accent">
+              <div className="glass-panel depth-shadow-lg flex h-18 w-18 items-center justify-center rounded-2xl sm:h-20 sm:w-20 glow-accent animate-float">
                 <Bot className="h-9 w-9 text-[var(--senko-accent)] sm:h-10 sm:w-10" />
               </div>
               <div className="text-center">
-                <h2 className="text-xl font-bold text-white sm:text-2xl">
+                <h2 className="text-xl font-bold sm:text-2xl bg-gradient-to-r from-[#ffcc80] via-[var(--senko-accent)] to-[#ffb347] bg-clip-text text-transparent">
                   Hii~ I&apos;m Senko!
                 </h2>
-                <p className="mt-2 max-w-md text-[14px] text-zinc-400 sm:text-[15px] leading-relaxed">
+                <p className="mt-2 max-w-md text-[14px] text-zinc-500 sm:text-[15px] leading-relaxed">
                   Talk to me about anything~ I can search stuff, vibe,
                   play games, or just hang out ^w^
                 </p>
@@ -164,7 +164,7 @@ export function ChatArea({
                   <button
                     key={suggestion}
                     onClick={() => onSendMessage(suggestion)}
-                    className="glass-panel rounded-xl px-4 py-3.5 text-left text-[14px] text-zinc-400 transition-all hover:bg-white/[0.06] hover:text-zinc-300 active:bg-white/[0.08] hover:border-white/[0.12]"
+                    className="glass-panel rounded-xl px-4 py-3.5 text-left text-[14px] text-zinc-400 transition-all hover:bg-white/[0.06] hover:text-zinc-300 active:bg-white/[0.08] hover:border-white/[0.12] hover:translate-y-[-1px]"
                   >
                     {suggestion}
                   </button>
@@ -195,10 +195,9 @@ export function ChatArea({
           <Button
             size="sm"
             onClick={scrollToBottom}
-            className="absolute bottom-3 left-1/2 -translate-x-1/2 h-8 gap-1.5 rounded-full bg-white/[0.08] px-4 text-[12px] text-zinc-400 hover:bg-white/[0.12] backdrop-blur-sm border border-white/[0.06]"
+            className="absolute bottom-3 left-1/2 -translate-x-1/2 h-7 w-7 rounded-full bg-white/[0.10] p-0 text-zinc-400 hover:bg-white/[0.16] hover:text-zinc-200 backdrop-blur-md border border-white/[0.08] shadow-lg shadow-black/30 animate-fade-in transition-colors"
           >
             <ArrowDown className="h-3.5 w-3.5" />
-            Scroll down
           </Button>
         )}
       </div>

@@ -2,6 +2,12 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Pencil, Check, Copy, RotateCcw, Globe, AlertTriangle, Grid3X3 } from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { MarkdownRenderer } from "./markdown-renderer";
@@ -93,7 +99,7 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
         <div className="thinking-shimmer thinking-glow rounded-2xl rounded-bl-sm border border-[var(--senko-accent)]/[0.12] px-5 py-3.5 w-fit max-w-[85%] sm:px-6 sm:py-4 sm:max-w-[70%] animate-slide-in">
           <div className="flex items-center gap-3.5">
             <span className="flex items-center gap-1.5">
-              <span className="thinking-dot inline-block h-2 w-2 rounded-full bg-[var(--senko-accent)]" style={{ animationDelay: "0ms" }} />
+              <span className="thinking-dot inline-block h-2 w-2 rounded-full bg-[var(--senko-accent)]" style={{ animationDelay: "0s" }} />
               <span className="thinking-dot inline-block h-2 w-2 rounded-full bg-[#ffb347]" style={{ animationDelay: "0.2s" }} />
               <span className="thinking-dot inline-block h-2 w-2 rounded-full bg-[var(--senko-accent)]" style={{ animationDelay: "0.4s" }} />
             </span>
@@ -272,25 +278,41 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
       </div>
 
       {/* Action bar — outside bubble so overflow-hidden doesn't clip it */}
-      <div className="flex gap-2 mt-1 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">
-        <button onClick={handleCopy} className="rounded-lg p-2 text-zinc-600 hover:text-zinc-400 hover:bg-white/[0.06] transition-all">
-          {copied ? <Check className="h-4 w-4 text-[var(--senko-accent)]" /> : <Copy className="h-4 w-4" />}
-        </button>
-        {onRegenerate && (
-          <button onClick={() => onRegenerate(message.id)} className="rounded-lg p-2 text-zinc-600 hover:text-zinc-400 hover:bg-white/[0.06] transition-all">
-            <RotateCcw className="h-4 w-4" />
-          </button>
-        )}
-      </div>
+      <TooltipProvider delayDuration={400}>
+        <div className="flex gap-1 mt-1 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button onClick={handleCopy} className="rounded-lg p-1.5 text-zinc-600 hover:text-zinc-400 hover:bg-white/[0.06] transition-all">
+                {copied ? <Check className="h-3.5 w-3.5 text-[var(--senko-accent)]" /> : <Copy className="h-3.5 w-3.5" />}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="glass-panel-solid text-[11px] px-2 py-1">
+              {copied ? "Copied!" : "Copy"}
+            </TooltipContent>
+          </Tooltip>
+          {onRegenerate && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button onClick={() => onRegenerate(message.id)} className="rounded-lg p-1.5 text-zinc-600 hover:text-zinc-400 hover:bg-white/[0.06] transition-all">
+                  <RotateCcw className="h-3.5 w-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="glass-panel-solid text-[11px] px-2 py-1">
+                Regenerate
+              </TooltipContent>
+            </Tooltip>
+          )}
+        </div>
+      </TooltipProvider>
 
       {/* Images - full chat width */}
       {hasImages && (
         <div className="w-full mt-3">
-          <div className="flex items-center justify-between mb-1.5">
-            <span className="text-[10px] text-white/30">{message.images!.length} image{message.images!.length !== 1 ? "s" : ""}</span>
+          <div className="flex items-center justify-between mb-2 px-1">
+            <span className="text-[11px] text-zinc-500 font-medium">{message.images!.length} image{message.images!.length !== 1 ? "s" : ""}</span>
             <button
               onClick={() => setShowGallery(true)}
-              className="flex items-center gap-1 px-2 py-1 text-[10px] text-white/40 hover:text-[var(--senko-accent)] bg-white/[0.03] hover:bg-[var(--senko-accent)]/10 border border-white/[0.06] hover:border-[var(--senko-accent)]/30 rounded-md transition-all"
+              className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] text-zinc-400 hover:text-[var(--senko-accent)] bg-white/[0.04] hover:bg-[var(--senko-accent)]/10 border border-white/[0.06] hover:border-[var(--senko-accent)]/30 rounded-lg transition-all"
             >
               <Grid3X3 className="h-3 w-3" />
               Gallery
