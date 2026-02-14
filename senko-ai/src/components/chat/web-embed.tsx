@@ -58,35 +58,6 @@ export function WebEmbed({ embed }: WebEmbedProps) {
 
   const skipIframe = isUnembeddable(embed.url);
 
-  // For sites that can't be proxied, render a compact link card
-  if (skipIframe) {
-    return (
-      <div className="mt-2 w-full max-w-md overflow-hidden rounded-2xl relative group/embed">
-        <div className="absolute -inset-[1px] rounded-2xl bg-gradient-to-br from-[var(--senko-accent)]/30 via-white/[0.08] to-[var(--senko-accent)]/10 pointer-events-none" />
-        <a
-          href={embed.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="relative flex items-center gap-4 rounded-2xl bg-black hover:bg-white/[0.03] transition-colors px-5 py-4"
-        >
-          <div className="flex-shrink-0 h-11 w-11 rounded-xl bg-[var(--senko-accent)]/10 flex items-center justify-center">
-            <Play className="h-5 w-5 text-[var(--senko-accent)]" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-[14px] text-zinc-200 font-medium truncate">
-              {embed.title || "Open link"}
-            </p>
-            <p className="text-[11px] text-zinc-500 truncate mt-0.5 flex items-center gap-1.5">
-              <Globe className="h-3 w-3 flex-shrink-0" />
-              {hostname}
-            </p>
-          </div>
-          <ExternalLink className="h-4 w-4 text-zinc-500 flex-shrink-0" />
-        </a>
-      </div>
-    );
-  }
-
   const handleLoad = useCallback(() => {
     if (loadTimerRef.current) clearTimeout(loadTimerRef.current);
     setLoaded(true);
@@ -121,6 +92,35 @@ export function WebEmbed({ embed }: WebEmbedProps) {
       }, 20000);
     }
   }, [loaded]);
+
+  // For sites that can't be proxied, render a compact link card
+  if (skipIframe) {
+    return (
+      <div className="mt-2 w-full max-w-md overflow-hidden rounded-2xl relative group/embed">
+        <div className="absolute -inset-[1px] rounded-2xl bg-gradient-to-br from-[var(--senko-accent)]/30 via-white/[0.08] to-[var(--senko-accent)]/10 pointer-events-none" />
+        <a
+          href={embed.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="relative flex items-center gap-4 rounded-2xl bg-black hover:bg-white/[0.03] transition-colors px-5 py-4"
+        >
+          <div className="flex-shrink-0 h-11 w-11 rounded-xl bg-[var(--senko-accent)]/10 flex items-center justify-center">
+            <Play className="h-5 w-5 text-[var(--senko-accent)]" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[14px] text-zinc-200 font-medium truncate">
+              {embed.title || "Open link"}
+            </p>
+            <p className="text-[11px] text-zinc-500 truncate mt-0.5 flex items-center gap-1.5">
+              <Globe className="h-3 w-3 flex-shrink-0" />
+              {hostname}
+            </p>
+          </div>
+          <ExternalLink className="h-4 w-4 text-zinc-500 flex-shrink-0" />
+        </a>
+      </div>
+    );
+  }
 
   return (
     <div className="mt-2 w-full overflow-hidden rounded-2xl relative group/embed">

@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // search-api is a plain Node.js/CommonJS project — skip Next.js/TS rules
+    "search-api/**",
   ]),
 ]);
 
