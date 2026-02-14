@@ -117,7 +117,7 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
   // -- User message --
   if (isUser) {
     return (
-      <div className="flex w-full px-3 py-1.5 justify-end group sm:px-6">
+      <div className="flex flex-col w-full px-3 py-1.5 items-end group sm:px-6">
         <div className={cn(
           "relative w-fit rounded-2xl rounded-br-sm glass-user px-5 py-3 animate-slide-in",
           isShort ? "max-w-[60%]" : "max-w-[70%]"
@@ -146,20 +146,36 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
               {message.content}
             </p>
           )}
-          {!isEditing && (
-            <div className="absolute -bottom-7 right-0 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-              <button
-                onClick={() => { setEditContent(message.content); setIsEditing(true); }}
-                className="rounded-lg p-1.5 text-zinc-600 hover:text-zinc-400 hover:bg-white/[0.06] transition-all"
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </button>
-              <button onClick={handleCopy} className="rounded-lg p-1.5 text-zinc-600 hover:text-zinc-400 hover:bg-white/[0.06] transition-all">
-                {copied ? <Check className="h-3.5 w-3.5 text-[var(--senko-accent)]" /> : <Copy className="h-3.5 w-3.5" />}
-              </button>
-            </div>
-          )}
         </div>
+        {!isEditing && (
+          <TooltipProvider delayDuration={400}>
+            <div className="flex gap-1 mt-1 mr-2 opacity-0 group-hover:opacity-100 transition-opacity">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => { setEditContent(message.content); setIsEditing(true); }}
+                    className="rounded-lg p-1.5 text-zinc-600 hover:text-zinc-400 hover:bg-white/[0.06] transition-all"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="glass-panel-solid text-[11px] px-2 py-1">
+                  Edit
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button onClick={handleCopy} className="rounded-lg p-1.5 text-zinc-600 hover:text-zinc-400 hover:bg-white/[0.06] transition-all">
+                    {copied ? <Check className="h-3.5 w-3.5 text-[var(--senko-accent)]" /> : <Copy className="h-3.5 w-3.5" />}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="glass-panel-solid text-[11px] px-2 py-1">
+                  {copied ? "Copied!" : "Copy"}
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          </TooltipProvider>
+        )}
       </div>
     );
   }
