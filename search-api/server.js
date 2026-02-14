@@ -441,7 +441,7 @@ function isValidImageUrl(src) {
   return true;
 }
 
-async function scrapeImagesFromUrl(url, limit = 12) {
+async function scrapeImagesFromUrl(url) {
   const images = [];
   try {
     const res = await fetch(url, {
@@ -471,10 +471,9 @@ async function scrapeImagesFromUrl(url, limit = 12) {
     // srcset
     const srcsetRegex = /srcset=["']([^"']+)["']/gi;
     let srcsetMatch;
-    while ((srcsetMatch = srcsetRegex.exec(html)) !== null && images.length < limit) {
+    while ((srcsetMatch = srcsetRegex.exec(html)) !== null) {
       const entries = srcsetMatch[1].split(",").map((s) => s.trim().split(/\s+/)[0]);
       for (const entry of entries) {
-        if (images.length >= limit) break;
         const src = resolveImgUrl(entry);
         if (src && !images.some((i) => i.url === src)) {
           images.push({ url: src, alt: "", source: url });
@@ -485,7 +484,7 @@ async function scrapeImagesFromUrl(url, limit = 12) {
     // data-src, data-original, etc.
     const lazyRegex = /(?:data-src|data-original|data-lazy-src|data-full|data-image|data-bg)=["'](https?:\/\/[^"']+)["']/gi;
     let lazyMatch;
-    while ((lazyMatch = lazyRegex.exec(html)) !== null && images.length < limit) {
+    while ((lazyMatch = lazyRegex.exec(html)) !== null) {
       const src = resolveImgUrl(lazyMatch[1]);
       if (src && !images.some((i) => i.url === src)) {
         images.push({ url: src, alt: "", source: url });
@@ -495,7 +494,7 @@ async function scrapeImagesFromUrl(url, limit = 12) {
     // background-image CSS
     const bgRegex = /background-image:\s*url\(["']?(https?:\/\/[^"')]+)["']?\)/gi;
     let bgMatch;
-    while ((bgMatch = bgRegex.exec(html)) !== null && images.length < limit) {
+    while ((bgMatch = bgRegex.exec(html)) !== null) {
       const src = resolveImgUrl(bgMatch[1]);
       if (src && !images.some((i) => i.url === src)) {
         images.push({ url: src, alt: "", source: url });
@@ -505,7 +504,7 @@ async function scrapeImagesFromUrl(url, limit = 12) {
     // img tags
     const imgRegex = /<img[^>]+src=["']([^"']+)["'][^>]*/gi;
     let match;
-    while ((match = imgRegex.exec(html)) !== null && images.length < limit) {
+    while ((match = imgRegex.exec(html)) !== null) {
       const src = match[1];
       if (src.includes("logo") || src.includes("icon")) continue;
       const resolved = resolveImgUrl(src);
@@ -525,7 +524,7 @@ async function scrapeImagesFromUrl(url, limit = 12) {
     // JSON-LD
     const jsonLdRegex = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
     let jsonLdMatch;
-    while ((jsonLdMatch = jsonLdRegex.exec(html)) !== null && images.length < limit) {
+    while ((jsonLdMatch = jsonLdRegex.exec(html)) !== null) {
       try {
         const data = JSON.parse(jsonLdMatch[1]);
         const extractImages = (obj) => {
@@ -533,14 +532,14 @@ async function scrapeImagesFromUrl(url, limit = 12) {
           for (const [key, val] of Object.entries(obj)) {
             if ((key === "image" || key === "thumbnailUrl" || key === "contentUrl") && typeof val === "string") {
               const src = resolveImgUrl(val);
-              if (src && !images.some((i) => i.url === src) && images.length < limit) {
+              if (src && !images.some((i) => i.url === src)) {
                 images.push({ url: src, alt: "", source: url });
               }
             } else if (Array.isArray(val)) {
               for (const item of val) {
                 if (typeof item === "string" && item.startsWith("http")) {
                   const src = resolveImgUrl(item);
-                  if (src && !images.some((i) => i.url === src) && images.length < limit) {
+                  if (src && !images.some((i) => i.url === src)) {
                     images.push({ url: src, alt: "", source: url });
                   }
                 } else if (typeof item === "object") {
@@ -991,10 +990,11 @@ app.get("/scrape", async (req, res) => {
   }
 });
 
-// GET /images?q=query OR /images?url=URL — image search or scrape
+// GET /images?q=query&page=1 OR /images?url=URL — image search or scrape
 app.get("/images", async (req, res) => {
   const query = req.query.q;
   const scrapeUrl = req.query.url;
+  const page = Math.max(1, parseInt(req.query.page) || 1);
 
   if (!query && !scrapeUrl) {
     return res.status(400).json({ error: "q or url required" });
@@ -1002,32 +1002,45 @@ app.get("/images", async (req, res) => {
 
   // Mode 1: Scrape images from a specific URL
   if (scrapeUrl) {
-    const images = await scrapeImagesFromUrl(scrapeUrl, 20);
-    return res.json({ images, query: scrapeUrl });
+    const images = await scrapeImagesFromUrl(scrapeUrl);
+    return res.json({ images, query: scrapeUrl, page, hasMore: false });
   }
 
   // Mode 2: Search for images via multiple strategies in parallel
   const images = [];
-  const encoded = encodeURIComponent(query);
+  // Query variations for later pages — keeps Google/Bing returning fresh results
+  const querySuffixes = ["", "HD", "wallpaper", "fan art", "artwork", "render", "high quality", "4k", "illustration", "digital art"];
+  const suffix = querySuffixes[page - 1] || querySuffixes[(page - 1) % querySuffixes.length];
+  const pageQuery = suffix ? `${query} ${suffix}` : query;
+  const encoded = encodeURIComponent(pageQuery);
+  // Google caps at ~200, Bing at ~350 — cycle offsets within range
+  const googleOffset = ((page - 1) % 2) * 100;
+  const bingOffset = ((page - 1) % 2) * 175;
+  const ddgOffset = (page - 1) * 100;
+  const booruPage = page;
+  console.log(`[images] Page ${page} query="${pageQuery}" googleOff=${googleOffset} bingOff=${bingOffset} ddgOff=${ddgOffset}`);
 
   // Detect NSFW queries — mainstream search engines filter these, so we need direct booru APIs
   const nsfwPattern = /\b(r34|rule\s*34|nsfw|hentai|porn|xxx|lewd|nude|naked|explicit|e621|gelbooru|danbooru|paheal|xbooru)\b/i;
   const isNsfwQuery = nsfwPattern.test(query);
 
   // Extract clean search tags for booru APIs (remove NSFW site names, keep the subject)
+  const isGifQuery = /\b(gifs?|animated)\b/i.test(query);
   const booruTags = query
-    .replace(/\b(r34|rule\s*34|nsfw|hentai|porn|xxx|lewd|nude|naked|explicit|images?|pics?|pictures?|photos?|show\s*me|send\s*me|of|on|from|e621|gelbooru|danbooru|paheal|xbooru)\b/gi, "")
+    .replace(/\b(r34|rule\s*34|nsfw|hentai|porn|xxx|lewd|nude|naked|explicit|images?|pics?|pictures?|photos?|gifs?|animated|show\s*me|send\s*me|of|on|from|e621|gelbooru|danbooru|paheal|xbooru)\b/gi, "")
     .trim()
     .replace(/\s+/g, "+")
     .toLowerCase();
+  // If user wants GIFs/animated, append the 'animated' tag so boorus filter for animated content
+  const booruTagsWithAnim = isGifQuery && booruTags ? booruTags + "+animated" : booruTags;
 
-  // Strategy 0: Direct booru API scraping (only for NSFW queries)
-  const nsfwStrategies = isNsfwQuery && booruTags ? await Promise.allSettled([
-    // Rule34.xxx API (Gelbooru-compatible)
-    (async () => {
+  // Run ALL strategies in parallel — boorus + Google + Bing + DDG all at once
+  const allStrategies = await Promise.allSettled([
+    // Strategy 0a: Rule34.xxx API (only for NSFW queries)
+    ...(isNsfwQuery && booruTags ? [(async () => {
       const results = [];
       try {
-        const apiUrl = `https://api.rule34.xxx/index.php?page=dapi&s=post&q=index&json=1&limit=24&tags=${encodeURIComponent(booruTags)}`;
+        const apiUrl = `https://api.rule34.xxx/index.php?page=dapi&s=post&q=index&json=1&limit=100&pid=${booruPage - 1}&tags=${encodeURIComponent(booruTagsWithAnim)}`;
         const apiRes = await fetch(apiUrl, {
           headers: { "User-Agent": UA },
           signal: AbortSignal.timeout(8000),
@@ -1035,22 +1048,22 @@ app.get("/images", async (req, res) => {
         const posts = await apiRes.json();
         if (Array.isArray(posts)) {
           for (const post of posts) {
-            if (results.length >= 20) break;
             const imgUrl = post.file_url || post.sample_url;
             if (imgUrl && isValidImageUrl(imgUrl)) {
               const tags = (post.tags || "").split(" ").slice(0, 5).join(", ");
-              results.push({ url: imgUrl, alt: tags || booruTags.replace(/\+/g, " "), source: `https://rule34.xxx/index.php?page=post&s=view&id=${post.id}` });
+              results.push({ url: imgUrl, alt: tags || booruTags.replace(/\+/g, " "), source: `https://rule34.xxx/index.php?page=post&s=view&id=${post.id}`, engine: "rule34" });
             }
           }
         }
       } catch (e) { console.log("[images] Rule34 API error:", e.message); }
       return results;
-    })(),
-    // Gelbooru API
-    (async () => {
+    })()] : []),
+
+    // Strategy 0b: Gelbooru API (only for NSFW queries)
+    ...(isNsfwQuery && booruTags ? [(async () => {
       const results = [];
       try {
-        const apiUrl = `https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&limit=20&tags=${encodeURIComponent(booruTags)}`;
+        const apiUrl = `https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&limit=100&pid=${booruPage - 1}&tags=${encodeURIComponent(booruTagsWithAnim)}`;
         const apiRes = await fetch(apiUrl, {
           headers: { "User-Agent": UA },
           signal: AbortSignal.timeout(8000),
@@ -1059,22 +1072,22 @@ app.get("/images", async (req, res) => {
         const posts = data.post || data;
         if (Array.isArray(posts)) {
           for (const post of posts) {
-            if (results.length >= 16) break;
             const imgUrl = post.file_url || post.sample_url;
             if (imgUrl && isValidImageUrl(imgUrl)) {
               const tags = (post.tags || "").split(" ").slice(0, 5).join(", ");
-              results.push({ url: imgUrl, alt: tags || booruTags.replace(/\+/g, " "), source: `https://gelbooru.com/index.php?page=post&s=view&id=${post.id}` });
+              results.push({ url: imgUrl, alt: tags || booruTags.replace(/\+/g, " "), source: `https://gelbooru.com/index.php?page=post&s=view&id=${post.id}`, engine: "gelbooru" });
             }
           }
         }
       } catch (e) { console.log("[images] Gelbooru API error:", e.message); }
       return results;
-    })(),
-    // e621 API (furry content)
-    (async () => {
+    })()] : []),
+
+    // Strategy 0c: e621 API (only for NSFW queries)
+    ...(isNsfwQuery && booruTags ? [(async () => {
       const results = [];
       try {
-        const apiUrl = `https://e621.net/posts.json?limit=20&tags=${encodeURIComponent(booruTags)}`;
+        const apiUrl = `https://e621.net/posts.json?limit=100&page=${booruPage}&tags=${encodeURIComponent(booruTagsWithAnim)}`;
         const apiRes = await fetch(apiUrl, {
           headers: { "User-Agent": "SenkoAI/1.0 (search-api)" },
           signal: AbortSignal.timeout(8000),
@@ -1082,166 +1095,182 @@ app.get("/images", async (req, res) => {
         const data = await apiRes.json();
         if (data.posts && Array.isArray(data.posts)) {
           for (const post of data.posts) {
-            if (results.length >= 16) break;
             const imgUrl = post.file?.url || post.sample?.url || post.preview?.url;
             if (imgUrl && isValidImageUrl(imgUrl)) {
               const tags = (post.tags?.general || []).slice(0, 5).join(", ");
-              results.push({ url: imgUrl, alt: tags || booruTags.replace(/\+/g, " "), source: `https://e621.net/posts/${post.id}` });
+              results.push({ url: imgUrl, alt: tags || booruTags.replace(/\+/g, " "), source: `https://e621.net/posts/${post.id}`, engine: "e621" });
             }
           }
         }
       } catch (e) { console.log("[images] e621 API error:", e.message); }
       return results;
-    })(),
-  ]) : [];
+    })()] : []),
 
-  // Collect NSFW results first (they get priority)
-  const nsfwResults = [];
-  if (isNsfwQuery && nsfwStrategies.length > 0) {
-    for (const s of nsfwStrategies) {
-      if (s.status === "fulfilled") {
-        for (const img of s.value) {
-          if (nsfwResults.length >= 24) break;
-          if (!isImageDuplicate(img.url, nsfwResults)) nsfwResults.push(img);
-        }
-      }
-    }
-    console.log(`[images] NSFW strategies found ${nsfwResults.length} images for "${query}"`);
-  }
-
-  // If NSFW strategies found enough images, return early
-  if (nsfwResults.length >= 12) {
-    return res.json({ images: nsfwResults.slice(0, 20), query });
-  }
-
-  const [strategy1, strategy2, strategy3] = await Promise.allSettled([
-    // Strategy 1: Bing Images
+    // Strategy 1: Bing Images — fetch 10 pages in parallel (ALWAYS runs)
     (async () => {
       const results = [];
       try {
-        const bingUrl = `https://www.bing.com/images/search?q=${encoded}&form=HDRSC2&first=1`;
-        const bingRes = await fetch(bingUrl, {
-          headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml", "Accept-Language": "en-US,en;q=0.9" },
-          signal: AbortSignal.timeout(8000),
-        });
-        const html = await bingRes.text();
-        const mRegex = /m=["']({[^"']*?murl[^"']*?})["']/gi;
-        let mMatch;
-        while ((mMatch = mRegex.exec(html)) !== null && results.length < 20) {
-          try {
-            const decoded = mMatch[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&');
-            const data = JSON.parse(decoded);
-            if (data.murl && isValidImageUrl(data.murl)) {
-              const source = data.purl || data.rurl || "";
-              if (!isImageDuplicate(data.murl, results)) {
-                results.push({ url: data.murl, alt: data.t || query, source });
+        const bingOffsets = Array.from({ length: 10 }, (_, i) => bingOffset + i * 35);
+        const bingPages = await Promise.allSettled(
+          bingOffsets.map((off) =>
+            fetch(`https://www.bing.com/images/search?q=${encoded}&form=HDRSC2&first=${1 + off}&safeSearch=off`, {
+              headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml", "Accept-Language": "en-US,en;q=0.9" },
+              signal: AbortSignal.timeout(8000),
+            }).then((r) => r.text())
+          )
+        );
+        for (const pg of bingPages) {
+          if (pg.status !== "fulfilled") continue;
+          const html = pg.value;
+          const mRegex = /m=["']({[^"']*?murl[^"']*?})["']/gi;
+          let mMatch;
+          while ((mMatch = mRegex.exec(html)) !== null) {
+            try {
+              const decoded = mMatch[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+              const data = JSON.parse(decoded);
+              if (data.murl && isValidImageUrl(data.murl) && !isImageDuplicate(data.murl, results)) {
+                results.push({ url: data.murl, alt: data.t || query, source: data.purl || data.rurl || "", engine: "bing" });
               }
-            }
-          } catch { }
-        }
-        if (results.length < 5) {
+            } catch { }
+          }
           const iuscRegex = /iusc=["']({[^"']*?})["']/gi;
           let iuscMatch;
-          while ((iuscMatch = iuscRegex.exec(html)) !== null && results.length < 20) {
+          while ((iuscMatch = iuscRegex.exec(html)) !== null) {
             try {
               const decoded = iuscMatch[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&');
               const data = JSON.parse(decoded);
-              if (data.oi && isValidImageUrl(data.oi)) {
-                if (!results.some((i) => i.url === data.oi)) {
-                  results.push({ url: data.oi, alt: data.an || query, source: data.pi || "" });
-                }
+              if (data.oi && isValidImageUrl(data.oi) && !isImageDuplicate(data.oi, results)) {
+                results.push({ url: data.oi, alt: data.an || query, source: data.pi || "", engine: "bing" });
               }
             } catch { }
           }
         }
-      } catch { }
+        console.log(`[images] Bing found ${results.length} images (10 pages)`);
+      } catch (e) { console.log("[images] Bing error:", e.message); }
       return results;
     })(),
 
-    // Strategy 2: DDG search → scrape top pages
+    // Strategy 2: DDG Images API (ALWAYS runs)
     (async () => {
       const results = [];
       try {
-        const searchRes = await fetch(`https://html.duckduckgo.com/html/?q=${encoded}`, {
-          headers: { "User-Agent": UA },
+        const tokenRes = await fetch(`https://duckduckgo.com/?q=${encoded}&kp=-2&iax=images&ia=images`, {
+          headers: { "User-Agent": UA, Accept: "text/html", "Accept-Language": "en-US,en;q=0.9" },
           signal: AbortSignal.timeout(6000),
         });
-        const searchHtml = await searchRes.text();
-        const urlRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*/gi;
-        const imageSiteUrls = [];
-        const otherUrls = [];
-        let urlMatch;
-        while ((urlMatch = urlRegex.exec(searchHtml)) !== null && (imageSiteUrls.length + otherUrls.length) < 10) {
-          try {
-            const decoded = decodeURIComponent(urlMatch[1]);
-            let pageUrl;
-            if (decoded.startsWith("/") || decoded.startsWith("//")) {
-              const uddg = new URL(`https://duckduckgo.com${decoded}`);
-              pageUrl = uddg.searchParams.get("uddg") || "";
-            } else {
-              pageUrl = decoded;
+        const tokenHtml = await tokenRes.text();
+        const vqdMatch = tokenHtml.match(/vqd=["']([^"']+)["']/i) || tokenHtml.match(/vqd=([\d-]+)/i);
+        if (!vqdMatch) throw new Error("No vqd token found");
+        const vqd = vqdMatch[1];
+        const imgApiUrl = `https://duckduckgo.com/i.js?l=us-en&o=json&q=${encoded}&vqd=${vqd}&f=,,,,,&p=-1&s=${ddgOffset}`;
+        const imgRes = await fetch(imgApiUrl, {
+          headers: { "User-Agent": UA, Accept: "application/json", Referer: "https://duckduckgo.com/" },
+          signal: AbortSignal.timeout(8000),
+        });
+        const imgData = await imgRes.json();
+        if (imgData.results && Array.isArray(imgData.results)) {
+          for (const r of imgData.results) {
+            const imgUrl = r.image;
+            if (imgUrl && isValidImageUrl(imgUrl) && !isImageDuplicate(imgUrl, results)) {
+              results.push({ url: imgUrl, alt: r.title || query, source: r.url || "", engine: "ddg" });
             }
-            if (!pageUrl || !pageUrl.startsWith("http") || pageUrl.includes("youtube.com") || pageUrl.includes("google.com")) continue;
-            if (isImageSite(pageUrl)) imageSiteUrls.push(pageUrl);
-            else otherUrls.push(pageUrl);
-          } catch { }
-        }
-        const toScrape = [...imageSiteUrls.slice(0, 5), ...otherUrls.slice(0, 3)];
-        const batchResults = await Promise.all(
-          toScrape.map((u) => scrapeImagesFromUrl(u, 6).catch(() => []))
-        );
-        for (const pageImgs of batchResults) {
-          for (const img of pageImgs) {
-            if (results.length >= 20) break;
-            if (!results.some((i) => i.url === img.url)) results.push(img);
           }
         }
-      } catch { }
+        console.log(`[images] DDG Images API found ${results.length} images`);
+      } catch (e) {
+        console.log("[images] DDG Images API error:", e.message);
+        try {
+          const searchRes = await fetch(`https://html.duckduckgo.com/html/?q=${encoded}+images`, {
+            headers: { "User-Agent": UA },
+            signal: AbortSignal.timeout(6000),
+          });
+          const searchHtml = await searchRes.text();
+          const urlRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*/gi;
+          const pageUrls = [];
+          let urlMatch;
+          while ((urlMatch = urlRegex.exec(searchHtml)) !== null) {
+            try {
+              const decoded = decodeURIComponent(urlMatch[1]);
+              let pageUrl;
+              if (decoded.startsWith("/") || decoded.startsWith("//")) {
+                const uddg = new URL(`https://duckduckgo.com${decoded}`);
+                pageUrl = uddg.searchParams.get("uddg") || "";
+              } else {
+                pageUrl = decoded;
+              }
+              if (pageUrl && pageUrl.startsWith("http") && !pageUrl.includes("youtube.com") && !pageUrl.includes("google.com")) {
+                pageUrls.push(pageUrl);
+              }
+            } catch { }
+          }
+          const batchResults = await Promise.all(
+            pageUrls.map((u) => scrapeImagesFromUrl(u).catch(() => []))
+          );
+          for (const pageImgs of batchResults) {
+            for (const img of pageImgs) {
+              if (!isImageDuplicate(img.url, results)) results.push({ ...img, engine: "ddg" });
+            }
+          }
+        } catch { }
+      }
       return results;
     })(),
 
-    // Strategy 3: Google Images
+    // Strategy 3: Google Images — fetch 10 pages in parallel (ALWAYS runs)
     (async () => {
       const results = [];
       try {
-        const googleUrl = `https://www.google.com/search?q=${encoded}&tbm=isch&hl=en`;
-        const googleRes = await fetch(googleUrl, {
-          headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml", "Accept-Language": "en-US,en;q=0.9" },
-          signal: AbortSignal.timeout(8000),
-        });
-        const html = await googleRes.text();
-        const jsonImgRegex = /\["(https?:\/\/[^"]+\.(?:jpg|jpeg|png|webp|gif)[^"]*)",\s*(\d+),\s*(\d+)\]/gi;
-        let match;
-        while ((match = jsonImgRegex.exec(html)) !== null && results.length < 20) {
-          const imgUrl = match[1].replace(/\\u003d/g, "=").replace(/\\u0026/g, "&");
-          const w = parseInt(match[2]);
-          const h = parseInt(match[3]);
-          if (w < 150 || h < 150) continue;
-          if (!isValidImageUrl(imgUrl)) continue;
-          if (!results.some((i) => i.url === imgUrl)) {
-            const source = extractSourceFromGoogleHtml(html, match[1]);
-            results.push({ url: imgUrl, alt: query, source });
+        const googleOffsets = Array.from({ length: 10 }, (_, i) => googleOffset + i * 20);
+        const googlePages = await Promise.allSettled(
+          googleOffsets.map((off) =>
+            fetch(`https://www.google.com/search?q=${encoded}&tbm=isch&hl=en&start=${off}`, {
+              headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml", "Accept-Language": "en-US,en;q=0.9" },
+              signal: AbortSignal.timeout(8000),
+            }).then((r) => r.text())
+          )
+        );
+        for (const pg of googlePages) {
+          if (pg.status !== "fulfilled") continue;
+          const html = pg.value;
+          const jsonImgRegex = /\["(https?:\/\/[^"]+\.(?:jpg|jpeg|png|webp|gif)[^"]*)",\s*(\d+),\s*(\d+)\]/gi;
+          let match;
+          while ((match = jsonImgRegex.exec(html)) !== null) {
+            const imgUrl = match[1].replace(/\\u003d/g, "=").replace(/\\u0026/g, "&");
+            const w = parseInt(match[2]);
+            const h = parseInt(match[3]);
+            if (w < 150 || h < 150) continue;
+            if (!isValidImageUrl(imgUrl)) continue;
+            if (!results.some((i) => i.url === imgUrl)) {
+              const source = extractSourceFromGoogleHtml(html, match[1]);
+              results.push({ url: imgUrl, alt: query, source, engine: "google" });
+            }
           }
         }
-      } catch { }
+        console.log(`[images] Google found ${results.length} images (10 pages)`);
+      } catch (e) { console.log("[images] Google error:", e.message); }
       return results;
     })(),
   ]);
 
-  const allResults = [
-    // NSFW booru results first (if any — they're the ones the user actually wants for NSFW queries)
-    ...nsfwResults,
-    ...(strategy1.status === "fulfilled" ? strategy1.value : []),
-    ...(strategy2.status === "fulfilled" ? strategy2.value : []),
-    ...(strategy3.status === "fulfilled" ? strategy3.value : []),
-  ];
+  // Merge all results — booru results first for NSFW, then mainstream engines
+  const allResults = [];
+  for (const s of allStrategies) {
+    if (s.status === "fulfilled" && Array.isArray(s.value)) {
+      for (const img of s.value) {
+        allResults.push(img);
+      }
+    }
+  }
+  console.log(`[images] Total raw results: ${allResults.length} from ${allStrategies.length} strategies for "${query}"`);
 
   for (const img of allResults) {
-    if (images.length >= 24) break;
     if (!isImageDuplicate(img.url, images)) images.push(img);
   }
 
-  res.json({ images: images.slice(0, 20), query });
+  // Return all images with engine metadata for gallery mode source filtering
+  const hasMore = images.length >= 10;
+  console.log(`[images] Returning ${images.length} deduplicated images (page ${page})`);
+  res.json({ images, query, page, hasMore });
 });
 
 // GET /url?url=URL&maxContent=5000&raw=0 — full page data extraction

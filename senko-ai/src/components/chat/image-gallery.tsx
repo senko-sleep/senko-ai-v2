@@ -67,18 +67,22 @@ export function ImageGallery({
       const res = await fetch(`/api/images?q=${encodeURIComponent(query)}&page=${nextPage}`);
       const data = await res.json();
       if (data.images && data.images.length > 0) {
-        const newImgs: MessageImage[] = data.images
-          .filter((img: MessageImage) => !isImageDuplicate(img.url, allImages))
-          .map((img: { url: string; alt?: string; source?: string; engine?: string }) => ({
-            url: img.url,
-            alt: img.alt || query,
-            source: img.source || "",
-            engine: img.engine || "",
-          }));
-        if (newImgs.length > 0) {
-          setAllImages((prev) => [...prev, ...newImgs]);
-        }
-        setHasMore(data.hasMore && newImgs.length > 0);
+        setAllImages((prev) => {
+          const incoming: MessageImage[] = data.images
+            .filter((img: MessageImage) => !isImageDuplicate(img.url, prev))
+            .map((img: { url: string; alt?: string; source?: string; engine?: string }) => ({
+              url: img.url,
+              alt: img.alt || query,
+              source: img.source || "",
+              engine: img.engine || "",
+            }));
+          if (incoming.length === 0) {
+            setHasMore(false);
+            return prev;
+          }
+          setHasMore(data.hasMore);
+          return [...prev, ...incoming];
+        });
       } else {
         setHasMore(false);
       }
@@ -87,7 +91,7 @@ export function ImageGallery({
       setHasMore(false);
     }
     setIsLoadingMore(false);
-  }, [query, page, isLoadingMore, hasMore, allImages]);
+  }, [query, page, isLoadingMore, hasMore]);
 
   // Infinite scroll observer
   useEffect(() => {
@@ -225,7 +229,7 @@ export function ImageGallery({
               <div key={colIdx} className="flex-1 flex flex-col gap-2 min-w-0">
                 {col.map((img, imgIdx) => (
                   <div
-                    key={`${colIdx}-${imgIdx}`}
+                    key={img.url}
                     className="group relative overflow-hidden rounded-lg border border-white/[0.06] hover:border-[var(--senko-accent)]/30 transition-all cursor-pointer bg-white/[0.02]"
                     onClick={() => setLightboxImage({ url: img.url, alt: img.alt })}
                   >
