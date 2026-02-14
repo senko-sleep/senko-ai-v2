@@ -15,6 +15,8 @@ export interface MapEmbed {
 export interface MessageImage {
   url: string;
   alt?: string;
+  source?: string;
+  engine?: string;
 }
 
 export interface VideoEmbed {
@@ -29,20 +31,6 @@ export interface WebEmbed {
   title?: string;
 }
 
-export interface MessageGif {
-  id: string;
-  title: string;
-  url: string;
-  preview: string;
-  webp: string;
-  webp_preview: string;
-  gif: string;
-  mp4: string;
-  tags: string[];
-  duration: number;
-  created: number;
-}
-
 export interface Message {
   id: string;
   role: "user" | "assistant" | "thinking";
@@ -54,10 +42,10 @@ export interface Message {
   images?: MessageImage[];
   videos?: VideoEmbed[];
   webEmbeds?: WebEmbed[];
-  gifs?: MessageGif[];
   tokenCount?: number;
   isThinking?: boolean;
   error?: string;
+  searchQuery?: string;
 }
 
 export interface SenkoStatus {

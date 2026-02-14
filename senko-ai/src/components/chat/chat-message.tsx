@@ -1,13 +1,13 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Pencil, Check, Copy, RotateCcw, Globe, AlertTriangle } from "lucide-react";
+import { Pencil, Check, Copy, RotateCcw, Globe, AlertTriangle, Grid3X3 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { MarkdownRenderer } from "./markdown-renderer";
 import { MapEmbed } from "./map-embed";
 import { ImageCarousel } from "./image-carousel";
-import { GifCarousel } from "./gif-carousel";
+import { ImageGallery } from "./image-gallery";
 import { VideoEmbed } from "./video-embed";
 import { WebEmbed } from "./web-embed";
 import type { Message } from "@/types/chat";
@@ -36,6 +36,7 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content);
   const [copied, setCopied] = useState(false);
+  const [showGallery, setShowGallery] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -80,9 +81,8 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
   const hasImages = message.images && message.images.length > 0;
   const hasVideos = message.videos && message.videos.length > 0;
   const hasWebEmbeds = message.webEmbeds && message.webEmbeds.length > 0;
-  const hasGifs = message.gifs && message.gifs.length > 0;
   const hasMap = !!message.mapEmbed;
-  const hasAttachments = hasSources || hasImages || hasVideos || hasWebEmbeds || hasMap || hasGifs;
+  const hasAttachments = hasSources || hasImages || hasVideos || hasWebEmbeds || hasMap;
   const isRich = !isUser && hasRichContent(message.content);
   const isShort = message.content.length < 80 && !message.content.includes("\n");
 
@@ -286,16 +286,29 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
       {/* Images - full chat width */}
       {hasImages && (
         <div className="w-full mt-3">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[10px] text-white/30">{message.images!.length} image{message.images!.length !== 1 ? "s" : ""}</span>
+            <button
+              onClick={() => setShowGallery(true)}
+              className="flex items-center gap-1 px-2 py-1 text-[10px] text-white/40 hover:text-[var(--senko-accent)] bg-white/[0.03] hover:bg-[var(--senko-accent)]/10 border border-white/[0.06] hover:border-[var(--senko-accent)]/30 rounded-md transition-all"
+            >
+              <Grid3X3 className="h-3 w-3" />
+              Gallery
+            </button>
+          </div>
           <ImageCarousel images={message.images!} />
         </div>
       )}
 
-      {/* GIFs - full chat width */}
-      {hasGifs && (
-        <div className="w-full mt-3">
-          <GifCarousel gifs={message.gifs!} />
-        </div>
+      {/* Gallery Mode Overlay */}
+      {showGallery && hasImages && (
+        <ImageGallery
+          images={message.images!}
+          query={message.searchQuery}
+          onClose={() => setShowGallery(false)}
+        />
       )}
+
     </div>
   );
 }
