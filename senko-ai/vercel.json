@@ -3,26 +3,19 @@
   "framework": "nextjs",
   "functions": {
     "src/app/api/chat/route.ts": {
-      "maxDuration": 60,
-      "memory": 1024
+      "maxDuration": 60
     },
     "src/app/api/search/route.ts": {
-      "maxDuration": 60,
-      "memory": 1024
+      "maxDuration": 60
     },
     "src/app/api/sources/route.ts": {
-      "maxDuration": 60,
-      "memory": 1024
+      "maxDuration": 60
     },
     "src/app/api/scrape/route.ts": {
       "maxDuration": 30
     },
     "src/app/api/screenshot/route.ts": {
-      "maxDuration": 30,
-      "memory": 1024
-    },
-    "src/app/api/browse/route.ts": {
-      "maxDuration": 45
+      "maxDuration": 30
     },
     "src/app/api/images/route.ts": {
       "maxDuration": 30
@@ -30,14 +23,23 @@
     "src/app/api/url/route.ts": {
       "maxDuration": 30
     },
+    "src/app/api/browse/route.ts": {
+      "maxDuration": 30
+    },
     "src/app/api/proxy/route.ts": {
       "maxDuration": 30
     },
     "src/app/api/video-extract/route.ts": {
-      "maxDuration": 45
+      "maxDuration": 60
     },
     "src/app/api/video-proxy/route.ts": {
       "maxDuration": 60
+    },
+    "src/app/api/list-links/route.ts": {
+      "maxDuration": 30
+    },
+    "src/app/api/navigate/route.ts": {
+      "maxDuration": 30
     }
   },
   "headers": [
@@ -54,11 +56,7 @@
         },
         {
           "key": "Access-Control-Allow-Headers",
-          "value": "Content-Type, Range"
-        },
-        {
-          "key": "Access-Control-Expose-Headers",
-          "value": "Content-Range, Content-Length, Accept-Ranges"
+          "value": "Content-Type, Authorization"
         }
       ]
     }

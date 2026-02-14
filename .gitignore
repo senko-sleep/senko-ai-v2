@@ -38,3 +38,8 @@ next-env.d.ts
 
 # search-api
 search-api/node_modules
+
+# nested senko-ai app
+senko-ai/node_modules
+senko-ai/.next
+senko-ai/.vercel

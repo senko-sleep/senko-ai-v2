@@ -2,12 +2,15 @@ services:
   - type: web
     name: senko-ai-v2
     runtime: docker
+    region: oregon
     plan: free
     rootDir: search-api
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    region: oregon
-    healthCheckPath: /health
     envVars:
       - key: PORT
         value: 3001
+      - key: CHROME_BIN
+        value: /usr/bin/chromium-browser
+      - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
+        value: "true"
