@@ -936,14 +936,29 @@ export default function Home() {
 
           // Find video/content links on the page
           const links: { url: string; text: string }[] = data.links || [];
+          
+          // Helper to check if a link is an ad/signup/nav link
+          const isJunkLink = (url: string, text: string) => {
+            const u = url.toLowerCase();
+            const t = text.toLowerCase();
+            // Skip account/signup/login URLs
+            if (/\/account|\/create|\/signup|\/login|\/register|\/join|\/subscribe|\/premium|\/upgrade/i.test(u)) return true;
+            // Skip ad/tracker URLs
+            if (/spankurbate|rule34comic|exoclick|trafficjunky|juicyads|adglare|popads|adsterra/i.test(u)) return true;
+            // Skip nav/utility links by text
+            if (/\b(join|sign\s*up|sign\s*in|log\s*in|register|create\s*account|free\s*account|subscribe|premium|upgrade)\b/i.test(t)) return true;
+            // Skip self-links
+            try { const lu = new URL(url); if (lu.pathname === "/" || lu.pathname === "") return true; } catch { /* skip */ }
+            if (u === fetchUrl.toLowerCase() || u === baseUrl.toLowerCase()) return true;
+            // Skip same-page anchors and javascript
+            if (u.startsWith("#") || u.startsWith("javascript:")) return true;
+            return false;
+          };
+          
           // First pass: find links with video-specific URL patterns (highest confidence)
           const videoLinks = links.filter((l) => {
+            if (isJunkLink(l.url, l.text)) return false;
             const u = l.url.toLowerCase();
-            // Skip self-links (homepage or same page)
-            try { const lu = new URL(l.url); if (lu.pathname === "/" || lu.pathname === "") return false; } catch { /* skip */ }
-            if (u === fetchUrl.toLowerCase() || u === baseUrl.toLowerCase()) return false;
-            // Skip ad/tracker URLs
-            if (/spankurbate|rule34comic|exoclick|trafficjunky|juicyads|adglare/i.test(u)) return false;
             // Must have a video-like URL pattern
             if (/\/(video|watch|view_video|clip)s?\b/i.test(u)) return true;
             if (/view_video|viewkey|watch\?v=/i.test(u)) return true;
@@ -951,20 +966,14 @@ export default function Home() {
           });
           // Second pass: broader content links if no video-specific ones found
           const contentLinks = videoLinks.length > 0 ? videoLinks : links.filter((l) => {
+            if (isJunkLink(l.url, l.text)) return false;
             const u = l.url.toLowerCase();
             const t = l.text.toLowerCase();
-            // Skip self-links
-            try { const lu = new URL(l.url); if (lu.pathname === "/" || lu.pathname === "") return false; } catch { /* skip */ }
-            if (u === fetchUrl.toLowerCase() || u === baseUrl.toLowerCase()) return false;
             // Skip links whose text is just a URL
             if (/^https?:\/\//i.test(t)) return false;
-            // Skip navigation, pagination, ads, login, etc.
-            if (/\b(login|sign|register|page|next|prev|tag|categor|sort|filter|lang|privacy|terms|dmca|contact|about|faq|help|home|menu|search)\b/i.test(t) && t.length < 30) return false;
-            if (u.includes("/login") || u.includes("/register") || u.includes("/signup") || u.includes("/tags") || u.includes("/categories") || u.includes("/members")) return false;
-            // Skip ad/tracker URLs
-            if (/spankurbate|rule34comic|exoclick|trafficjunky|juicyads|adglare/i.test(u)) return false;
-            // Skip same-page anchors and javascript
-            if (u.startsWith("#") || u.startsWith("javascript:")) return false;
+            // Skip navigation, pagination, etc.
+            if (/\b(page|next|prev|tag|categor|sort|filter|lang|privacy|terms|dmca|contact|about|faq|help|home|menu|search)\b/i.test(t) && t.length < 30) return false;
+            if (u.includes("/tags") || u.includes("/categories") || u.includes("/members")) return false;
             // Content pages
             if (/\/(video|watch|view|post|entry|clip|embed)s?\b/i.test(u)) return true;
             if (/view_video|viewkey|watch\?/i.test(u)) return true;
@@ -974,13 +983,9 @@ export default function Home() {
           });
 
           const targetLinks = contentLinks.length > 0 ? contentLinks : links.filter((l) => {
-            const u = l.url.toLowerCase();
-            // Skip self-links, URLs as text, and nav links
-            try { const lu = new URL(l.url); if (lu.pathname === "/" || lu.pathname === "") return false; } catch { /* skip */ }
-            if (u === fetchUrl.toLowerCase() || u === baseUrl.toLowerCase()) return false;
+            if (isJunkLink(l.url, l.text)) return false;
             if (/^https?:\/\//i.test(l.text)) return false;
-            if (/spankurbate|rule34comic|exoclick|trafficjunky|juicyads|adglare/i.test(u)) return false;
-            return l.text.length > 5 && !/\b(login|sign|register|home|menu)\b/i.test(l.text);
+            return l.text.length > 5;
           });
 
           // If we have a title hint (from the AI's embed title or message), try to match by title first
