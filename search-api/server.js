@@ -4,14 +4,39 @@ const puppeteer = require("puppeteer");
 const app = express();
 const PORT = process.env.PORT || 3010;
 
+// Detect Chromium executable path based on environment
+function getChromiumPath() {
+  // Explicit env var takes priority
+  if (process.env.CHROME_BIN) return process.env.CHROME_BIN;
+  
+  // On Render.com (Linux), use system Chromium
+  if (process.platform === "linux") {
+    const fs = require("fs");
+    const paths = [
+      "/usr/bin/chromium-browser",
+      "/usr/bin/chromium",
+      "/usr/bin/google-chrome",
+      "/usr/bin/google-chrome-stable",
+    ];
+    for (const p of paths) {
+      if (fs.existsSync(p)) return p;
+    }
+  }
+  
+  // On Windows/Mac, let Puppeteer use its bundled Chromium
+  return undefined;
+}
+
 // Reusable browser instance
 let browser = null;
 
 async function getBrowser() {
   if (!browser || !browser.connected) {
+    const execPath = getChromiumPath();
+    console.log(`[puppeteer] Launching browser${execPath ? ` with executablePath: ${execPath}` : " (using bundled Chromium)"}`);
     browser = await puppeteer.launch({
       headless: "new",
-      executablePath: process.env.CHROME_BIN || "/usr/bin/chromium-browser",
+      ...(execPath && { executablePath: execPath }),
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
