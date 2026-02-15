@@ -2845,7 +2845,11 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
 
       // ── PRE-AI INTERCEPTOR: "What videos are on this page" with URL ──
       // Catch "what videos are on [URL]" / "what's on this page [URL]" and BROWSE it directly
-      const pageContentMatch = content.match(/(?:what(?:'s|\s+are|\s+is)?\s+(?:some\s+)?(?:videos?|content|links?|stuff)\s+(?:are\s+)?(?:on|at|from)\s+(?:this\s+page\s+)?)(https?:\/\/[^\s]+)/i)
+      // Also catches URLs at the end of the message when asking about videos/content
+      const urlInMessage = content.match(/(https?:\/\/[^\s]+)/i);
+      const asksAboutContent = /what(?:'s|\s+are|\s+is)?.*(?:videos?|content|on\s+(?:this|that)\s+page)|(?:show|list|get|find).*(?:videos?|content)/i.test(content);
+      const pageContentMatch = (urlInMessage && asksAboutContent) ? urlInMessage
+        : content.match(/(?:what(?:'s|\s+are|\s+is)?\s+(?:some\s+)?(?:videos?|content|links?|stuff)\s+(?:are\s+)?(?:on|at|from)\s+(?:this\s+page\s+)?)(https?:\/\/[^\s]+)/i)
         || content.match(/(https?:\/\/[^\s]+)\s+(?:what(?:'s|\s+are|\s+is)?\s+(?:some\s+)?(?:videos?|content|links?|stuff)\s+(?:are\s+)?(?:on|at|there))/i)
         || content.match(/(?:show\s+me|list|get)\s+(?:the\s+)?(?:videos?|content|links?)\s+(?:on|from|at)\s+(https?:\/\/[^\s]+)/i);
       if (pageContentMatch) {
