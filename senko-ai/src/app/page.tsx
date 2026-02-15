@@ -1278,6 +1278,20 @@ export default function Home() {
                     if (extractData.videos && extractData.videos.length > 0) {
                       console.log(`%c[READ_URL] 🎬 Video-extract found ${extractData.videos.length} videos!`, "color: #00ff88; font-weight: bold", extractData.videos.map((v: {url:string}) => v.url.slice(0, 80)));
                       foundVideos = extractData.videos;
+                    } else if (extractData.isListingPage && extractData.videoLinks?.length > 0) {
+                      // This is a listing page with video links - store them and show to user
+                      console.log(`%c[READ_URL] 📄 Listing page detected with ${extractData.videoLinks.length} video links`, "color: #ff9900; font-weight: bold");
+                      const newResults = extractData.videoLinks.map((l: { url: string; title: string }) => ({ title: l.title, url: l.url, snippet: "" }));
+                      searchResultsByConv.current[convId] = newResults;
+                      
+                      // Update message with video list
+                      const resultList = extractData.videoLinks.slice(0, 15).map((l: { title: string }, i: number) => `${i + 1}. ${l.title}`).join("\n");
+                      updateConversation(convId, (c) => ({
+                        ...c,
+                        messages: c.messages.map((m) =>
+                          m.id === msgId ? { ...m, content: m.content + `\n\nFound ${extractData.videoLinks.length} videos on this page:\n${resultList}\n\nWhich one do you wanna watch?` } : m
+                        ),
+                      }));
                     }
                   }
                   removeThinkingMsg(convId, extractThinkId);
@@ -1786,6 +1800,18 @@ export default function Home() {
                 if (extractData.videos?.length > 0) {
                   foundVids = extractData.videos;
                   playable = foundVids.filter((v: { url: string; type?: string }) => /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(v.url) || /^video\//i.test(v.type || "") || /mpegurl|dash/i.test(v.type || ""));
+                } else if (extractData.isListingPage && extractData.videoLinks?.length > 0) {
+                  // Listing page detected - store video links for follow-up
+                  console.log(`%c[BROWSE] 📄 Listing page with ${extractData.videoLinks.length} video links`, "color: #ff9900; font-weight: bold");
+                  const newResults = extractData.videoLinks.map((l: { url: string; title: string }) => ({ title: l.title, url: l.url, snippet: "" }));
+                  searchResultsByConv.current[convId] = newResults;
+                  removeThinkingMsg(convId, thinkId);
+                  const resultList = extractData.videoLinks.slice(0, 15).map((l: { title: string }, i: number) => `${i + 1}. ${l.title}`).join("\n");
+                  updateConversation(convId, (c) => ({
+                    ...c,
+                    messages: c.messages.map((m) => m.id === messageId ? { ...m, content: m.content + `\n\nFound ${extractData.videoLinks.length} videos:\n${resultList}\n\nPick a number~` } : m),
+                  }));
+                  return;
                 }
               } catch (e) { console.error("[BROWSE] Puppeteer extraction failed:", e); }
             }

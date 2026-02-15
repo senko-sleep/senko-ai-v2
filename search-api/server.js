@@ -1901,6 +1901,60 @@ app.get("/video-extract", async (req, res) => {
     });
 
     console.log(`[video-extract] Found ${allVideos.length} videos on ${url} (${networkVideos.length} network, ${domVideos.length} DOM)`);
+    
+    // If no videos found, this might be a listing page - extract video links instead
+    if (allVideos.length === 0) {
+      console.log(`[video-extract] No videos found, checking for video links (listing page detection)`);
+      
+      // Re-open page to extract links (or we could have done this earlier, but keeping it simple)
+      let linkPage;
+      try {
+        const b = await getBrowser();
+        linkPage = await b.newPage();
+        await linkPage.setUserAgent(UA);
+        await linkPage.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
+        await new Promise((r) => setTimeout(r, 2000));
+        
+        const videoLinks = await linkPage.evaluate(() => {
+          const links = [];
+          const seen = new Set();
+          document.querySelectorAll("a[href]").forEach((a) => {
+            const href = a.href;
+            const text = (a.textContent || a.title || a.getAttribute("alt") || "").trim();
+            if (!href || seen.has(href)) return;
+            // Check if this looks like a video page link
+            const u = href.toLowerCase();
+            if (/\/(video|watch|view_video|clip)s?\b/i.test(u) || /view_video|viewkey|watch\?v=/i.test(u)) {
+              // Skip nav/ad links
+              if (/\/account|\/login|\/signup|\/register|\/tags$|\/categories$/i.test(u)) return;
+              if (/exoclick|trafficjunky|juicyads|adglare/i.test(u)) return;
+              seen.add(href);
+              links.push({ url: href, title: text.slice(0, 200) || "Video" });
+            }
+          });
+          return links.slice(0, 50);
+        });
+        
+        await linkPage.close();
+        
+        if (videoLinks.length > 0) {
+          console.log(`[video-extract] Found ${videoLinks.length} video links on listing page`);
+          res.json({ 
+            videos: [], 
+            videoLinks: videoLinks, 
+            isListingPage: true, 
+            title, 
+            url,
+            message: `This is a listing page with ${videoLinks.length} video links. Pick one to watch.`
+          });
+          return;
+        }
+      } catch (linkErr) {
+        if (linkPage) await linkPage.close().catch(() => {});
+        console.error("[video-extract] Link extraction failed:", linkErr.message);
+      }
+    }
+    
     res.json({ videos: allVideos, title, url });
   } catch (err) {
     if (page) await page.close().catch(() => { });
