@@ -1433,6 +1433,22 @@ app.get("/browse", async (req, res) => {
       } catch { }
     });
 
+    // Set cookies for age-gated sites (Pornhub, XVideos, etc.)
+    const urlObj = new URL(url);
+    const domain = urlObj.hostname.replace(/^www\./, "");
+    if (/pornhub|xvideos|xhamster|redtube|youporn|tube8|spankbang|xnxx/i.test(domain)) {
+      await page.setCookie(
+        { name: "accessAgeDisclaimerPH", value: "1", domain: `.${domain}` },
+        { name: "accessAgeDisclaimerXV", value: "1", domain: `.${domain}` },
+        { name: "accessPH", value: "1", domain: `.${domain}` },
+        { name: "age_verified", value: "1", domain: `.${domain}` },
+        { name: "age-verified", value: "1", domain: `.${domain}` },
+        { name: "disclaimer", value: "1", domain: `.${domain}` },
+        { name: "over18", value: "1", domain: `.${domain}` },
+        { name: "is_adult", value: "1", domain: `.${domain}` },
+      );
+    }
+
     console.log(`[browse] Loading ${url}`);
     await page.goto(url, { waitUntil: "networkidle2", timeout: 25000 }).catch(() => { });
     const finalUrl = page.url();
@@ -1479,21 +1495,23 @@ app.get("/browse", async (req, res) => {
 
       // Extract text content from main content areas
       const mainEl = document.querySelector("main, article, [role='main'], .content, #content, .main-content") || document.body;
-      const walker = document.createTreeWalker(mainEl, NodeFilter.SHOW_TEXT, {
-        acceptNode: (node) => {
-          const parent = node.parentElement;
-          if (!parent) return NodeFilter.FILTER_REJECT;
-          const tag = parent.tagName.toLowerCase();
-          if (["script", "style", "noscript", "svg", "iframe"].includes(tag)) return NodeFilter.FILTER_REJECT;
-          const text = node.textContent.trim();
-          if (text.length < 2) return NodeFilter.FILTER_REJECT;
-          return NodeFilter.FILTER_ACCEPT;
-        }
-      });
       const textParts = [];
-      let node;
-      while ((node = walker.nextNode()) && textParts.join("\n").length < maxLen) {
-        textParts.push(node.textContent.trim());
+      if (mainEl) {
+        const walker = document.createTreeWalker(mainEl, NodeFilter.SHOW_TEXT, {
+          acceptNode: (node) => {
+            const parent = node.parentElement;
+            if (!parent) return NodeFilter.FILTER_REJECT;
+            const tag = parent.tagName.toLowerCase();
+            if (["script", "style", "noscript", "svg", "iframe"].includes(tag)) return NodeFilter.FILTER_REJECT;
+            const text = node.textContent.trim();
+            if (text.length < 2) return NodeFilter.FILTER_REJECT;
+            return NodeFilter.FILTER_ACCEPT;
+          }
+        });
+        let node;
+        while ((node = walker.nextNode()) && textParts.join("\n").length < maxLen) {
+          textParts.push(node.textContent.trim());
+        }
       }
       result.content = textParts.join("\n").replace(/\n{3,}/g, "\n\n").slice(0, maxLen);
 
@@ -1673,6 +1691,22 @@ app.get("/video-extract", async (req, res) => {
     page = await b.newPage();
     await page.setUserAgent(UA);
     await page.setViewport({ width: 1280, height: 800 });
+
+    // Set cookies for age-gated sites (Pornhub, XVideos, etc.)
+    const urlObj = new URL(url);
+    const domain = urlObj.hostname.replace(/^www\./, "");
+    if (/pornhub|xvideos|xhamster|redtube|youporn|tube8|spankbang|xnxx/i.test(domain)) {
+      await page.setCookie(
+        { name: "accessAgeDisclaimerPH", value: "1", domain: `.${domain}` },
+        { name: "accessAgeDisclaimerXV", value: "1", domain: `.${domain}` },
+        { name: "accessPH", value: "1", domain: `.${domain}` },
+        { name: "age_verified", value: "1", domain: `.${domain}` },
+        { name: "age-verified", value: "1", domain: `.${domain}` },
+        { name: "disclaimer", value: "1", domain: `.${domain}` },
+        { name: "over18", value: "1", domain: `.${domain}` },
+        { name: "is_adult", value: "1", domain: `.${domain}` },
+      );
+    }
 
     // Intercept ALL network requests to catch video URLs
     const networkVideos = [];
