@@ -1289,7 +1289,7 @@ export default function Home() {
                       updateConversation(convId, (c) => ({
                         ...c,
                         messages: c.messages.map((m) =>
-                          m.id === msgId ? { ...m, content: m.content + `\n\nFound ${extractData.videoLinks.length} videos on this page:\n${resultList}\n\nWhich one do you wanna watch?` } : m
+                          m.id === messageId ? { ...m, content: m.content + `\n\nFound ${extractData.videoLinks.length} videos on this page:\n${resultList}\n\nWhich one do you wanna watch?` } : m
                         ),
                       }));
                     }
