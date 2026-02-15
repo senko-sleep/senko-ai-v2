@@ -3081,6 +3081,100 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
         }
       }
 
+      // ── PRE-AI INTERCEPTOR: Title-based video requests ──
+      // Catch "play this video [TITLE]" or "open [TITLE]" and match against stored search results
+      const titlePlayMatch = content.match(/(?:play|watch|open|get|show)\s+(?:this\s+)?(?:video\s+)?(.{10,})/i);
+      if (titlePlayMatch) {
+        const requestedTitle = titlePlayMatch[1].trim().toLowerCase();
+        const convResults = searchResultsByConv.current[activeConversationId] || [];
+        
+        // Find best matching result by title similarity
+        let bestMatch: { title: string; url: string; snippet: string } | null = null;
+        let bestScore = 0;
+        for (const result of convResults) {
+          const resultTitle = result.title.toLowerCase();
+          // Check if requested title is contained in result title or vice versa
+          if (resultTitle.includes(requestedTitle) || requestedTitle.includes(resultTitle)) {
+            const score = Math.min(requestedTitle.length, resultTitle.length) / Math.max(requestedTitle.length, resultTitle.length);
+            if (score > bestScore) {
+              bestScore = score;
+              bestMatch = result;
+            }
+          }
+          // Also check word overlap
+          const requestedWords = requestedTitle.split(/\s+/).filter(w => w.length > 2);
+          const resultWords = resultTitle.split(/\s+/).filter(w => w.length > 2);
+          const matchingWords = requestedWords.filter(w => resultWords.some(rw => rw.includes(w) || w.includes(rw)));
+          if (matchingWords.length >= 2) {
+            const wordScore = matchingWords.length / Math.max(requestedWords.length, 1);
+            if (wordScore > bestScore) {
+              bestScore = wordScore;
+              bestMatch = result;
+            }
+          }
+        }
+
+        if (bestMatch && bestScore > 0.3) {
+          console.log(`%c[CLIENT] 🎬 Title match found: "${bestMatch.title}" (score: ${bestScore.toFixed(2)})`, "color: #00ff88; font-weight: bold");
+          const interceptId = generateId();
+          updateConversation(activeConversationId, (c) => ({
+            ...c,
+            messages: [...c.messages, { id: interceptId, role: "assistant" as const, content: `Found it! Opening "${bestMatch!.title}"~`, timestamp: new Date() }],
+          }));
+          
+          // Open the video
+          try {
+            window.open(bestMatch.url, "_blank", "noopener,noreferrer");
+            addTab(activeConversationId, bestMatch.url, bestMatch.title);
+          } catch (e) {
+            console.error("[CLIENT] Failed to open matched video:", e);
+          }
+
+          // Also try to extract and play the video inline
+          setIsStreaming(true);
+          const thinkId = addThinkingMsg(activeConversationId, `loading video player...`);
+          const capturedConvId = activeConversationId;
+          const capturedUrl = bestMatch.url;
+          const capturedTitle = bestMatch.title;
+
+          (async () => {
+            try {
+              const isJsHeavy = /\b(xvideos|pornhub|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|rule34video)\b/i.test(capturedUrl);
+              const res = await fetch(`${isJsHeavy ? "/api/browse" : "/api/url"}?url=${encodeURIComponent(capturedUrl)}&maxContent=4000`);
+              const data = await res.json();
+              removeThinkingMsg(capturedConvId, thinkId);
+
+              // Check for video sources
+              const videos = data.videos || [];
+              const playableVideos = videos.filter((v: { url: string; type?: string }) => {
+                const u = v.url.toLowerCase();
+                return /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(u) || /^video\//i.test(v.type || "") || /mpegurl|dash/i.test(v.type || "");
+              });
+
+              if (playableVideos.length > 0) {
+                const videoEmbeds = playableVideos.slice(0, 3).map((v: { url: string; type?: string; quality?: string; poster?: string }) => ({
+                  url: v.url,
+                  platform: "other" as const,
+                  title: capturedTitle,
+                }));
+                updateConversation(capturedConvId, (c) => ({
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === interceptId ? { ...m, videos: videoEmbeds } : m
+                  ),
+                }));
+              }
+              setIsStreaming(false);
+            } catch (e) {
+              console.error("[CLIENT] Video extraction failed:", e);
+              removeThinkingMsg(capturedConvId, thinkId);
+              setIsStreaming(false);
+            }
+          })();
+          return; // Don't send to AI
+        }
+      }
+
       // ── PRE-AI INTERCEPTOR: Contextual video/item requests ──
       // Catch "play me/send me/get me the Nth video" before the AI can refuse or do a generic search
       const videoItemMatch = content.match(/(?:play|watch|send|get|show|give|open)\s+(?:me\s+)?(?:the\s+)?(?:(\d+)(?:st|nd|rd|th)?|first|second|third|fourth|fifth)\s*(?:videos?|vids?|results?|one|link|clip|item|entry)/i);
