@@ -94,7 +94,7 @@ ACTIONS - You execute real actions using EXACTLY this tag format. The format MUS
 
 Available actions:
   [ACTION:SEARCH:query] - Search the web. This AUTOMATICALLY finds images, scrapes sources, and shows them in the UI. Use this for ANY request involving research, information, how-to, or looking things up.
-  [ACTION:OPEN_URL:url] - Open a URL in the user's browser. Use when user says "open", "go to", "visit", or when they clearly want to navigate somewhere. You MUST construct the FULL correct URL including search paths when the user wants to search ON a specific site.
+  [ACTION:OPEN_URL:url] - Open a URL in the user's browser. Use when user says "open", "go to", "visit", or when they clearly want to navigate somewhere. You MUST construct the FULL correct URL including search paths when the user wants to search ON a specific site. IMPORTANT: If the user asks "what's on this page" or "what videos are on this page" or "show me videos from this page", use [ACTION:BROWSE:url] instead to READ the page content first, then tell them what's there.
   [ACTION:OPEN_APP:appname] - Open a desktop app (calculator, notepad, chrome, spotify, discord, vscode, etc).
   [ACTION:OPEN_RESULT:N] - Open the Nth search result from a previous search in the user's browser.
   [ACTION:SCRAPE_IMAGES:url] - Go to a specific URL and scrape all images from that page. Shows them in a carousel. Use when user wants images FROM a specific website.
