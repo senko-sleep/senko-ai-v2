@@ -3388,7 +3388,7 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
         const convResults = searchResultsByConv.current[activeConversationId] || [];
         
         // Find best matching result by title similarity
-        let bestMatch: { title: string; url: string; snippet: string } | null = null;
+        let bestMatch: { title: string; url: string; snippet?: string } | null = null;
         let bestScore = 0;
         for (const result of convResults) {
           const resultTitle = result.title.toLowerCase();
