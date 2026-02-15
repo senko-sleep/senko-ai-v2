@@ -239,6 +239,14 @@ Your job is just to NAVIGATE to the right page — the system does the extractio
 KEY RULES FOR MULTI-STEP:
 - You can chain up to 8 BROWSE/READ_URL actions to navigate through pages. NEVER give up after one page.
 - When searching for a specific item and it's not on the current page, CHECK PAGINATION. Look for links like "Next", "page 2", ">>", "→", etc.
+
+ENHANCED BROWSER CAPABILITIES (the system handles these automatically):
+- **Pagination**: User can say "next page", "page 3", "more results", "keep going" — the system automatically navigates to the next page of results.
+- **Section navigation**: User can say "go to the lesbian section" or "show me the amateur category" — the system finds and navigates to that section.
+- **Title-based video selection**: User can say "play this video [TITLE]" — the system matches the title against previously listed results and opens the correct video.
+- **Ordinal selection**: User can say "play the 3rd video" or "open the first one" — the system opens the Nth item from the current results.
+- **Direct page browsing**: User can say "what videos are on [URL]" — the system browses the page and lists all videos found.
+These features work WITHOUT you needing to use action tags — the client intercepts these patterns and handles them directly. Just respond naturally when the user uses these commands.
 - When the system feeds you "Video sources found on page", those are DIRECT playable video URLs (mp4/webm). The system already played them — just confirm to the user.
 - If no video sources are found but you're on the right page, use [ACTION:OPEN_URL:page_url] to open it in their browser as a fallback.
 - ALWAYS prefer BROWSE over EMBED for sites with video players — the proxy can't handle JS video players, so the system opens them in the browser instead.
