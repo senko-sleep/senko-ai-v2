@@ -2843,6 +2843,106 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
         }
       }
 
+      // ── PRE-AI INTERCEPTOR: "What videos are on this page" with URL ──
+      // Catch "what videos are on [URL]" / "what's on this page [URL]" and BROWSE it directly
+      const pageContentMatch = content.match(/(?:what(?:'s|\s+are|\s+is)?\s+(?:some\s+)?(?:videos?|content|links?|stuff)\s+(?:are\s+)?(?:on|at|from)\s+(?:this\s+page\s+)?)(https?:\/\/[^\s]+)/i)
+        || content.match(/(https?:\/\/[^\s]+)\s+(?:what(?:'s|\s+are|\s+is)?\s+(?:some\s+)?(?:videos?|content|links?|stuff)\s+(?:are\s+)?(?:on|at|there))/i)
+        || content.match(/(?:show\s+me|list|get)\s+(?:the\s+)?(?:videos?|content|links?)\s+(?:on|from|at)\s+(https?:\/\/[^\s]+)/i);
+      if (pageContentMatch) {
+        const targetUrl = pageContentMatch[1] || pageContentMatch[2];
+        console.log(`%c[CLIENT] 📄 Pre-AI page content intercept: ${targetUrl}`, "color: #00ffcc; font-weight: bold");
+        
+        const interceptId = generateId();
+        updateConversation(activeConversationId, (c) => ({
+          ...c,
+          messages: [...c.messages, { id: interceptId, role: "assistant" as const, content: `Lemme check what's on that page~`, timestamp: new Date() }],
+        }));
+        setIsStreaming(true);
+        const thinkId = addThinkingMsg(activeConversationId, `browsing ${targetUrl}...`);
+        const capturedConvId = activeConversationId;
+
+        (async () => {
+          try {
+            const res = await fetch(`/api/browse?url=${encodeURIComponent(targetUrl)}&maxContent=12000`);
+            const data = await res.json();
+            removeThinkingMsg(capturedConvId, thinkId);
+
+            if (data.error) {
+              updateConversation(capturedConvId, (c) => ({
+                ...c,
+                messages: c.messages.map((m) =>
+                  m.id === interceptId ? { ...m, content: `Couldn't read that page ;w; ${data.error}` } : m
+                ),
+              }));
+              setIsStreaming(false);
+              return;
+            }
+
+            // Store as tab for context
+            addTab(capturedConvId, targetUrl, data.meta?.title || targetUrl);
+
+            // Find video/content links
+            const links: { url: string; text: string }[] = data.links || [];
+            const videoLinks = links.filter((l) => {
+              const u = l.url.toLowerCase();
+              try { const lu = new URL(l.url); if (lu.pathname === "/" || lu.pathname === "") return false; } catch { return false; }
+              if (/spankurbate|rule34comic|exoclick|trafficjunky|juicyads|adglare/i.test(u)) return false;
+              if (u.includes("/login") || u.includes("/register") || u.includes("/signup") || u.includes("/tags") || u.includes("/categories") || u.includes("/members")) return false;
+              if (/\/(video|watch|view_video|clip)s?\b/i.test(u)) return true;
+              if (/view_video|viewkey|watch\?v=/i.test(u)) return true;
+              return false;
+            });
+
+            // Fall back to broader content links
+            const contentLinks = videoLinks.length > 0 ? videoLinks : links.filter((l) => {
+              const u = l.url.toLowerCase();
+              const t = l.text.toLowerCase();
+              try { const lu = new URL(l.url); if (lu.pathname === "/" || lu.pathname === "") return false; } catch { return false; }
+              if (u === targetUrl.toLowerCase()) return false;
+              if (/^https?:\/\//i.test(t)) return false;
+              if (/spankurbate|rule34comic|exoclick|trafficjunky|juicyads|adglare/i.test(u)) return false;
+              if (/\b(login|sign|register|page|next|prev|tag|categor|sort|filter|lang|privacy|terms|dmca|contact|about|faq|help|home|menu|search|advanced)\b/i.test(t) && t.length < 30) return false;
+              if (t.length > 5 && !(/^\d+$/.test(t))) return true;
+              return false;
+            });
+
+            if (contentLinks.length > 0) {
+              // Store results for follow-up
+              const newResults = contentLinks.slice(0, 30).map((l) => {
+                let fullUrl = l.url;
+                if (fullUrl.startsWith("/")) { try { fullUrl = new URL(targetUrl).origin + fullUrl; } catch { /* keep */ } }
+                return { title: l.text, url: fullUrl, snippet: "" };
+              });
+              searchResultsByConv.current[capturedConvId] = newResults;
+
+              const resultList = contentLinks.slice(0, 15).map((l, i) => `${i + 1}. ${l.text}`).join("\n");
+              const resultMsg = `Found ${contentLinks.length} videos on that page~\n\n${resultList}${contentLinks.length > 15 ? `\n\n...and ${contentLinks.length - 15} more` : ""}\n\nWhich one do you wanna watch? Just say the number~`;
+
+              updateConversation(capturedConvId, (c) => ({
+                ...c,
+                messages: c.messages.map((m) =>
+                  m.id === interceptId ? { ...m, content: resultMsg, sources: [{ url: targetUrl, title: data.meta?.title || targetUrl, favicon: data.meta?.favicon || "" }] } : m
+                ),
+              }));
+            } else {
+              updateConversation(capturedConvId, (c) => ({
+                ...c,
+                messages: c.messages.map((m) =>
+                  m.id === interceptId ? { ...m, content: `Hmm couldn't find any video links on that page ;w; Maybe try a different search?`, sources: [{ url: targetUrl, title: data.meta?.title || targetUrl, favicon: data.meta?.favicon || "" }] } : m
+                ),
+              }));
+            }
+            setIsStreaming(false);
+          } catch (e) {
+            console.error("[CLIENT] Page content intercept failed:", e);
+            removeThinkingMsg(capturedConvId, thinkId);
+            setIsStreaming(false);
+            sendToAI(capturedConvId, updatedMessages);
+          }
+        })();
+        return; // Don't send to AI
+      }
+
       // ── PRE-AI INTERCEPTOR: "Look up X on Y site" ──
       // Catch "look up eevee on rule34video" / "search for X on Y" and fetch the site's search page directly
       const siteSearchMatch = content.match(/(?:look\s*up|search\s*(?:for)?|find)\s+(.+?)\s+(?:on|at|from)\s+([a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z]{2,})+)/i)
