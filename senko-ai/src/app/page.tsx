@@ -3081,6 +3081,300 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
         }
       }
 
+      // ── PRE-AI INTERCEPTOR: Pagination / "next page" / "page N" ──
+      // Catch "next page", "page 2", "more results", "keep going" and navigate to next page
+      const paginationMatch = content.match(/(?:next\s+page|page\s+(\d+)|more\s+(?:results|videos?)|keep\s+going|show\s+more|continue|go\s+to\s+page\s+(\d+))/i);
+      if (paginationMatch) {
+        const conv = conversations.find((c) => c.id === activeConversationId);
+        let contextUrl = "";
+        
+        // Find the last browsed URL from tabs or sources
+        if (conv) {
+          const tabs = conv.tabs || [];
+          if (tabs.length > 0) {
+            const activeTab = tabs.find((t) => t.active) || tabs[tabs.length - 1];
+            contextUrl = activeTab.url;
+          }
+          if (!contextUrl) {
+            for (let i = conv.messages.length - 1; i >= 0; i--) {
+              const msg = conv.messages[i];
+              if (msg.sources?.length) { contextUrl = msg.sources[msg.sources.length - 1].url; break; }
+            }
+          }
+        }
+
+        if (contextUrl) {
+          // Determine page number
+          let pageNum = 2; // Default to page 2 for "next page"
+          const explicitPage = paginationMatch[1] || paginationMatch[2];
+          if (explicitPage) {
+            pageNum = parseInt(explicitPage, 10);
+          } else {
+            // Try to detect current page from URL and increment
+            const currentPageMatch = contextUrl.match(/[?&](?:page?|p)=(\d+)/i);
+            if (currentPageMatch) {
+              pageNum = parseInt(currentPageMatch[1], 10) + 1;
+            }
+          }
+
+          // Construct paginated URL based on site patterns
+          let paginatedUrl = contextUrl;
+          try {
+            const urlObj = new URL(contextUrl);
+            const hostname = urlObj.hostname.toLowerCase();
+            
+            // Site-specific pagination patterns
+            if (hostname.includes("xvideos")) {
+              urlObj.searchParams.set("p", String(pageNum - 1)); // XVideos uses 0-indexed
+            } else if (hostname.includes("pornhub")) {
+              urlObj.searchParams.set("page", String(pageNum));
+            } else if (hostname.includes("xhamster")) {
+              // XHamster uses /search/query/page format
+              if (urlObj.pathname.includes("/search/")) {
+                urlObj.pathname = urlObj.pathname.replace(/\/\d+$/, "") + "/" + pageNum;
+              } else {
+                urlObj.searchParams.set("page", String(pageNum));
+              }
+            } else if (hostname.includes("rule34video")) {
+              urlObj.searchParams.set("page", String(pageNum));
+            } else if (hostname.includes("reddit")) {
+              // Reddit uses after= cursor, can't easily paginate
+              urlObj.searchParams.set("page", String(pageNum));
+            } else {
+              // Generic: try common patterns
+              if (urlObj.searchParams.has("page")) {
+                urlObj.searchParams.set("page", String(pageNum));
+              } else if (urlObj.searchParams.has("p")) {
+                urlObj.searchParams.set("p", String(pageNum));
+              } else {
+                urlObj.searchParams.set("page", String(pageNum));
+              }
+            }
+            paginatedUrl = urlObj.toString();
+          } catch {
+            // Fallback: append page parameter
+            paginatedUrl = contextUrl + (contextUrl.includes("?") ? "&" : "?") + "page=" + pageNum;
+          }
+
+          console.log(`%c[CLIENT] 📄 Pagination: going to page ${pageNum} -> ${paginatedUrl}`, "color: #00ffcc; font-weight: bold");
+          
+          const interceptId = generateId();
+          updateConversation(activeConversationId, (c) => ({
+            ...c,
+            messages: [...c.messages, { id: interceptId, role: "assistant" as const, content: `Going to page ${pageNum}~`, timestamp: new Date() }],
+          }));
+          setIsStreaming(true);
+          const thinkId = addThinkingMsg(activeConversationId, `loading page ${pageNum}...`);
+          const capturedConvId = activeConversationId;
+
+          (async () => {
+            try {
+              const res = await fetch(`/api/browse?url=${encodeURIComponent(paginatedUrl)}&maxContent=12000`);
+              const data = await res.json();
+              removeThinkingMsg(capturedConvId, thinkId);
+
+              if (data.error) {
+                updateConversation(capturedConvId, (c) => ({
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === interceptId ? { ...m, content: `Couldn't load page ${pageNum} ;w; ${data.error}` } : m
+                  ),
+                }));
+                setIsStreaming(false);
+                return;
+              }
+
+              // Update tab to new page
+              addTab(capturedConvId, paginatedUrl, `Page ${pageNum} - ${data.meta?.title || "Results"}`);
+
+              // Find video/content links
+              const links: { url: string; text: string }[] = data.links || [];
+              const videoLinks = links.filter((l) => {
+                const u = l.url.toLowerCase();
+                try { const lu = new URL(l.url); if (lu.pathname === "/" || lu.pathname === "") return false; } catch { return false; }
+                if (/spankurbate|rule34comic|exoclick|trafficjunky|juicyads|adglare/i.test(u)) return false;
+                if (u.includes("/login") || u.includes("/register") || u.includes("/signup")) return false;
+                if (/\/(video|watch|view_video|clip)s?\b/i.test(u)) return true;
+                if (/view_video|viewkey|watch\?v=/i.test(u)) return true;
+                return false;
+              });
+
+              const contentLinks = videoLinks.length > 0 ? videoLinks : links.filter((l) => {
+                const t = l.text.toLowerCase();
+                if (t.length < 5 || /^\d+$/.test(t)) return false;
+                if (/\b(login|sign|register|next|prev|page)\b/i.test(t) && t.length < 20) return false;
+                return t.length > 5;
+              });
+
+              if (contentLinks.length > 0) {
+                // Store new results
+                const newResults = contentLinks.slice(0, 30).map((l) => {
+                  let fullUrl = l.url;
+                  if (fullUrl.startsWith("/")) { try { fullUrl = new URL(paginatedUrl).origin + fullUrl; } catch { /* keep */ } }
+                  return { title: l.text, url: fullUrl, snippet: "" };
+                });
+                searchResultsByConv.current[capturedConvId] = newResults;
+
+                const resultList = contentLinks.slice(0, 15).map((l, i) => `${i + 1}. ${l.text}`).join("\n");
+                const resultMsg = `Page ${pageNum} - Found ${contentLinks.length} videos~\n\n${resultList}${contentLinks.length > 15 ? `\n\n...and ${contentLinks.length - 15} more` : ""}\n\nWhich one? Or say "next page" for more~`;
+
+                updateConversation(capturedConvId, (c) => ({
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === interceptId ? { ...m, content: resultMsg, sources: [{ url: paginatedUrl, title: `Page ${pageNum}`, favicon: data.meta?.favicon || "" }] } : m
+                  ),
+                }));
+              } else {
+                updateConversation(capturedConvId, (c) => ({
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === interceptId ? { ...m, content: `Page ${pageNum} doesn't have any more results ;w;` } : m
+                  ),
+                }));
+              }
+              setIsStreaming(false);
+            } catch (e) {
+              console.error("[CLIENT] Pagination failed:", e);
+              removeThinkingMsg(capturedConvId, thinkId);
+              setIsStreaming(false);
+            }
+          })();
+          return; // Don't send to AI
+        }
+      }
+
+      // ── PRE-AI INTERCEPTOR: "Go to [section/category]" on current site ──
+      // Catch "go to the [X] section" or "show me [X] category" and navigate there
+      const sectionMatch = content.match(/(?:go\s+to|show\s+me|open|browse)\s+(?:the\s+)?([a-zA-Z0-9\s]+?)\s+(?:section|category|page|tab)/i);
+      if (sectionMatch) {
+        const sectionName = sectionMatch[1].trim().toLowerCase();
+        const conv = conversations.find((c) => c.id === activeConversationId);
+        let contextUrl = "";
+        
+        if (conv) {
+          const tabs = conv.tabs || [];
+          if (tabs.length > 0) {
+            const activeTab = tabs.find((t) => t.active) || tabs[tabs.length - 1];
+            contextUrl = activeTab.url;
+          }
+        }
+
+        if (contextUrl) {
+          console.log(`%c[CLIENT] 📂 Section navigation: looking for "${sectionName}" on ${contextUrl}`, "color: #00ffcc; font-weight: bold");
+          
+          const interceptId = generateId();
+          updateConversation(activeConversationId, (c) => ({
+            ...c,
+            messages: [...c.messages, { id: interceptId, role: "assistant" as const, content: `Looking for the ${sectionName} section~`, timestamp: new Date() }],
+          }));
+          setIsStreaming(true);
+          const thinkId = addThinkingMsg(activeConversationId, `finding ${sectionName} section...`);
+          const capturedConvId = activeConversationId;
+
+          (async () => {
+            try {
+              // First, browse the current page to find section links
+              const res = await fetch(`/api/browse?url=${encodeURIComponent(contextUrl)}&maxContent=8000`);
+              const data = await res.json();
+              removeThinkingMsg(capturedConvId, thinkId);
+
+              if (data.error) {
+                updateConversation(capturedConvId, (c) => ({
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === interceptId ? { ...m, content: `Couldn't read the page ;w;` } : m
+                  ),
+                }));
+                setIsStreaming(false);
+                return;
+              }
+
+              // Find links matching the section name
+              const links: { url: string; text: string }[] = data.links || [];
+              const sectionLinks = links.filter((l) => {
+                const t = l.text.toLowerCase();
+                const u = l.url.toLowerCase();
+                // Match section name in link text or URL
+                return t.includes(sectionName) || u.includes(sectionName.replace(/\s+/g, "-")) || u.includes(sectionName.replace(/\s+/g, "_"));
+              });
+
+              if (sectionLinks.length > 0) {
+                const sectionLink = sectionLinks[0];
+                let sectionUrl = sectionLink.url;
+                if (sectionUrl.startsWith("/")) {
+                  try { sectionUrl = new URL(contextUrl).origin + sectionUrl; } catch { /* keep */ }
+                }
+
+                console.log(`%c[CLIENT] ✅ Found section: ${sectionLink.text} -> ${sectionUrl}`, "color: #00ff88; font-weight: bold");
+                
+                // Browse the section
+                const sectionRes = await fetch(`/api/browse?url=${encodeURIComponent(sectionUrl)}&maxContent=12000`);
+                const sectionData = await sectionRes.json();
+
+                addTab(capturedConvId, sectionUrl, sectionLink.text);
+
+                if (sectionData.links && sectionData.links.length > 0) {
+                  const sectionContentLinks = sectionData.links.filter((l: { url: string; text: string }) => {
+                    const t = l.text.toLowerCase();
+                    if (t.length < 5) return false;
+                    if (/\b(login|sign|register|home|menu)\b/i.test(t) && t.length < 20) return false;
+                    return true;
+                  });
+
+                  // Store results
+                  const newResults = sectionContentLinks.slice(0, 30).map((l: { url: string; text: string }) => {
+                    let fullUrl = l.url;
+                    if (fullUrl.startsWith("/")) { try { fullUrl = new URL(sectionUrl).origin + fullUrl; } catch { /* keep */ } }
+                    return { title: l.text, url: fullUrl, snippet: "" };
+                  });
+                  searchResultsByConv.current[capturedConvId] = newResults;
+
+                  const resultList = sectionContentLinks.slice(0, 15).map((l: { url: string; text: string }, i: number) => `${i + 1}. ${l.text}`).join("\n");
+                  updateConversation(capturedConvId, (c) => ({
+                    ...c,
+                    messages: c.messages.map((m) =>
+                      m.id === interceptId ? { ...m, content: `Found the ${sectionName} section! Here's what's there~\n\n${resultList}`, sources: [{ url: sectionUrl, title: sectionLink.text, favicon: "" }] } : m
+                    ),
+                  }));
+                } else {
+                  updateConversation(capturedConvId, (c) => ({
+                    ...c,
+                    messages: c.messages.map((m) =>
+                      m.id === interceptId ? { ...m, content: `Found the ${sectionName} section but it seems empty ;w;`, sources: [{ url: sectionUrl, title: sectionLink.text, favicon: "" }] } : m
+                    ),
+                  }));
+                }
+              } else {
+                // Try constructing a URL for the section
+                try {
+                  const baseUrl = new URL(contextUrl).origin;
+                  const guessedUrl = `${baseUrl}/categories/${sectionName.replace(/\s+/g, "-")}`;
+                  updateConversation(capturedConvId, (c) => ({
+                    ...c,
+                    messages: c.messages.map((m) =>
+                      m.id === interceptId ? { ...m, content: `Couldn't find a "${sectionName}" section on this page. Try being more specific or browse manually~` } : m
+                    ),
+                  }));
+                } catch {
+                  updateConversation(capturedConvId, (c) => ({
+                    ...c,
+                    messages: c.messages.map((m) =>
+                      m.id === interceptId ? { ...m, content: `Couldn't find a "${sectionName}" section ;w;` } : m
+                    ),
+                  }));
+                }
+              }
+              setIsStreaming(false);
+            } catch (e) {
+              console.error("[CLIENT] Section navigation failed:", e);
+              removeThinkingMsg(capturedConvId, thinkId);
+              setIsStreaming(false);
+            }
+          })();
+          return; // Don't send to AI
+        }
+      }
+
       // ── PRE-AI INTERCEPTOR: Title-based video requests ──
       // Catch "play this video [TITLE]" or "open [TITLE]" and match against stored search results
       const titlePlayMatch = content.match(/(?:play|watch|open|get|show)\s+(?:this\s+)?(?:video\s+)?(.{10,})/i);
