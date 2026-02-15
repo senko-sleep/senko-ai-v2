@@ -1223,7 +1223,7 @@ app.get("/images", async (req, res) => {
         const googleOffsets = Array.from({ length: 10 }, (_, i) => googleOffset + i * 20);
         const googlePages = await Promise.allSettled(
           googleOffsets.map((off) =>
-            fetch(`https://www.google.com/search?q=${encoded}&tbm=isch&hl=en&start=${off}`, {
+            fetch(`https://www.google.com/search?q=${encoded}&tbm=isch&hl=en&start=${off}&safe=off`, {
               headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml", "Accept-Language": "en-US,en;q=0.9" },
               signal: AbortSignal.timeout(8000),
             }).then((r) => r.text())
