@@ -60,15 +60,23 @@ function CodeBlock({
 function preprocessMarkdown(text: string): string {
   let result = text;
 
-  // 1. Headers: insert \n\n before ## that aren't already at line start
-  //    Matches any non-newline char immediately before #{1,6} followed by a space
+  // 1. Headers: insert \n\n before ## headers that aren't at line start
+  //    e.g. "...text## Header" -> "...text\n\n## Header"
   result = result.replace(/([^\n])(#{1,6} )/g, '$1\n\n$2');
 
-  // 2. Unordered list items: insert \n\n before "- " or "* " that aren't at line start
-  //    Exclude "**" bold markers by requiring the char before the marker is not *
-  result = result.replace(/([^\n*])([-*] )/g, '$1\n\n$2');
+  // 2. Headers running into text: detect where header ends by finding
+  //    a lowercase letter followed immediately by uppercase (camelCase boundary)
+  //    e.g. "## Latest NewsThe world" -> "## Latest News\n\nThe world"
+  result = result.replace(/(#{1,6} .+?)([a-z])([A-Z])/g, '$1$2\n\n$3');
 
-  // 3. Ordered list items: insert \n\n before "1. " etc that aren't at line start
+  // 3. Unordered list items: insert \n\n before "* " that aren't at line start
+  //    Skip if previous char is * (part of ** bold)
+  result = result.replace(/([^\n])(\* )/g, (match, before, listMarker) => {
+    if (before === '*') return match;
+    return before + '\n\n' + listMarker;
+  });
+
+  // 4. Ordered list items: insert \n\n before "1. " etc that aren't at line start
   result = result.replace(/([^\n])(\d+\. )/g, '$1\n\n$2');
 
   return result;
