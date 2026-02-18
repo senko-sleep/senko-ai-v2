@@ -22,7 +22,6 @@ const GROQ_FALLBACK_MODELS = [
   "llama-3.3-70b-versatile",
   "meta-llama/llama-4-maverick-17b-128e-instruct",
   "meta-llama/llama-4-scout-17b-16e-instruct",
-  "moonshotai/kimi-k2-instruct-0905",
   "llama-3.1-8b-instant",
 ];
 
@@ -181,14 +180,19 @@ function withKeepalive(source: ReadableStream<Uint8Array>): ReadableStream<Uint8
 // Fast models first, slow reasoning models last
 const OPENROUTER_FAST_MODELS = [
   "openai/gpt-oss-120b:free",
+  "arcee-ai/arcee-trinity-large:free",
   "meta-llama/llama-3.3-70b-instruct:free",
+  "upstage/solar-pro-3:free",
+  "arcee-ai/trinity-mini:free",
   "stepfun/step-3.5-flash:free",
-  "zhipuai/glm-4.5-air:free",
+  "z-ai/glm-4.5-air:free",
   "nvidia/llama-3.3-nemotron-super-49b-v1:free",
 ];
 
 // Reasoning models — slow to start (long <think> blocks), need longer connection timeout
 const OPENROUTER_REASONING_MODELS = [
+  "openrouter/aurora-alpha",
+  "qwen/qwen3-235b-a22b-thinking-2507",
   "tngtech/deepseek-r1t2-chimera:free",
   "deepseek/deepseek-r1-0528:free",
 ];
