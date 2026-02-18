@@ -19,10 +19,10 @@ function generateId(): string {
 // Strip internal tags from content for display (STATUS, MEMORY, ACTION, think blocks)
 function stripInternalTags(content: string): string {
   return content
-    .replace(/\s*\[STATUS:[^\]]*\]?\s*/gi, " ")
-    .replace(/\s*\[MEMORY:[^\]]*\]?\s*/gi, " ")
-    .replace(/\s*\[ACTION:[^\]]*\]?\s*/gi, " ")
-    .replace(/\s*ACTION:\s*[A-Z_]*:?[^\n]*/gi, " ")
+    .replace(/[^\S\n]*\[STATUS:[^\]]*\]?[^\S\n]*/gi, " ")
+    .replace(/[^\S\n]*\[MEMORY:[^\]]*\]?[^\S\n]*/gi, " ")
+    .replace(/[^\S\n]*\[ACTION:[^\]]*\]?[^\S\n]*/gi, " ")
+    .replace(/[^\S\n]*ACTION:\s*[A-Z_]*:?[^\n]*/gi, " ")
     .replace(/<think>[\s\S]*?<\/think>/g, "")
     .replace(/<think>[\s\S]*$/g, "")
     .replace(/\n{3,}/g, "\n\n")
