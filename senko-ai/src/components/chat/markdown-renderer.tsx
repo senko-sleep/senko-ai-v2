@@ -58,15 +58,19 @@ function CodeBlock({
 }
 
 function preprocessMarkdown(text: string): string {
-  // Ensure ## headers that are glued to preceding text get newlines
-  // e.g. "some text## Header" → "some text\n\n## Header"
-  let result = text.replace(/([^\n])(\n?)(#{1,6}\s)/g, (_, before, nl, hashes) => {
-    if (nl === '\n') return before + '\n\n' + hashes;
-    return before + '\n\n' + hashes;
-  });
-  // Ensure list items (- or * or 1.) glued to preceding text get newlines
-  result = result.replace(/([^\n])\n?([-*]\s)/g, '$1\n\n$2');
-  result = result.replace(/([^\n])\n?(\d+\.\s)/g, '$1\n\n$2');
+  let result = text;
+
+  // 1. Headers: insert \n\n before ## that aren't already at line start
+  //    Matches any non-newline char immediately before #{1,6} followed by a space
+  result = result.replace(/([^\n])(#{1,6} )/g, '$1\n\n$2');
+
+  // 2. Unordered list items: insert \n\n before "- " or "* " that aren't at line start
+  //    Exclude "**" bold markers by requiring the char before the marker is not *
+  result = result.replace(/([^\n*])([-*] )/g, '$1\n\n$2');
+
+  // 3. Ordered list items: insert \n\n before "1. " etc that aren't at line start
+  result = result.replace(/([^\n])(\d+\. )/g, '$1\n\n$2');
+
   return result;
 }
 
