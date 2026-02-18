@@ -44,8 +44,10 @@ export async function POST(req: NextRequest) {
   if (!elResponse.ok) {
     const errText = await elResponse.text();
     console.error("[TTS] ElevenLabs error:", elResponse.status, errText);
+    let detail = errText;
+    try { detail = JSON.parse(errText)?.detail?.message || JSON.parse(errText)?.detail || errText; } catch { /* raw text */ }
     return NextResponse.json(
-      { error: `ElevenLabs error: ${elResponse.status}` },
+      { error: `ElevenLabs ${elResponse.status}: ${detail}` },
       { status: elResponse.status }
     );
   }

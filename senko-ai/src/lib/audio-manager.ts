@@ -6,7 +6,7 @@
 
 import { voiceSynth, VOICE_PRESETS, type VoicePreset } from "./voice-synth";
 
-type AudioState = "idle" | "loading" | "playing";
+type AudioState = "idle" | "loading" | "playing" | "paused";
 type StateListener = (state: AudioState, messageId: string | null) => void;
 
 class AudioManager {
@@ -17,8 +17,13 @@ class AudioManager {
   constructor() {
     if (voiceSynth) {
       voiceSynth.subscribe((synthState) => {
-        const newState = synthState === "speaking" ? "playing" : "idle";
-        this.setState(newState, newState === "playing" ? this.currentMessageId : null);
+        if (synthState === "speaking") {
+          this.setState("playing", this.currentMessageId);
+        } else if (synthState === "paused") {
+          this.setState("paused", this.currentMessageId);
+        } else {
+          this.setState("idle", null);
+        }
       });
     }
   }
@@ -87,6 +92,20 @@ class AudioManager {
       this.setState("idle", null);
       throw error;
     }
+  }
+
+  /**
+   * Pause current playback
+   */
+  pause(): void {
+    if (voiceSynth) voiceSynth.pause();
+  }
+
+  /**
+   * Resume paused playback
+   */
+  resume(): void {
+    if (voiceSynth) voiceSynth.resume();
   }
 
   /**

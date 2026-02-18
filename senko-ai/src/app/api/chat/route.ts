@@ -182,7 +182,6 @@ const OPENROUTER_FAST_MODELS = [
   "openai/gpt-oss-120b:free",
   "arcee-ai/arcee-trinity-large:free",
   "meta-llama/llama-3.3-70b-instruct:free",
-  "upstage/solar-pro-3:free",
   "arcee-ai/trinity-mini:free",
   "stepfun/step-3.5-flash:free",
   "z-ai/glm-4.5-air:free",

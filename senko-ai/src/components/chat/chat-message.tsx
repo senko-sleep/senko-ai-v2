@@ -81,7 +81,13 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
   const hasWebEmbeds = message.webEmbeds && message.webEmbeds.length > 0;
   const hasMap = !!message.mapEmbed;
   const hasAttachments = hasSources || hasImages || hasVideos || hasWebEmbeds || hasMap;
-  const isRich = !isUser;
+function hasRichContent(content: string): boolean {
+  // Only trigger markdown rendering for genuinely structured content.
+  // Deliberately excludes inline bold/italic to avoid tainting casual chat and roleplay emotes.
+  return /```|^#{1,6}\s|^\s*[-*]\s\S|^\s*\d+\.\s\S|\|.+\|/m.test(content);
+}
+
+  const isRich = !isUser && hasRichContent(message.content);
   const isShort = message.content.length < 80 && !message.content.includes("\n");
 
   // -- Thinking state (ghost thoughts / loading process) --
@@ -191,11 +197,15 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
             )}
 
             {/* Content */}
-            {message.content && (
+            {message.content && (isRich ? (
               <div className="text-[15px] leading-[1.75] text-white/95">
                 <MarkdownRenderer content={message.content} />
               </div>
-            )}
+            ) : (
+              <p className="whitespace-pre-wrap text-[15px] leading-[1.7] text-white/95">
+                {message.content}
+              </p>
+            ))}
           </div>
         )}
 

@@ -80,7 +80,7 @@ function cleanTextForTTS(text: string): string {
 // VOICE SYNTHESIZER CLASS — ElevenLabs via /api/tts proxy
 // ═══════════════════════════════════════════════════════════════════════════
 
-export type SynthState = "idle" | "speaking";
+export type SynthState = "idle" | "speaking" | "paused";
 type StateListener = (state: SynthState) => void;
 
 class VoiceSynthesizer {
@@ -122,6 +122,33 @@ class VoiceSynthesizer {
     }
   }
 
+  // -- Web Speech API fallback (free, built into browser) -------------------
+  private currentUtterance: SpeechSynthesisUtterance | null = null;
+
+  private speakWithWebSpeech(text: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!window.speechSynthesis) {
+        reject(new Error("Web Speech API not available"));
+        return;
+      }
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 1.05;
+      utterance.pitch = 1.1;
+      utterance.volume = 1;
+      // Pick a female voice if available
+      const voices = window.speechSynthesis.getVoices();
+      const female = voices.find(
+        (v) => v.lang.startsWith("en") && /female|woman|girl|zira|hazel|susan|samantha/i.test(v.name)
+      ) || voices.find((v) => v.lang.startsWith("en")) || voices[0];
+      if (female) utterance.voice = female;
+
+      this.currentUtterance = utterance;
+      utterance.onend = () => { this.currentUtterance = null; resolve(); };
+      utterance.onerror = (e) => { this.currentUtterance = null; reject(new Error(e.error)); };
+      window.speechSynthesis.speak(utterance);
+    });
+  }
+
   async speak(text: string): Promise<void> {
     this.stop();
     this.stopRequested = false;
@@ -146,7 +173,15 @@ class VoiceSynthesizer {
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: res.statusText }));
-        throw new Error(err.error || `TTS request failed: ${res.status}`);
+        const status = res.status;
+        // 429 = quota exceeded, 401/403 = key invalid — fall back to Web Speech
+        if (status === 429 || status === 401 || status === 403) {
+          console.warn(`[VoiceSynth] ElevenLabs ${status}, falling back to Web Speech API`);
+          if (this.stopRequested) { this.setState("idle"); return; }
+          await this.speakWithWebSpeech(clean);
+          return;
+        }
+        throw new Error(err.error || `TTS request failed: ${status}`);
       }
 
       if (this.stopRequested) { this.setState("idle"); return; }
@@ -177,12 +212,36 @@ class VoiceSynthesizer {
     }
   }
 
+  pause() {
+    if (this.state !== "speaking") return;
+    if (this.currentAudio) {
+      this.currentAudio.pause();
+    } else if (this.currentUtterance && window.speechSynthesis) {
+      window.speechSynthesis.pause();
+    }
+    this.setState("paused");
+  }
+
+  resume() {
+    if (this.state !== "paused") return;
+    if (this.currentAudio) {
+      this.currentAudio.play().catch(() => {});
+    } else if (window.speechSynthesis) {
+      window.speechSynthesis.resume();
+    }
+    this.setState("speaking");
+  }
+
   stop() {
     this.stopRequested = true;
     if (this.currentAudio) {
       this.currentAudio.pause();
       this.currentAudio = null;
     }
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    this.currentUtterance = null;
     this.revokeObjectUrl();
     this.setState("idle");
   }

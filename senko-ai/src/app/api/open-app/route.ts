@@ -4,8 +4,14 @@ import os from "os";
 
 export const runtime = "nodejs";
 
-// Known app name -> executable mappings per platform (fallback to direct launch if not found)
-// Windows Store/UWP apps need special handling - use URI protocols or explorer shell:AppsFolder
+// Builds a PowerShell command that searches both user and common Start Menu folders
+// for a .lnk matching the display name, then launches it — no Store dependency.
+function psSearch(displayName: string): string {
+  const escaped = displayName.replace(/'/g, "''");
+  return `powershell -Command "$n='${escaped}';$dirs=@([Environment]::GetFolderPath('StartMenu'),[Environment]::GetFolderPath('CommonStartMenu'));$lnk=$dirs|ForEach-Object{Get-ChildItem -Path $_ -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue}|Where-Object{$_.BaseName -like \\"*$n*\\"}|Select-Object -First 1;if($lnk){Start-Process $lnk.FullName}else{Start-Process '${escaped}'}"`;
+}
+
+// Known app name -> executable mappings per platform
 const APP_COMMANDS: Record<string, Record<string, string>> = {
   // Windows - mix of traditional apps and UWP/Store apps
   win32: {
@@ -37,22 +43,32 @@ const APP_COMMANDS: Record<string, Record<string, string>> = {
     "brave browser": 'start "" "brave"',
     vscode: 'start "" "code"',
     "visual studio code": 'start "" "code"',
-    // UWP/Store apps - use URI protocols
-    spotify: 'start spotify:',
-    discord: 'start discord:',
-    steam: 'start steam:',
-    settings: 'start ms-settings:',
-    "microsoft store": 'start ms-windows-store:',
-    store: 'start ms-windows-store:',
-    teams: 'start msteams:',
-    "microsoft teams": 'start msteams:',
-    xbox: 'start xbox:',
-    photos: 'start ms-photos:',
-    mail: 'start outlookmail:',
-    calendar: 'start outlookcal:',
-    "to do": 'start ms-todo:',
-    todo: 'start ms-todo:',
-    "microsoft to do": 'start ms-todo:',
+    // Apps found via Start Menu path search (no Store dependency)
+    spotify: psSearch("Spotify"),
+    discord: psSearch("Discord"),
+    steam: psSearch("Steam"),
+    settings: 'start "" "ms-settings:"',
+    "microsoft store": 'start "" "ms-windows-store:"',
+    store: 'start "" "ms-windows-store:"',
+    teams: psSearch("Microsoft Teams"),
+    "microsoft teams": psSearch("Microsoft Teams"),
+    xbox: psSearch("Xbox"),
+    photos: psSearch("Photos"),
+    mail: psSearch("Mail"),
+    calendar: psSearch("Calendar"),
+    "to do": psSearch("Microsoft To Do"),
+    todo: psSearch("Microsoft To Do"),
+    "microsoft to do": psSearch("Microsoft To Do"),
+    slack: psSearch("Slack"),
+    zoom: psSearch("Zoom"),
+    telegram: psSearch("Telegram"),
+    whatsapp: psSearch("WhatsApp"),
+    figma: psSearch("Figma"),
+    "epic games": psSearch("Epic Games Launcher"),
+    epic: psSearch("Epic Games Launcher"),
+    blender: psSearch("Blender"),
+    gimp: psSearch("GIMP"),
+    audacity: psSearch("Audacity"),
   },
   // macOS
   darwin: {
@@ -114,35 +130,27 @@ export async function POST(req: NextRequest) {
 
       if (platform === "win32") {
         // Windows: Try multiple methods in sequence
-        // 1. Try URI protocol (works for most Store apps)
-        // 2. Try direct exe name
-        // 3. Try PowerShell Start-Process
+        // 1. Direct exe name (fastest, works for apps on PATH)
+        // 2. PowerShell Start Menu search (finds installed apps by display name without Store)
+        // 3. explorer shell:AppsFolder search (UWP fallback)
         return new Promise<Response>((resolve) => {
-          // First try URI protocol (e.g., "spotify:" for Spotify)
-          const uriCommand = `start ${safeApp}:`;
-          exec(uriCommand, { timeout: 5000 }, (err1) => {
+          // First try direct exe name
+          const exeCommand = `start "" "${safeApp}"`;
+          exec(exeCommand, { timeout: 5000 }, (err1) => {
             if (!err1) {
-              resolve(Response.json({ success: true, app: safeApp, platform, command: uriCommand, method: "uri" }));
+              resolve(Response.json({ success: true, app: safeApp, platform, command: exeCommand, method: "exe" }));
               return;
             }
-            // URI failed, try direct exe
-            const exeCommand = `start "" "${safeApp}"`;
-            exec(exeCommand, { timeout: 5000 }, (err2) => {
+            // Exe failed — search Start Menu shortcuts (.lnk) by display name
+            const psCommand = `powershell -Command "$name = '${safeApp}'; $dirs = @([Environment]::GetFolderPath('StartMenu'), [Environment]::GetFolderPath('CommonStartMenu')); $lnk = $dirs | ForEach-Object { Get-ChildItem -Path $_ -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue } | Where-Object { $_.BaseName -like \\"*$name*\\" } | Select-Object -First 1; if ($lnk) { Start-Process $lnk.FullName } else { Start-Process '${safeApp}' }"`;
+            exec(psCommand, { timeout: 10000 }, (err2) => {
               if (!err2) {
-                resolve(Response.json({ success: true, app: safeApp, platform, command: exeCommand, method: "exe" }));
-                return;
+                resolve(Response.json({ success: true, app: safeApp, platform, command: psCommand, method: "startmenu" }));
+              } else {
+                resolve(Response.json({
+                  error: `Could not open "${app}". Tried direct launch and Start Menu search.`,
+                }, { status: 400 }));
               }
-              // Exe failed, try PowerShell with wildcard search in Start Menu
-              const psCommand = `powershell -Command "Start-Process '${safeApp}'"`;
-              exec(psCommand, { timeout: 8000 }, (err3) => {
-                if (!err3) {
-                  resolve(Response.json({ success: true, app: safeApp, platform, command: psCommand, method: "powershell" }));
-                } else {
-                  resolve(Response.json({
-                    error: `Could not open "${app}". Tried URI protocol, direct launch, and PowerShell.`,
-                  }, { status: 400 }));
-                }
-              });
             });
           });
         });

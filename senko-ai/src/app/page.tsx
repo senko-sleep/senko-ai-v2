@@ -4,6 +4,7 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { Sidebar } from "@/components/sidebar/sidebar";
 import { ChatArea } from "@/components/chat/chat-area";
+import { TtsPlayerBar } from "@/components/chat/tts-player-bar";
 import { useBrowserInfo } from "@/hooks/use-browser-info";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useLocation } from "@/hooks/use-location";
@@ -3808,6 +3809,7 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
           )}
         </div>
       </div>
+      <TtsPlayerBar />
     </div>
   );
 }
