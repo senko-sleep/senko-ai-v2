@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Pencil, Check, Copy, RotateCcw, Globe, AlertTriangle, Grid3X3 } from "lucide-react";
+import { ReadAloudButton } from "./read-aloud-button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { MarkdownRenderer } from "./markdown-renderer";
@@ -90,17 +91,17 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
   if (isThinking) {
     return (
       <div className="flex w-full px-3 py-2 mb-1 justify-start sm:px-6 relative z-0">
-        <div className="thinking-shimmer thinking-glow rounded-2xl rounded-bl-sm border border-[var(--senko-accent)]/[0.12] px-5 py-3.5 w-fit max-w-[85%] sm:px-6 sm:py-4 sm:max-w-[70%] animate-slide-in">
+        <div className="thinking-shimmer rounded-2xl rounded-bl-sm border border-white/[0.06] px-5 py-3.5 w-fit max-w-[85%] sm:px-6 sm:py-4 sm:max-w-[70%] animate-slide-in">
           <div className="flex items-center gap-3.5">
             <span className="flex items-center gap-1.5">
-              <span className="thinking-dot inline-block h-2 w-2 rounded-full bg-[var(--senko-accent)]" style={{ animationDelay: "0ms" }} />
-              <span className="thinking-dot inline-block h-2 w-2 rounded-full bg-[#ffb347]" style={{ animationDelay: "0.2s" }} />
-              <span className="thinking-dot inline-block h-2 w-2 rounded-full bg-[var(--senko-accent)]" style={{ animationDelay: "0.4s" }} />
+              <span className="thinking-dot inline-block h-2 w-2 rounded-full bg-zinc-500" style={{ animationDelay: "0ms" }} />
+              <span className="thinking-dot inline-block h-2 w-2 rounded-full bg-zinc-500" style={{ animationDelay: "0.2s" }} />
+              <span className="thinking-dot inline-block h-2 w-2 rounded-full bg-zinc-500" style={{ animationDelay: "0.4s" }} />
             </span>
             {message.content ? (
-              <span className="text-[14px] text-[var(--senko-accent)]/80 font-medium tracking-wide">{message.content}</span>
+              <span className="text-[14px] text-zinc-400 font-medium tracking-wide">{message.content}</span>
             ) : (
-              <span className="text-[14px] text-[var(--senko-accent)]/80 font-medium tracking-wide">thinking...</span>
+              <span className="text-[14px] text-zinc-400 font-medium tracking-wide">thinking...</span>
             )}
           </div>
         </div>
@@ -272,10 +273,13 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
       </div>
 
       {/* Action bar — outside bubble so overflow-hidden doesn't clip it */}
-      <div className="flex gap-2 mt-1 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className="flex gap-2 mt-1 ml-2 opacity-60 group-hover:opacity-100 transition-opacity">
         <button onClick={handleCopy} className="rounded-lg p-2 text-zinc-600 hover:text-zinc-400 hover:bg-white/[0.06] transition-all">
           {copied ? <Check className="h-4 w-4 text-[var(--senko-accent)]" /> : <Copy className="h-4 w-4" />}
         </button>
+        {message.content && (
+          <ReadAloudButton messageId={message.id} text={message.content} />
+        )}
         {onRegenerate && (
           <button onClick={() => onRegenerate(message.id)} className="rounded-lg p-2 text-zinc-600 hover:text-zinc-400 hover:bg-white/[0.06] transition-all">
             <RotateCcw className="h-4 w-4" />

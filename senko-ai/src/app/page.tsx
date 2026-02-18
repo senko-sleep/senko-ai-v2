@@ -15,6 +15,19 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
 }
 
+// Strip internal tags from content for display (STATUS, MEMORY, ACTION, think blocks)
+function stripInternalTags(content: string): string {
+  return content
+    .replace(/\s*\[STATUS:[^\]]*\]?\s*/gi, " ")
+    .replace(/\s*\[MEMORY:[^\]]*\]?\s*/gi, " ")
+    .replace(/\s*\[ACTION:[^\]]*\]?\s*/gi, " ")
+    .replace(/\s*ACTION:\s*[A-Z_]*:?[^\n]*/gi, " ")
+    .replace(/<think>[\s\S]*?<\/think>/g, "")
+    .replace(/<think>[\s\S]*$/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 const defaultSettings: AppSettings = {
   notifications: false,
   location: false,
@@ -23,6 +36,7 @@ const defaultSettings: AppSettings = {
   clipboard: false,
   fontSize: "medium",
   sendWithEnter: true,
+  voicePreset: "senko",
 };
 
 const STORAGE_KEYS = {
@@ -310,35 +324,48 @@ async function streamChat(
     let buffer = "";
     let chunkCount = 0;
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        console.log(`%c[stream:${id}] ✅ Stream complete (${chunkCount} chunks)`, "color: #00ff88; font-weight: bold");
-        break;
-      }
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          console.log(`%c[stream:${id}] ✅ Stream complete (${chunkCount} chunks)`, "color: #00ff88; font-weight: bold");
+          break;
+        }
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n\n");
-      buffer = lines.pop() || "";
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
 
-      for (const line of lines) {
-        const trimmed = line.replace(/^data: /, "").trim();
-        if (!trimmed || trimmed === "[DONE]") continue;
-        try {
-          const parsed = JSON.parse(trimmed);
-          if (parsed.error) {
-            console.error(`%c[stream:${id}] ❌ Stream error:`, "color: #ff4444", parsed.error);
-            onError(parsed.error);
-            return;
+        for (const line of lines) {
+          // Skip SSE keepalive comment lines (": ping")
+          if (line.startsWith(":")) continue;
+          const trimmed = line.replace(/^data: /, "").trim();
+          if (!trimmed || trimmed === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(trimmed);
+            if (parsed.error) {
+              console.error(`%c[stream:${id}] ❌ Stream error:`, "color: #ff4444", parsed.error);
+              onError(parsed.error);
+              return;
+            }
+            if (parsed.content) {
+              chunkCount++;
+              onChunk(parsed.content);
+            }
+          } catch {
+            // skip malformed
           }
-          if (parsed.content) {
-            chunkCount++;
-            onChunk(parsed.content);
-          }
-        } catch {
-          // skip malformed
         }
       }
+    } catch (streamErr) {
+      // If we already received content, treat mid-stream network errors as graceful completion
+      // (ERR_INCOMPLETE_CHUNKED_ENCODING after partial response)
+      if (chunkCount > 0 && !signal?.aborted) {
+        console.warn(`%c[stream:${id}] ⚠️ Stream cut short after ${chunkCount} chunks — treating as done`, "color: #ffaa00; font-weight: bold", streamErr);
+        finish();
+        return;
+      }
+      throw streamErr;
     }
     finish();
   } catch (err) {
@@ -421,61 +448,6 @@ export default function Home() {
       );
     },
     []
-  );
-
-  const addTab = useCallback(
-    (convId: string, url: string, title?: string) => {
-      let favicon = "";
-      try { favicon = `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}&sz=16`; } catch { /* skip */ }
-      const tab: SenkoTab = {
-        id: generateId(),
-        url,
-        title: title || (() => { try { return new URL(url).hostname; } catch { return url; } })(),
-        favicon,
-        active: true,
-        openedAt: Date.now(),
-      };
-      updateConversation(convId, (conv) => ({
-        ...conv,
-        tabs: [...(conv.tabs || []).map((t) => ({ ...t, active: false })), tab],
-      }));
-      return tab.id;
-    },
-    [updateConversation]
-  );
-
-  const removeTab = useCallback(
-    (convId: string, tabId: string) => {
-      updateConversation(convId, (conv) => {
-        const filtered = (conv.tabs || []).filter((t) => t.id !== tabId);
-        // If we removed the active tab, activate the last one
-        if (filtered.length > 0 && !filtered.some((t) => t.active)) {
-          filtered[filtered.length - 1].active = true;
-        }
-        return { ...conv, tabs: filtered };
-      });
-    },
-    [updateConversation]
-  );
-
-  const switchTab = useCallback(
-    (convId: string, tabId: string) => {
-      updateConversation(convId, (conv) => ({
-        ...conv,
-        tabs: (conv.tabs || []).map((t) => ({ ...t, active: t.id === tabId })),
-      }));
-    },
-    [updateConversation]
-  );
-
-  const getTabsList = useCallback(
-    (convId: string): string => {
-      const conv = conversations.find((c) => c.id === convId);
-      const tabs = conv?.tabs || [];
-      if (tabs.length === 0) return "No tabs open.";
-      return tabs.map((t, i) => `${i + 1}. ${t.active ? "[ACTIVE] " : ""}${t.title} - ${t.url}`).join("\n");
-    },
-    [conversations]
   );
 
   const addThinkingMsg = useCallback(
@@ -579,7 +551,7 @@ export default function Home() {
             updateConversation(convId, (conv) => ({
               ...conv,
               messages: conv.messages.map((m) =>
-                m.id === summaryId ? { ...m, content: m.content + chunk } : m
+                m.id === summaryId ? { ...m, content: stripInternalTags(m.content + chunk) } : m
               ),
             }));
           },
@@ -642,11 +614,21 @@ export default function Home() {
           updateConversation(convId, (conv) => ({
             ...conv,
             messages: conv.messages.map((m) =>
-              m.id === welcomeId ? { ...m, content: m.content + chunk } : m
+              m.id === welcomeId ? { ...m, content: stripInternalTags(m.content + chunk) } : m
             ),
           }));
         },
-        () => { setIsStreaming(false); abortRef.current = null; },
+        () => {
+          // Final cleanup to ensure all tags are stripped
+          updateConversation(convId, (conv) => ({
+            ...conv,
+            messages: conv.messages.map((m) =>
+              m.id === welcomeId ? { ...m, content: stripInternalTags(m.content) } : m
+            ),
+          }));
+          setIsStreaming(false);
+          abortRef.current = null;
+        },
         () => { setIsStreaming(false); abortRef.current = null; },
         abortRef.current.signal
       );
@@ -655,7 +637,7 @@ export default function Home() {
       setIsStreaming(false);
       abortRef.current = null;
     }
-  }, [addThinkingMsg, removeThinkingMsg, updateConversation, browserInfo, location]);
+  }, [addThinkingMsg, removeThinkingMsg, updateConversation, browserInfo, location, getMemoryContext]);
 
   const screenshotPage = useCallback(
     async (convId: string, url: string) => {
@@ -729,7 +711,7 @@ export default function Home() {
           updateConversation(convId, (conv) => ({
             ...conv,
             messages: conv.messages.map((m) =>
-              m.id === welcomeId ? { ...m, content: m.content + chunk } : m
+              m.id === welcomeId ? { ...m, content: stripInternalTags(m.content + chunk) } : m
             ),
           }));
         },
@@ -755,7 +737,7 @@ export default function Home() {
       const content = contentToParse;
       console.log(`%c[processActions] \u{1F4DD} Message content length: ${content.length}`, "color: #cc88ff", { fromParam: !!finalContent, preview: content.slice(0, 80) });
       // Match both [ACTION:TYPE:value] and malformed [TYPE:value] patterns
-      const actionRegex = /\[ACTION:(OPEN_URL|SEARCH|IMAGE|OPEN_RESULT|OPEN_APP|SCREENSHOT|EMBED|SCRAPE_IMAGES|READ_URL|BROWSE|CLOSE_TAB|SWITCH_TAB|LIST_TABS|CLICK_IN_TAB|OPEN_TAB):([^\]]+)\]/g;
+      const actionRegex = /\[ACTION:(OPEN_URL|SEARCH|IMAGE|OPEN_RESULT|OPEN_APP|SCREENSHOT|EMBED|SCRAPE_IMAGES|READ_URL|BROWSE):([^\]]+)\]/g;
       let match;
       const actions: { type: string; value: string }[] = [];
       while ((match = actionRegex.exec(content)) !== null) {
@@ -810,7 +792,7 @@ export default function Home() {
         .replace(/\n{3,}/g, "\n\n")
         .trim();
       // For nav actions, keep the message concise but never empty — user should always see what was done
-      const hasNavAction = actions.some((a) => ["OPEN_URL", "EMBED", "OPEN_RESULT", "OPEN_APP", "SCREENSHOT", "OPEN_TAB"].includes(a.type));
+      const hasNavAction = actions.some((a) => ["OPEN_URL", "EMBED", "OPEN_RESULT", "OPEN_APP", "SCREENSHOT"].includes(a.type));
       if (hasNavAction && cleanContent.length > 200) {
         const firstLine = cleanContent.split(/\n/)[0].trim();
         cleanContent = firstLine.length > 10 ? firstLine : cleanContent.slice(0, 150).trim();
@@ -916,7 +898,7 @@ export default function Home() {
           const thinkId = addThinkingMsg(convId, `finding the real link on ${parsed.hostname}...`);
 
           // Use /api/browse for JS-heavy sites to get accurate rendered links
-          const isJsHeavy = /\b(xvideos|pornhub|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|rule34video|twitter|x\.com|reddit|instagram|tiktok)\b/i.test(fetchUrl);
+          const isJsHeavy = /\b(xvideos|pornhub|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|rule34video|dailymotion|vimeo|bitchute|rumble|streamable|twitch|tiktok|instagram|twitter|x\.com|reddit|facebook)\b/i.test(fetchUrl);
           const res = await fetch(`${isJsHeavy ? "/api/browse" : "/api/url"}?url=${encodeURIComponent(fetchUrl)}&maxContent=8000`);
           const data = await res.json();
           removeThinkingMsg(convId, thinkId);
@@ -924,7 +906,6 @@ export default function Home() {
           if (data.error) {
             console.error("[FABRICATION] Page fetch failed:", data.error);
             window.open(baseUrl, "_blank", "noopener,noreferrer");
-            addTab(convId, baseUrl);
             updateConversation(convId, (c) => ({
               ...c,
               messages: c.messages.map((m) =>
@@ -1077,7 +1058,6 @@ export default function Home() {
             console.log(`%c[FABRICATION] ✅ Found item: ${targetLink.text} -> ${targetUrl}${bestMatch ? " (title-matched)" : ` (#${targetIndex + 1})`}`, "color: #00ff88; font-weight: bold");
             try {
               window.open(targetUrl, "_blank", "noopener,noreferrer");
-              addTab(convId, targetUrl, targetLink.text);
             } catch (e) {
               console.error("[FABRICATION] Failed to open:", e);
             }
@@ -1094,7 +1074,6 @@ export default function Home() {
           } else {
             // No content links found, open the base page
             window.open(fetchUrl, "_blank", "noopener,noreferrer");
-            addTab(convId, fetchUrl);
             updateConversation(convId, (c) => ({
               ...c,
               messages: c.messages.map((m) =>
@@ -1141,7 +1120,6 @@ export default function Home() {
             try {
               window.open(url, "_blank", "noopener,noreferrer");
               console.log(`%c[BROWSE] ✅ Window opened`, "color: #00ff88", url);
-              addTab(convId, url);
               // Queue for text scraping (skip video sites — they get deep video extraction instead)
               if (!url.includes("google.com/search") && !url.includes("youtube.com/results") && !ytId && !isVideoSiteUrl) {
                 console.log(`%c[BROWSE] 📄 Queuing page for scrape`, "color: #88ccff", url);
@@ -1161,7 +1139,7 @@ export default function Home() {
           console.log(`%c[IMAGE] 🖼️ Adding inline image`, "color: #ff66cc", { url: parts[0], alt: parts[1] });
           images.push({ url: parts[0].trim(), alt: parts[1]?.trim() });
         }
-        // VIDEO action removed -- AI was generating fake URLs
+        // VIDEO action removed — AI was generating fake URLs
         // YouTube embeds still work automatically from real OPEN_URL watch links
         if (action.type === "OPEN_RESULT") {
           const idx = parseInt(action.value, 10) - 1;
@@ -1170,7 +1148,6 @@ export default function Home() {
           if (results[idx]) {
             try {
               window.open(results[idx].url, "_blank", "noopener,noreferrer");
-              addTab(convId, results[idx].url, results[idx].title);
               urlsToScrape.push(results[idx].url);
               console.log(`%c[BROWSE] ✅ Opened result`, "color: #00ff88", results[idx].url);
             } catch (e) { console.error(`%c[BROWSE] ❌ Failed`, "color: #ff4444", e); }
@@ -1322,7 +1299,6 @@ export default function Home() {
                 // Also open the page in a new tab so user can watch there if inline doesn't work
                 try {
                   window.open(action.value, "_blank", "noopener,noreferrer");
-                  addTab(convId, action.value, data.meta?.title || "Video");
                 } catch (e) { console.error("[READ_URL] Failed to open tab:", e); }
 
                 updateConversation(convId, (conv) => ({
@@ -1365,17 +1341,17 @@ export default function Home() {
                   [{ role: "user" as const, content: `The user asked: "${lastUserMsg}"\n\nI found the video page: ${data.meta?.title || action.value}\n\nDirect video sources extracted:\n${videoList}\n\nThe video is ALREADY playing inline in the chat and the page is open in a new tab. Just write a SHORT, cheerful confirmation (1-2 sentences max). Do NOT use any action tags — everything is already done. Do NOT list URLs or technical details.` }],
                   buildSystemPrompt(browserInfo, location, getMemoryContext()),
                   (chunk) => {
-                    updateConversation(convId, (c) => ({
-                      ...c,
-                      messages: c.messages.map((m) =>
-                        m.id === followUpId ? { ...m, content: m.content + chunk } : m
+                    updateConversation(convId, (conv) => ({
+                      ...conv,
+                      messages: conv.messages.map((m) =>
+                        m.id === followUpId ? { ...m, content: stripInternalTags(m.content + chunk) } : m
                       ),
                     }));
                   },
                   () => {
-                    updateConversation(convId, (c) => ({
-                      ...c,
-                      messages: c.messages.map((m) =>
+                    updateConversation(convId, (conv) => ({
+                      ...conv,
+                      messages: conv.messages.map((m) =>
                         m.id === followUpId ? (() => {
                           const { cleanText, extractedSources } = parseAIOutput(m.content);
                           return { ...m, content: cleanText, sources: extractedSources.length > 0 ? extractedSources : m.sources };
@@ -1397,7 +1373,6 @@ export default function Home() {
                 console.log(`%c[READ_URL] 🎬 Video page but couldn't extract sources — opening in new tab as fallback`, "color: #ffaa00; font-weight: bold");
                 try {
                   window.open(action.value, "_blank", "noopener,noreferrer");
-                  addTab(convId, action.value, data.meta?.title || "Video");
                 } catch (e) { console.error("[READ_URL] Failed to open tab:", e); }
               }
 
@@ -1457,7 +1432,7 @@ export default function Home() {
                   updateConversation(convId, (conv) => ({
                     ...conv,
                     messages: conv.messages.map((m) =>
-                      m.id === followUpId ? { ...m, content: m.content + chunk } : m
+                      m.id === followUpId ? { ...m, content: stripInternalTags(m.content + chunk) } : m
                     ),
                   }));
                 },
@@ -1513,269 +1488,9 @@ export default function Home() {
             resolveFabricatedUrl(embedUrl, messageId, embedTitle);
           } else if (ytId) {
             videos.push({ url: embedUrl, platform: "youtube", embedId: ytId, title: embedTitle });
-            addTab(convId, embedUrl, embedTitle);
           } else {
             webEmbeds.push({ url: embedUrl, title: embedTitle });
-            addTab(convId, embedUrl, embedTitle);
           }
-        }
-        if (action.type === "CLOSE_TAB") {
-          const val = action.value.trim();
-          const conv = conversations.find((c) => c.id === convId);
-          const tabs = conv?.tabs || [];
-          // Match by number (1-indexed) or by URL/title substring
-          const idx = parseInt(val, 10);
-          let tabToClose: SenkoTab | undefined;
-          if (!isNaN(idx) && idx >= 1 && idx <= tabs.length) {
-            tabToClose = tabs[idx - 1];
-          } else {
-            tabToClose = tabs.find((t) => t.url.includes(val) || t.title.toLowerCase().includes(val.toLowerCase()));
-          }
-          if (tabToClose) {
-            removeTab(convId, tabToClose.id);
-            console.log(`%c[TAB] ❌ Closed tab`, "color: #ff6666", tabToClose.title);
-          }
-        }
-        if (action.type === "SWITCH_TAB") {
-          const val = action.value.trim();
-          const conv = conversations.find((c) => c.id === convId);
-          const tabs = conv?.tabs || [];
-          const idx = parseInt(val, 10);
-          let tabToSwitch: SenkoTab | undefined;
-          if (!isNaN(idx) && idx >= 1 && idx <= tabs.length) {
-            tabToSwitch = tabs[idx - 1];
-          } else {
-            tabToSwitch = tabs.find((t) => t.url.includes(val) || t.title.toLowerCase().includes(val.toLowerCase()));
-          }
-          if (tabToSwitch) {
-            switchTab(convId, tabToSwitch.id);
-            console.log(`%c[TAB] 🔄 Switched to tab`, "color: #00ccff", tabToSwitch.title);
-          }
-        }
-        if (action.type === "LIST_TABS") {
-          const tabsList = getTabsList(convId);
-          console.log(`%c[TAB] 📋 Listing tabs`, "color: #88ccff", tabsList);
-          // Append tab list to the message content
-          updateConversation(convId, (conv) => ({
-            ...conv,
-            messages: conv.messages.map((m) =>
-              m.id === messageId ? { ...m, content: (m.content ? m.content + "\n\n" : "") + "**Open Tabs:**\n" + tabsList } : m
-            ),
-          }));
-        }
-        if (action.type === "CLICK_IN_TAB") {
-          // Read the active tab's page, find the matching link, then READ that target page
-          // and feed it back to the AI for further action chaining (multi-step navigation)
-          const conv = conversations.find((c) => c.id === convId);
-          const activeTab = (conv?.tabs || []).find((t) => t.active);
-          if (activeTab) {
-            const linkText = action.value.trim();
-            console.log(`%c[TAB] 🖱️ Clicking link in tab`, "color: #ff9900", { tab: activeTab.title, link: linkText });
-            (async () => {
-              const thinkId = addThinkingMsg(convId, `finding "${linkText}" on ${activeTab.title}...`);
-              try {
-                // Step 1: Read the current page to find the link
-                const res = await fetch(`/api/url?url=${encodeURIComponent(activeTab.url)}&maxContent=8000`);
-                const data = await res.json();
-                const links: { url: string; text: string }[] = data.links || [];
-                // Find the best matching link — try exact substring first, then fuzzy word matching
-                const lowerText = linkText.toLowerCase();
-                const match = links.find((l) => l.text.toLowerCase().includes(lowerText)) ||
-                  links.find((l) => l.url.toLowerCase().includes(lowerText)) ||
-                  links.find((l) => {
-                    const words = lowerText.split(/\s+/).filter(w => w.length > 2);
-                    const lt = l.text.toLowerCase();
-                    return words.length > 0 && words.every(w => lt.includes(w));
-                  });
-
-                if (!match) {
-                  removeThinkingMsg(convId, thinkId);
-                  // Feed available links back to AI so it can pick the right one
-                  const availableLinks = links.slice(0, 30).map((l, i) => `${i + 1}. [${l.text}](${l.url})`).join("\n");
-                  const followUpId = generateId();
-                  updateConversation(convId, (conv2) => ({
-                    ...conv2,
-                    messages: [...conv2.messages, {
-                      id: followUpId,
-                      role: "assistant" as const,
-                      content: "",
-                      timestamp: new Date(),
-                    }],
-                  }));
-                  const followUpAbort = new AbortController();
-                  abortRef.current = followUpAbort;
-                  setIsStreaming(true);
-                  const userMsg = conv?.messages.filter((m) => m.role === "user").pop()?.content || "";
-                  streamChat(
-                    [{ role: "user" as const, content: `The user asked: "${userMsg}"\n\nI tried to find a link matching "${linkText}" on ${activeTab.url} but couldn't find an exact match.\n\nHere are the links available on the page:\n${availableLinks}\n\nLook at these links and find the one that best matches what the user wants. Then use [ACTION:READ_URL:url] to navigate to it, or [ACTION:OPEN_URL:url] to open it. If none match, try a different search URL or tell the user.` }],
-                    buildSystemPrompt(browserInfo, location, getMemoryContext()),
-                    (chunk) => { updateConversation(convId, (c) => ({ ...c, messages: c.messages.map((m) => m.id === followUpId ? { ...m, content: m.content + chunk } : m) })); },
-                    () => {
-                      const c = conversations.find((c2) => c2.id === convId);
-                      const rawContent = c?.messages.find((m) => m.id === followUpId)?.content || "";
-                      updateConversation(convId, (c2) => ({ ...c2, messages: c2.messages.map((m) => m.id === followUpId ? (() => { const { cleanText, extractedSources } = parseAIOutput(m.content); const existing = m.sources || []; const seen = new Set(existing.map((s) => s.url)); const merged = [...existing]; for (const s of extractedSources) { if (!seen.has(s.url)) { merged.push(s); seen.add(s.url); } } return { ...m, content: cleanText, sources: merged.length > 0 ? merged : m.sources }; })() : m) }));
-                      setIsStreaming(false); abortRef.current = null;
-                      if (rawContent.includes("[ACTION:")) { processActions(convId, followUpId, rawContent); }
-                    },
-                    (err) => { console.error("CLICK_IN_TAB follow-up error:", err); setIsStreaming(false); abortRef.current = null; },
-                    followUpAbort.signal
-                  );
-                  return;
-                }
-
-                // Step 2: Found the link — now READ the target page (like READ_URL does)
-                console.log(`%c[TAB] ✅ Found link: ${match.text} -> ${match.url}`, "color: #00ff88; font-weight: bold");
-                addTab(convId, match.url, match.text || linkText);
-
-                // Update thinking message
-                removeThinkingMsg(convId, thinkId);
-                const thinkId2 = addThinkingMsg(convId, `reading ${match.text || match.url}...`);
-
-                const targetRes = await fetch(`/api/url?url=${encodeURIComponent(match.url)}&maxContent=8000`);
-                const targetData = await targetRes.json();
-                removeThinkingMsg(convId, thinkId2);
-
-                if (targetData.error) {
-                  // Can't read the target page — just open it in browser
-                  window.open(match.url, "_blank", "noopener,noreferrer");
-                  updateConversation(convId, (conv2) => ({
-                    ...conv2,
-                    messages: conv2.messages.map((m) =>
-                      m.id === messageId ? { ...m, content: (m.content ? m.content + "\n\n" : "") + `Opened "${match.text}" in your browser~` } : m
-                    ),
-                  }));
-                  return;
-                }
-
-                // Build context from the target page
-                const targetLinks = (targetData.links || []).slice(0, 50).map((l: { url: string; text: string }, i: number) => `${i + 1}. [${l.text}](${l.url})`).join("\n");
-                const targetHeadings = (targetData.headings || []).map((h: { level: number; text: string }) => `${"#".repeat(h.level)} ${h.text}`).join("\n");
-                const targetVideos = (targetData.videos || []).map((v: { url: string; type?: string }) => `- ${v.url}${v.type ? ` (${v.type})` : ""}`).join("\n");
-
-                // Attach source
-                if (targetData.meta?.title) {
-                  let hostname = "";
-                  try { hostname = new URL(match.url).hostname; } catch { /* skip */ }
-                  updateConversation(convId, (conv2) => ({
-                    ...conv2,
-                    messages: conv2.messages.map((m) =>
-                      m.id === messageId ? {
-                        ...m,
-                        sources: [...(m.sources || []), {
-                          url: match.url,
-                          title: targetData.meta.title || hostname,
-                          favicon: targetData.meta.favicon || `https://www.google.com/s2/favicons?domain=${hostname}&sz=16`,
-                        }],
-                      } : m
-                    ),
-                  }));
-                }
-
-                // Feed the target page back to AI for follow-up
-                const userMsg = conv?.messages.filter((m) => m.role === "user").pop()?.content || "";
-                const pageContext = `The user asked: "${userMsg}"\n\nI clicked "${match.text}" and navigated to ${match.url}.\n\nTitle: ${targetData.meta?.title || "Unknown"}\nDescription: ${targetData.meta?.description || "None"}\n\n${targetHeadings ? `Page Structure:\n${targetHeadings}\n\n` : ""}Content:\n${(targetData.content || "No content found").slice(0, 3000)}\n\n${targetVideos ? `Video sources found on page:\n${targetVideos}\n\n` : ""}${targetLinks ? `Links found on page:\n${targetLinks}` : ""}`;
-
-                const followUpId = generateId();
-                updateConversation(convId, (conv2) => ({
-                  ...conv2,
-                  messages: [...conv2.messages, {
-                    id: followUpId,
-                    role: "assistant" as const,
-                    content: "",
-                    timestamp: new Date(),
-                  }],
-                }));
-
-                const followUpAbort = new AbortController();
-                abortRef.current = followUpAbort;
-                setIsStreaming(true);
-                streamChat(
-                  [{ role: "user" as const, content: pageContext + "\n\nIMPORTANT: Look at the user's original request. Based on what they asked:\n- If video sources were found on the page, use [ACTION:OPEN_URL:video_url] to open the direct video URL for them\n- If they want a specific item and you found it -> use [ACTION:OPEN_URL:url] or [ACTION:EMBED:url|title]\n- If this is a video page with no direct video URL found, open the page in their browser with [ACTION:OPEN_URL:" + match.url + "]\n- If they want to keep navigating -> use [ACTION:READ_URL:url] on the next link\n- If the target wasn't found on this page, look for pagination links (next page, page 2, etc.) and use [ACTION:READ_URL:next_page_url] to keep searching\nYou MUST use action tags. Don't just describe — ACT on it!" }],
-                  buildSystemPrompt(browserInfo, location, getMemoryContext()),
-                  (chunk) => {
-                    updateConversation(convId, (c) => ({
-                      ...c,
-                      messages: c.messages.map((m) =>
-                        m.id === followUpId ? { ...m, content: m.content + chunk } : m
-                      ),
-                    }));
-                  },
-                  () => {
-                    const c = conversations.find((c2) => c2.id === convId);
-                    const rawContent = c?.messages.find((m) => m.id === followUpId)?.content || "";
-                    updateConversation(convId, (c2) => ({
-                      ...c2,
-                      messages: c2.messages.map((m) =>
-                        m.id === followUpId ? (() => {
-                          const { cleanText, extractedSources } = parseAIOutput(m.content);
-                          const existing = m.sources || [];
-                          const seen = new Set(existing.map((s) => s.url));
-                          const merged = [...existing];
-                          for (const s of extractedSources) { if (!seen.has(s.url)) { merged.push(s); seen.add(s.url); } }
-                          return { ...m, content: cleanText, sources: merged.length > 0 ? merged : m.sources };
-                        })() : m
-                      ),
-                    }));
-                    setIsStreaming(false);
-                    abortRef.current = null;
-                    if (rawContent.includes("[ACTION:")) {
-                      console.log(`%c[CLICK_IN_TAB] 🔗 Chaining actions from follow-up`, "color: #00ffcc; font-weight: bold");
-                      processActions(convId, followUpId, rawContent);
-                    }
-                  },
-                  (err) => { console.error("CLICK_IN_TAB follow-up error:", err); setIsStreaming(false); abortRef.current = null; },
-                  followUpAbort.signal
-                );
-              } catch {
-                removeThinkingMsg(convId, thinkId);
-              }
-            })();
-          }
-        }
-        if (action.type === "OPEN_TAB") {
-          // Search for a topic and open the top result as a new tab
-          const topic = action.value.trim();
-          console.log(`%c[TAB] 🔍 Opening tab for topic`, "color: #00ccff; font-weight: bold", topic);
-          (async () => {
-            const thinkId = addThinkingMsg(convId, `finding "${topic}"...`);
-            try {
-              const searchRes = await fetch(`/api/search?q=${encodeURIComponent(topic)}`);
-              const searchData = await searchRes.json();
-              removeThinkingMsg(convId, thinkId);
-              const results = searchData.results || [];
-              if (results.length > 0) {
-                const topResult = results[0];
-                const url = topResult.url;
-                const title = topResult.title || topic;
-                try {
-                  window.open(url, "_blank", "noopener,noreferrer");
-                  addTab(convId, url, title);
-                  console.log(`%c[TAB] ✅ Opened tab for "${topic}"`, "color: #00ff88", { url, title });
-                } catch (e) {
-                  console.error(`%c[TAB] ❌ Failed to open tab`, "color: #ff4444", topic, e);
-                }
-              } else {
-                // Fallback: open a Google search for the topic
-                const fallbackUrl = `https://www.google.com/search?q=${encodeURIComponent(topic)}`;
-                try {
-                  window.open(fallbackUrl, "_blank", "noopener,noreferrer");
-                  addTab(convId, fallbackUrl, topic);
-                  console.log(`%c[TAB] ⚠️ No results, opened Google search for "${topic}"`, "color: #ffaa00", fallbackUrl);
-                } catch (e) {
-                  console.error(`%c[TAB] ❌ Failed to open fallback tab`, "color: #ff4444", topic, e);
-                }
-              }
-            } catch (e) {
-              console.error(`%c[TAB] ❌ Search failed for OPEN_TAB`, "color: #ff4444", topic, e);
-              removeThinkingMsg(convId, thinkId);
-              // Fallback to Google search
-              const fallbackUrl = `https://www.google.com/search?q=${encodeURIComponent(topic)}`;
-              try {
-                window.open(fallbackUrl, "_blank", "noopener,noreferrer");
-                addTab(convId, fallbackUrl, topic);
-              } catch { /* skip */ }
-            }
-          })();
         }
       }
 
@@ -2162,7 +1877,7 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
             updateConversation(convId, (conv) => ({
               ...conv,
               messages: conv.messages.map((m) =>
-                m.id === commentId ? { ...m, content: m.content + chunk } : m
+                m.id === commentId ? { ...m, content: stripInternalTags(m.content + chunk) } : m
               ),
             }));
           },
@@ -2335,6 +2050,8 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
         systemPrompt,
         (chunk) => {
           totalContent += chunk;
+          // Strip tags from the full accumulated content for display (never show raw tags)
+          const displayContent = stripInternalTags(totalContent);
           setConversations((prev) =>
             prev.map((c) => {
               if (c.id !== convId) return c;
@@ -2344,7 +2061,7 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
                   ...c,
                   messages: c.messages.map((m) =>
                     m.id === assistantId
-                      ? { ...m, content: m.content + chunk }
+                      ? { ...m, content: displayContent }
                       : m
                   ),
                 };
@@ -2354,7 +2071,7 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
                 ...c,
                 messages: [
                   ...c.messages,
-                  { ...assistantMessage, content: chunk },
+                  { ...assistantMessage, content: displayContent },
                 ],
                 updatedAt: new Date(),
               };
@@ -2379,14 +2096,8 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
             addMemory(mem.key, mem.value);
           }
 
-          // Strip [STATUS:...], [MEMORY:...], and <think>...</think> blocks from displayed content
-          const cleanedTotal = totalContent
-            .replace(/\s*\[STATUS:[^\]]+\]\s*/g, " ")
-            .replace(/\s*\[MEMORY:[^\]]+\]\s*/g, " ")
-            .replace(/<think>[\s\S]*?<\/think>/g, "")
-            .replace(/<think>[\s\S]*$/g, "") // Handle unclosed <think> tags
-            .replace(/\n{3,}/g, "\n\n")
-            .trim();
+          // Strip [STATUS:...], [MEMORY:...], [ACTION:...], and <think>...</think> blocks from displayed content
+          const cleanedTotal = stripInternalTags(totalContent);
 
           // Write final content to state (handles both: message exists or needs to be added)
           setConversations((prev) =>
@@ -2438,7 +2149,6 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
               let directUrl = urlMatch[0].replace(/^(?:open|go\s*to|visit|browse)\s+/i, "").trim();
               if (!directUrl.startsWith("http")) directUrl = "https://" + directUrl;
               window.open(directUrl, "_blank", "noopener,noreferrer");
-              addTab(convId, directUrl);
               // Update the AI's message to show it opened the URL
               updateConversation(convId, (c) => ({
                 ...c,
@@ -2459,7 +2169,6 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
               };
               const siteUrl = knownSites[siteName] || `https://www.${siteName}.com`;
               window.open(siteUrl, "_blank", "noopener,noreferrer");
-              addTab(convId, siteUrl);
               updateConversation(convId, (c) => ({
                 ...c,
                 messages: c.messages.map((m) =>
@@ -2608,7 +2317,6 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
                         console.log(`%c[REFUSAL] ✅ Found item #${targetIndex + 1}: ${targetLink.text} -> ${targetUrl}`, "color: #00ff88; font-weight: bold");
                         try {
                           window.open(targetUrl, "_blank", "noopener,noreferrer");
-                          addTab(convId, targetUrl, targetLink.text);
                         } catch (e) {
                           console.error("[REFUSAL] Failed to open:", e);
                         }
@@ -2671,7 +2379,6 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
                   }
                   if (contextUrl) {
                     window.open(contextUrl, "_blank", "noopener,noreferrer");
-                    addTab(convId, contextUrl);
                     updateConversation(convId, (c) => ({
                       ...c,
                       messages: c.messages.map((m) =>
@@ -2841,7 +2548,6 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
         if (!directUrl.startsWith("http")) directUrl = "https://" + directUrl;
         try {
           window.open(directUrl, "_blank", "noopener,noreferrer");
-          addTab(activeConversationId, directUrl);
           console.log(`%c[CLIENT] 🌐 Direct URL open (bypass)`, "color: #00ffcc; font-weight: bold", directUrl);
         } catch (e) {
           console.error("[CLIENT] Failed to open URL directly:", e);
@@ -2865,7 +2571,6 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
           if (url) {
             try {
               window.open(url, "_blank", "noopener,noreferrer");
-              addTab(activeConversationId, url);
               console.log(`%c[CLIENT] 🌐 Known site open (bypass)`, "color: #00ffcc; font-weight: bold", url);
             } catch (e) {
               console.error("[CLIENT] Failed to open known site:", e);
@@ -2914,7 +2619,6 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
             }
 
             // Store as tab for context
-            addTab(capturedConvId, targetUrl, data.meta?.title || targetUrl);
 
             // Find video/content links
             const links: { url: string; text: string }[] = data.links || [];
@@ -3044,7 +2748,6 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
               }
 
               // Store the search URL as a tab for context
-              addTab(capturedConvId, searchUrl, `Search: ${searchQuery}`);
 
               // Find video/content links
               const links: { url: string; text: string }[] = data.links || [];
@@ -3216,7 +2919,6 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
               }
 
               // Update tab to new page
-              addTab(capturedConvId, paginatedUrl, `Page ${pageNum} - ${data.meta?.title || "Results"}`);
 
               // Find video/content links
               const links: { url: string; text: string }[] = data.links || [];
@@ -3342,7 +3044,6 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
                 const sectionRes = await fetch(`/api/browse?url=${encodeURIComponent(sectionUrl)}&maxContent=12000`);
                 const sectionData = await sectionRes.json();
 
-                addTab(capturedConvId, sectionUrl, sectionLink.text);
 
                 if (sectionData.links && sectionData.links.length > 0) {
                   const sectionContentLinks = sectionData.links.filter((l: { url: string; text: string }) => {
@@ -3450,7 +3151,6 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
           // Open the video
           try {
             window.open(bestMatch.url, "_blank", "noopener,noreferrer");
-            addTab(activeConversationId, bestMatch.url, bestMatch.title);
           } catch (e) {
             console.error("[CLIENT] Failed to open matched video:", e);
           }
@@ -3645,7 +3345,6 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
                 console.log(`%c[CLIENT] ✅ Found item #${targetIndex + 1}: ${targetLink.text} -> ${targetUrl}`, "color: #00ff88; font-weight: bold");
                 try {
                   window.open(targetUrl, "_blank", "noopener,noreferrer");
-                  addTab(capturedConvId, targetUrl, targetLink.text);
                 } catch (e) { console.error("[CLIENT] Failed to open:", e); }
                 updateConversation(capturedConvId, (c) => ({
                   ...c,
@@ -3762,17 +3461,17 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
                     } : m),
                   }));
                 }
-                try { window.open(picked.url, "_blank", "noopener,noreferrer"); addTab(capturedConvId, picked.url, picked.title); } catch {}
+                try { window.open(picked.url, "_blank", "noopener,noreferrer"); } catch {}
                 setIsStreaming(false);
               } catch (e) {
                 console.error("[CLIENT] Video extraction failed:", e);
                 removeThinkingMsg(capturedConvId, thinkId);
-                try { window.open(picked.url, "_blank", "noopener,noreferrer"); addTab(capturedConvId, picked.url, picked.title); } catch {}
+                try { window.open(picked.url, "_blank", "noopener,noreferrer"); } catch {}
                 setIsStreaming(false);
               }
             })();
           } else {
-            try { window.open(picked.url, "_blank", "noopener,noreferrer"); addTab(activeConversationId, picked.url, picked.title); } catch (e) { console.error("[CLIENT] Failed to open picked result:", e); }
+            try { window.open(picked.url, "_blank", "noopener,noreferrer"); } catch (e) { console.error("[CLIENT] Failed to open picked result:", e); }
           }
           return; // Don't send to AI
         }
@@ -3851,17 +3550,17 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
                         } : m),
                       }));
                     }
-                    try { window.open(matchedResult.url, "_blank", "noopener,noreferrer"); addTab(capturedConvId, matchedResult.url, matchedResult.title); } catch {}
+                    try { window.open(matchedResult.url, "_blank", "noopener,noreferrer"); } catch {}
                     setIsStreaming(false);
                   } catch (e) {
                     console.error("[CLIENT] Video extraction failed:", e);
                     removeThinkingMsg(capturedConvId, thinkId);
-                    try { window.open(matchedResult.url, "_blank", "noopener,noreferrer"); addTab(capturedConvId, matchedResult.url, matchedResult.title); } catch {}
+                    try { window.open(matchedResult.url, "_blank", "noopener,noreferrer"); } catch {}
                     setIsStreaming(false);
                   }
                 })();
               } else {
-                try { window.open(bestTitleMatch.url, "_blank", "noopener,noreferrer"); addTab(activeConversationId, bestTitleMatch.url, bestTitleMatch.title); } catch (e) { console.error("[CLIENT] Failed to open title-matched result:", e); }
+                try { window.open(bestTitleMatch.url, "_blank", "noopener,noreferrer"); } catch (e) { console.error("[CLIENT] Failed to open title-matched result:", e); }
               }
               return; // Don't send to AI
             }
@@ -3872,7 +3571,7 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
       // Pass updatedMessages directly — don't read from state (React batching race)
       sendToAI(activeConversationId, updatedMessages);
     },
-    [activeConversationId, isStreaming, updateConversation, sendToAI, generateTitle, addTab, conversations, addThinkingMsg, removeThinkingMsg]
+    [activeConversationId, isStreaming, updateConversation, sendToAI, generateTitle, conversations, addThinkingMsg, removeThinkingMsg]
   );
 
   const handleEditMessage = useCallback(
@@ -3985,14 +3684,6 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
   const handleOpenLink = useCallback((url: string) => {
     window.open(url, "_blank", "noopener,noreferrer");
   }, []);
-
-  const handleCloseTab = useCallback((tabId: string) => {
-    if (activeConversationId) removeTab(activeConversationId, tabId);
-  }, [activeConversationId, removeTab]);
-
-  const handleSwitchTab = useCallback((tabId: string) => {
-    if (activeConversationId) switchTab(activeConversationId, tabId);
-  }, [activeConversationId, switchTab]);
 
   const handleNewConversation = useCallback(() => {
     if (abortRef.current) {

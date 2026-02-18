@@ -4,41 +4,55 @@ import os from "os";
 
 export const runtime = "nodejs";
 
-// Whitelist of safe app names -> commands per platform
+// Known app name -> executable mappings per platform (fallback to direct launch if not found)
+// Windows Store/UWP apps need special handling - use URI protocols or explorer shell:AppsFolder
 const APP_COMMANDS: Record<string, Record<string, string>> = {
-  // Windows
+  // Windows - mix of traditional apps and UWP/Store apps
   win32: {
-    chrome: "start chrome",
-    "google chrome": "start chrome",
-    firefox: "start firefox",
-    edge: "start msedge",
-    notepad: "start notepad",
-    calculator: "start calc",
-    calc: "start calc",
-    paint: "start mspaint",
-    explorer: "start explorer",
-    "file explorer": "start explorer",
-    cmd: "start cmd",
-    terminal: "start wt",
-    "windows terminal": "start wt",
-    powershell: "start powershell",
-    settings: "start ms-settings:",
-    spotify: "start spotify:",
-    discord: "start discord:",
-    steam: "start steam:",
-    vscode: "start code",
-    "visual studio code": "start code",
-    "task manager": "start taskmgr",
-    snipping: "start snippingtool",
-    "snipping tool": "start snippingtool",
-    word: "start winword",
-    excel: "start excel",
-    powerpoint: "start powerpnt",
-    outlook: "start outlook",
-    teams: "start msteams:",
-    "microsoft teams": "start msteams:",
-    obs: "start obs64",
-    vlc: "start vlc",
+    // Traditional desktop apps
+    chrome: 'start "" "chrome"',
+    "google chrome": 'start "" "chrome"',
+    firefox: 'start "" "firefox"',
+    edge: 'start "" "msedge"',
+    notepad: 'start "" "notepad"',
+    calculator: 'start "" "calc"',
+    calc: 'start "" "calc"',
+    paint: 'start "" "mspaint"',
+    explorer: 'start "" "explorer"',
+    "file explorer": 'start "" "explorer"',
+    cmd: 'start "" "cmd"',
+    terminal: 'start "" "wt"',
+    "windows terminal": 'start "" "wt"',
+    powershell: 'start "" "powershell"',
+    "task manager": 'start "" "taskmgr"',
+    snipping: 'start "" "snippingtool"',
+    "snipping tool": 'start "" "SnippingTool"',
+    word: 'start "" "winword"',
+    excel: 'start "" "excel"',
+    powerpoint: 'start "" "powerpnt"',
+    outlook: 'start "" "outlook"',
+    obs: 'start "" "obs64"',
+    vlc: 'start "" "vlc"',
+    brave: 'start "" "brave"',
+    "brave browser": 'start "" "brave"',
+    vscode: 'start "" "code"',
+    "visual studio code": 'start "" "code"',
+    // UWP/Store apps - use URI protocols
+    spotify: 'start spotify:',
+    discord: 'start discord:',
+    steam: 'start steam:',
+    settings: 'start ms-settings:',
+    "microsoft store": 'start ms-windows-store:',
+    store: 'start ms-windows-store:',
+    teams: 'start msteams:',
+    "microsoft teams": 'start msteams:',
+    xbox: 'start xbox:',
+    photos: 'start ms-photos:',
+    mail: 'start outlookmail:',
+    calendar: 'start outlookcal:',
+    "to do": 'start ms-todo:',
+    todo: 'start ms-todo:',
+    "microsoft to do": 'start ms-todo:',
   },
   // macOS
   darwin: {
@@ -92,31 +106,69 @@ export async function POST(req: NextRequest) {
     const command = platformApps[appName];
 
     if (!command) {
-      // Try to open it directly as a best-effort on Windows
-      if (platform === "win32") {
-        const safeApp = appName.replace(/[^a-zA-Z0-9 _-]/g, "");
-        if (!safeApp) {
-          return Response.json({
-            error: `Unknown app: "${app}". Available: ${Object.keys(platformApps).join(", ")}`,
-          }, { status: 400 });
-        }
+      // Try to open ANY app directly - no whitelist restrictions
+      const safeApp = appName.replace(/[^a-zA-Z0-9 _.-]/g, "");
+      if (!safeApp) {
+        return Response.json({ error: `Invalid app name: "${app}"` }, { status: 400 });
+      }
 
+      if (platform === "win32") {
+        // Windows: Try multiple methods in sequence
+        // 1. Try URI protocol (works for most Store apps)
+        // 2. Try direct exe name
+        // 3. Try PowerShell Start-Process
         return new Promise<Response>((resolve) => {
-          exec(`start ${safeApp}`, { timeout: 5000 }, (err) => {
+          // First try URI protocol (e.g., "spotify:" for Spotify)
+          const uriCommand = `start ${safeApp}:`;
+          exec(uriCommand, { timeout: 5000 }, (err1) => {
+            if (!err1) {
+              resolve(Response.json({ success: true, app: safeApp, platform, command: uriCommand, method: "uri" }));
+              return;
+            }
+            // URI failed, try direct exe
+            const exeCommand = `start "" "${safeApp}"`;
+            exec(exeCommand, { timeout: 5000 }, (err2) => {
+              if (!err2) {
+                resolve(Response.json({ success: true, app: safeApp, platform, command: exeCommand, method: "exe" }));
+                return;
+              }
+              // Exe failed, try PowerShell with wildcard search in Start Menu
+              const psCommand = `powershell -Command "Start-Process '${safeApp}'"`;
+              exec(psCommand, { timeout: 8000 }, (err3) => {
+                if (!err3) {
+                  resolve(Response.json({ success: true, app: safeApp, platform, command: psCommand, method: "powershell" }));
+                } else {
+                  resolve(Response.json({
+                    error: `Could not open "${app}". Tried URI protocol, direct launch, and PowerShell.`,
+                  }, { status: 400 }));
+                }
+              });
+            });
+          });
+        });
+      } else if (platform === "darwin") {
+        const directCommand = `open -a "${safeApp}"`;
+        return new Promise<Response>((resolve) => {
+          exec(directCommand, { timeout: 10000 }, (err) => {
             if (err) {
-              resolve(Response.json({
-                error: `Could not open "${app}". Available: ${Object.keys(platformApps).join(", ")}`,
-              }, { status: 400 }));
+              resolve(Response.json({ error: `Could not open "${app}": ${err.message}` }, { status: 400 }));
             } else {
-              resolve(Response.json({ success: true, app: safeApp, platform }));
+              resolve(Response.json({ success: true, app: safeApp, platform, command: directCommand }));
+            }
+          });
+        });
+      } else {
+        // Linux: just run the command
+        return new Promise<Response>((resolve) => {
+          exec(safeApp, { timeout: 10000 }, (err) => {
+            if (err) {
+              resolve(Response.json({ error: `Could not open "${app}": ${err.message}` }, { status: 400 }));
+            } else {
+              resolve(Response.json({ success: true, app: safeApp, platform, command: safeApp }));
             }
           });
         });
       }
-
-      return Response.json({
-        error: `Unknown app: "${app}". Available: ${Object.keys(platformApps).join(", ")}`,
-      }, { status: 400 });
     }
 
     return new Promise<Response>((resolve) => {

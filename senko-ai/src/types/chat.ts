@@ -101,6 +101,16 @@ export interface PermissionStatus {
   state: "granted" | "denied" | "prompt";
 }
 
+export interface Activity {
+  id: string;
+  type: "search" | "browse" | "read" | "extract" | "write" | "scrape" | "think";
+  label: string;
+  status: "active" | "done" | "error";
+  startedAt: number;
+  completedAt?: number;
+  detail?: string;
+}
+
 export interface AppSettings {
   notifications: boolean;
   location: boolean;
@@ -109,4 +119,5 @@ export interface AppSettings {
   clipboard: boolean;
   fontSize: "small" | "medium" | "large";
   sendWithEnter: boolean;
+  voicePreset: string;
 }

@@ -61,15 +61,10 @@ function rewriteHtml(html: string, pageUrl: string): string {
     }
   );
 
-  // Rewrite action= on <form> tags
-  html = html.replace(
-    /(<form\b[^>]*?\s)action\s*=\s*(["'])(.*?)\2/gi,
-    (_m, pre, q, val) => {
-      if (val.startsWith("javascript:")) return _m;
-      const abs = resolveUrl(val, base);
-      return `${pre}action=${q}${proxyPage(abs)}${q}`;
-    }
-  );
+  // NOTE: <form action=> is intentionally NOT rewritten here.
+  // The JS submit interceptor handles forms properly by serializing FormData
+  // and building the full proxied URL including query params.
+  // Pre-rewriting action= causes GET forms to append fields to the wrong URL.
 
   // Rewrite srcset= attributes
   html = html.replace(
@@ -292,9 +287,20 @@ export async function GET(req: NextRequest) {
     if (!form || !form.action) return;
     if (form.action.includes('/api/proxy')) return;
     e.preventDefault();
-    var resolved = resolveAgainstPage(form.getAttribute('action')) || form.action;
-    form.action = '/api/proxy?url=' + encodeURIComponent(resolved);
-    form.submit();
+    var rawAction = form.getAttribute('action') || form.action;
+    var resolved = resolveAgainstPage(rawAction) || rawAction;
+    var method = (form.method || 'get').toLowerCase();
+    if (method === 'get') {
+      var data = new FormData(form);
+      var params = new URLSearchParams();
+      data.forEach(function(val, key) { if (typeof val === 'string') params.append(key, val); });
+      var qs = params.toString();
+      var actionWithQuery = resolved + (qs ? (resolved.includes('?') ? '&' : '?') + qs : '');
+      window.location.href = '/api/proxy?url=' + encodeURIComponent(actionWithQuery);
+    } else {
+      form.action = '/api/proxy?url=' + encodeURIComponent(resolved);
+      form.submit();
+    }
   }, true);
 
   // Intercept fetch to proxy API calls — resolve against original site, block ads
