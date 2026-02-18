@@ -10,6 +10,7 @@ import { useLocation } from "@/hooks/use-location";
 import { useMemory, parseMemoryTags } from "@/hooks/use-memory";
 import type { Message, Conversation, AppSettings, BrowserInfo, LocationInfo, WebSource, SenkoTab } from "@/types/chat";
 import systemPromptText from "@/app/prompts/system-prompt.txt";
+import researchPromptText from "@/app/prompts/research.txt";
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
@@ -1781,10 +1782,11 @@ export default function Home() {
         const hasImages = allResearchImages.length > 0;
 
         // Phase 3: Generate AI research synthesis using real scraped content
+        // Trim aggressively: 4 sources × 800 chars = ~3200 chars context (fits any model)
         const scrapedContext = scrapedPages
           .filter((p) => p.content)
-          .slice(0, 6)
-          .map((p, i) => `[Source ${i + 1}: ${p.title}] (${p.url})\n${p.content.slice(0, 1500)}`)
+          .slice(0, 4)
+          .map((p, i) => `[Source ${i + 1}: ${p.title}]\n${p.content.slice(0, 800).trim()}`)
           .join("\n\n---\n\n");
 
         const hasScrapedContent = scrapedContext.length > 100;
@@ -1817,26 +1819,18 @@ export default function Home() {
         }));
 
         const sourceCount = scrapedPages.filter((p) => p.content).length;
+        // Lean user message — instructions live in the synthesis system prompt
         const contextPrompt = hasScrapedContent
-          ? `The user asked me to research "${query}". I searched the web and scraped ${sourceCount} sources. ${hasImages ? `I also found ${allResearchImages.length} images which are being displayed in a carousel above this text -- do NOT describe the images.` : ""}
+          ? `Research query: "${query}"${hasImages ? " (images are already shown in the UI — do NOT describe them)" : ""}
 
-Here is the actual content from the sources I read:
+Source content:
 
-${scrapedContext}
+${scrapedContext}`
+          : `Research query: "${query}"${hasImages ? " (images are already shown in the UI — do NOT describe them)" : ""}
 
-Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
+No full page content available. Use these search snippets:
 
-1. **Write clean prose WITHOUT inline citations**: Do NOT write [Source 1], [Source 2], etc. in your text. The UI already displays source links as clickable pills below your message. Just write naturally.
-2. **Go DEEP, not wide**: For each key point, explain the WHY and HOW. What caused it? What are the implications? How does it connect to other facts? Provide depth that makes someone say "wow, I actually understand this now."
-3. **Synthesize across sources**: Combine information from multiple sources into a coherent narrative. Don't just summarize one source at a time.
-4. **Structure with markdown**: Use ## headers for major sections. Use ### for subsections. Use **bold** for key terms. Use bullet lists for details.
-5. **Cover comprehensively**: Background/history, core concepts explained in depth, key details with context, significance/impact, interesting nuances, and practical implications.
-6. **Explain like a knowledgeable friend**: Break down complex ideas. Use analogies if helpful. Don't assume the reader knows jargon.
-7. Stay in character (2-3 kaomoji max) but INFORMATION and DEPTH come first.
-8. Do NOT make up facts -- only use what's in the sources above.
-9. Do NOT describe or list images. The UI shows images automatically.
-10. Do NOT include a "Sources" section at the end -- the UI handles source display with clickable pills.`
-          : `I searched for "${query}" and found these results:\n${(searchData.results || []).slice(0, 10).map((r: { title: string; snippet: string }, i: number) => `${i + 1}. ${r.title}: ${r.snippet}`).join("\n")}\n\n${hasImages ? `Images are being displayed in a carousel -- do NOT describe them.` : ""}\n\nWrite a thorough research summary. REQUIREMENTS:\n- Write clean prose WITHOUT [Source N] citations -- the UI shows source pills\n- Provide context and reasoning, not just facts\n- Use markdown formatting (## headers, **bold**, lists)\n- Cover what it is, key details, significance, and interesting facts\n- Stay in character but prioritize real information\n- Do NOT include a Sources section at the end\n- Do NOT describe images`;
+${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: string }, i: number) => `${i + 1}. **${r.title}**: ${r.snippet || ""}`).join("\n")}`;
 
         // Build a fallback summary from scraped content in case AI stream fails or returns empty
         const buildFallbackSummary = (): string => {
@@ -1867,7 +1861,7 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
         let firstChunkReceived = false;
         streamChat(
           [{ role: "user" as const, content: contextPrompt }],
-          buildSystemPrompt(browserInfo, location, getMemoryContext()),
+          researchPromptText,
           (chunk) => {
             // Remove thinking message on first real chunk
             if (!firstChunkReceived) {
