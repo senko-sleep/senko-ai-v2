@@ -57,7 +57,21 @@ function CodeBlock({
   );
 }
 
+function preprocessMarkdown(text: string): string {
+  // Ensure ## headers that are glued to preceding text get newlines
+  // e.g. "some text## Header" → "some text\n\n## Header"
+  let result = text.replace(/([^\n])(\n?)(#{1,6}\s)/g, (_, before, nl, hashes) => {
+    if (nl === '\n') return before + '\n\n' + hashes;
+    return before + '\n\n' + hashes;
+  });
+  // Ensure list items (- or * or 1.) glued to preceding text get newlines
+  result = result.replace(/([^\n])\n?([-*]\s)/g, '$1\n\n$2');
+  result = result.replace(/([^\n])\n?(\d+\.\s)/g, '$1\n\n$2');
+  return result;
+}
+
 export function MarkdownRenderer({ content }: MarkdownRendererProps) {
+  const processed = preprocessMarkdown(content);
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -184,7 +198,7 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
         },
       }}
     >
-      {content}
+      {processed}
     </ReactMarkdown>
   );
 }

@@ -29,9 +29,6 @@ function getFaviconUrl(url: string): string {
   }
 }
 
-function hasRichContent(content: string): boolean {
-  return /```|^\s*[-*]\s|^\s*\d+\.\s|^#{1,3}\s|\*\*|__|\|.*\|/m.test(content);
-}
 
 export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatMessageProps) {
   const [isEditing, setIsEditing] = useState(false);
@@ -84,7 +81,7 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
   const hasWebEmbeds = message.webEmbeds && message.webEmbeds.length > 0;
   const hasMap = !!message.mapEmbed;
   const hasAttachments = hasSources || hasImages || hasVideos || hasWebEmbeds || hasMap;
-  const isRich = !isUser && hasRichContent(message.content);
+  const isRich = !isUser;
   const isShort = message.content.length < 80 && !message.content.includes("\n");
 
   // -- Thinking state (ghost thoughts / loading process) --
@@ -194,15 +191,11 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
             )}
 
             {/* Content */}
-            {message.content && (isRich ? (
+            {message.content && (
               <div className="text-[15px] leading-[1.75] text-white/95">
                 <MarkdownRenderer content={message.content} />
               </div>
-            ) : (
-              <p className="whitespace-pre-wrap text-[15px] leading-[1.7] text-white/95">
-                {message.content}
-              </p>
-            ))}
+            )}
           </div>
         )}
 
