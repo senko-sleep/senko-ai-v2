@@ -3583,35 +3583,32 @@ Write an EXPERT-LEVEL, deeply researched response. STRICT REQUIREMENTS:
         abortRef.current = null;
       }
 
-      updateConversation(activeConversationId, (conv) => {
-        const messageIndex = conv.messages.findIndex((m) => m.id === messageId);
-        if (messageIndex === -1) return conv;
+      // Trim messages and capture the updated list in one atomic state update
+      let trimmedMessages: Message[] | null = null;
+      setConversations((prev) =>
+        prev.map((c) => {
+          if (c.id !== activeConversationId) return c;
+          const messageIndex = c.messages.findIndex((m) => m.id === messageId);
+          if (messageIndex === -1) return c;
+          const updatedMessages = c.messages.slice(0, messageIndex + 1);
+          updatedMessages[messageIndex] = {
+            ...updatedMessages[messageIndex],
+            content: newContent,
+            timestamp: new Date(),
+          };
+          trimmedMessages = updatedMessages;
+          return { ...c, messages: updatedMessages, updatedAt: new Date() };
+        })
+      );
 
-        const updatedMessages = conv.messages.slice(0, messageIndex + 1);
-        updatedMessages[messageIndex] = {
-          ...updatedMessages[messageIndex],
-          content: newContent,
-          timestamp: new Date(),
-        };
-
-        return {
-          ...conv,
-          messages: updatedMessages,
-          updatedAt: new Date(),
-        };
+      // Use requestAnimationFrame to ensure state has flushed before calling sendToAI
+      requestAnimationFrame(() => {
+        if (trimmedMessages) {
+          sendToAI(activeConversationId, trimmedMessages);
+        }
       });
-
-      setTimeout(() => {
-        setConversations((prev) => {
-          const conv = prev.find((c) => c.id === activeConversationId);
-          if (conv) {
-            sendToAI(activeConversationId, conv.messages);
-          }
-          return prev;
-        });
-      }, 50);
     },
-    [activeConversationId, isStreaming, updateConversation, sendToAI]
+    [activeConversationId, isStreaming, sendToAI]
   );
 
   const handleRegenerateMessage = useCallback(
