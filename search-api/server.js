@@ -1436,8 +1436,11 @@ app.get("/browse", async (req, res) => {
           }
         }
       }
-      // Block ads/trackers to speed up page load
-      if (/exoclick|trafficjunky|juicyads|adglare|popads|popcash|adsterra|propellerads/i.test(reqUrl)) {
+      // Block ads/trackers/heavy resources to speed up page load
+      const isAd = /exoclick|trafficjunky|juicyads|adglare|popads|popcash|adsterra|propellerads|banhq|otcagpqmeoqb|eunow4u|doubleclick|googlesyndication|googletagmanager|google-analytics|facebook\.net|fbcdn|amazon-adsystem|outbrain|taboola|criteo|rubiconproject|pubmatic|openx|bidswitch|adsrvr|adnxs|moatads|quantserve|scorecardresearch|bluekai|demdex|krxd|serving-sys|smartadserver|smaato|yieldmo|nativo|sharethrough/i.test(reqUrl);
+      // Block heavy resource types (images/fonts/stylesheets) — we only need text, links, and scripts for content extraction
+      const isHeavy = resourceType === "image" || resourceType === "font" || resourceType === "stylesheet";
+      if (isAd || isHeavy) {
         request.abort();
       } else {
         request.continue();
@@ -1475,7 +1478,10 @@ app.get("/browse", async (req, res) => {
     }
 
     console.log(`[browse] Loading ${url}`);
-    await page.goto(url, { waitUntil: "networkidle2", timeout: 25000 }).catch(() => { });
+    // Use shorter timeout — ad-heavy sites (rule34video etc.) never reach networkidle2
+    await page.goto(url, { waitUntil: "networkidle2", timeout: 15000 }).catch(() => {
+      console.log(`[browse] networkidle2 timed out, continuing with partial load`);
+    });
     const finalUrl = page.url();
 
     // Wait for dynamic content to render
@@ -1756,7 +1762,14 @@ app.get("/video-extract", async (req, res) => {
           }
         }
       }
-      request.continue();
+      // Block ads/trackers to speed up page load (but NOT media — we need those for video interception)
+      const isAd = /exoclick|trafficjunky|juicyads|adglare|popads|popcash|adsterra|propellerads|banhq|otcagpqmeoqb|eunow4u|doubleclick|googlesyndication|googletagmanager|google-analytics|facebook\.net|fbcdn|amazon-adsystem|outbrain|taboola|criteo|rubiconproject|pubmatic|openx|bidswitch|adsrvr|adnxs|moatads|quantserve|scorecardresearch|bluekai|demdex|krxd|serving-sys|smartadserver|smaato|yieldmo|nativo|sharethrough/i.test(reqUrl);
+      const isHeavy = resourceType === "font" || resourceType === "stylesheet";
+      if (isAd || isHeavy) {
+        request.abort();
+      } else {
+        request.continue();
+      }
     });
 
     // Also catch video URLs from responses
@@ -1773,7 +1786,9 @@ app.get("/video-extract", async (req, res) => {
       } catch { }
     });
 
-    await page.goto(url, { waitUntil: "networkidle2", timeout: 20000 }).catch(() => { });
+    await page.goto(url, { waitUntil: "networkidle2", timeout: 15000 }).catch(() => {
+      console.log(`[video-extract] networkidle2 timed out, continuing`);
+    });
 
     // Wait for video player to initialize
     await new Promise((r) => setTimeout(r, 3000));

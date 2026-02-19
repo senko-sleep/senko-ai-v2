@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { config } from "@/lib/config";
 
 export const runtime = "nodejs";
-export const maxDuration = 45;
+export const maxDuration = 60;
 
 export async function GET(req: NextRequest) {
   const url = req.nextUrl.searchParams.get("url");
@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
     if (maxContent) params.set("maxContent", maxContent);
 
     const res = await fetch(`${baseUrl}/browse?${params.toString()}`, {
-      signal: AbortSignal.timeout(40000),
+      signal: AbortSignal.timeout(55000),
     });
     const data = await res.json();
     return Response.json(data, { status: res.status });
