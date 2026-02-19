@@ -10,7 +10,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useLocation } from "@/hooks/use-location";
 import { useMemory, parseMemoryTags } from "@/hooks/use-memory";
 import type { Message, Conversation, AppSettings, BrowserInfo, LocationInfo, WebSource, SenkoTab } from "@/types/chat";
-import systemPromptText from "@/app/prompts/system-prompt.txt";
+import { buildLayeredPrompt, messageHasUrl } from "@/lib/prompt-builder";
 import researchPromptText from "@/app/prompts/research.txt";
 
 function generateId(): string {
@@ -242,25 +242,56 @@ function getCityFromTimezone(timezone?: string): string {
   return city;
 }
 
+// --- Intent helpers (keeps multi-mode conversations from leaking context) ---
+const NAV_COMMAND_REGEX = /^\s*(?:open|go\s*to|visit|browse|navigate\s*to|embed|screenshot|read)\b/i;
+const SEARCH_COMMAND_REGEX = /\b(?:search\s*for|look\s*up|find|show\s*me|get\s*me|send\s*me)\b/i;
+const CONTENT_REQUEST_REGEX = /\bwhat(?:'s|\s+is).*(?:on|from)\s+(?:this|that)?\s*(?:page|site)\b|\bshow\s+me\s+.*(?:videos?|links?|images?)\b|\blist\s+.*(?:videos?|links?)\b/i;
+const TAB_COMMAND_REGEX = /\b(?:what|list|show)\s+.*\b(?:tabs?|open\s+tabs?)\b/i;
+const PAGINATION_COMMAND_REGEX = /^\s*(?:next\s+page|page\s+\d+|more\s+(?:results|videos?)|go\s+to\s+page\s+\d+)\s*$/i;
+const SECTION_COMMAND_REGEX = /(?:go\s+to|show\s+me|open|browse)\s+(?:the\s+)?[a-zA-Z0-9\s]+\s+(?:section|category|page|tab)\b/i;
+const RESULT_PICK_REGEXES = [
+  /(?:open|embed|play|watch|show|get|load)\s+(?:me\s+)?(?:the\s+)?(?:(?:\d+)(?:st|nd|rd|th)?|first|second|third|fourth|fifth)\s*(?:result|video|link|item|one|clip)\b/i,
+  /\b(?:result|video|link|item|one|clip)\s*(?:#?\d+|first|second|third|fourth|fifth)\b/i,
+];
+
+function isBrowseIntent(text: string): boolean {
+  return NAV_COMMAND_REGEX.test(text)
+    || SEARCH_COMMAND_REGEX.test(text)
+    || CONTENT_REQUEST_REGEX.test(text)
+    || TAB_COMMAND_REGEX.test(text)
+    || PAGINATION_COMMAND_REGEX.test(text)
+    || SECTION_COMMAND_REGEX.test(text)
+    || messageHasUrl(text);
+}
+
+function isResultPickIntent(text: string): boolean {
+  return RESULT_PICK_REGEXES.some((re) => re.test(text));
+}
+
+interface PromptOptions {
+  agentMode?: boolean;
+  hasTabs?: boolean;
+  hasUrlInMessage?: boolean;
+  isResearch?: boolean;
+  tabs?: SenkoTab[];
+}
+
 function buildSystemPrompt(
   browserInfo?: BrowserInfo | null,
   locationInfo?: LocationInfo | null,
-  memoryContext?: string
+  memoryContext?: string,
+  options?: PromptOptions
 ): string {
-  let p = systemPromptText;
-  if (memoryContext) {
-    p += memoryContext;
-  }
-  if (browserInfo) {
-    const device = /tablet|ipad/i.test(browserInfo.userAgent) ? "Tablet" : /mobile|iphone|android/i.test(browserInfo.userAgent) ? "Mobile" : "Desktop";
-    const browser = browserInfo.userAgent.includes("Edg") ? "Edge" : browserInfo.userAgent.includes("Chrome") ? "Chrome" : browserInfo.userAgent.includes("Firefox") ? "Firefox" : browserInfo.userAgent.includes("Safari") ? "Safari" : "Unknown";
-    const os = browserInfo.platform.startsWith("Win") ? "Windows" : browserInfo.platform.startsWith("Mac") ? "macOS" : browserInfo.platform.startsWith("Linux") ? "Linux" : browserInfo.platform;
-    p += `\n\nUser Device: ${device} | ${browser} | ${os} | ${browserInfo.screenResolution} | ${browserInfo.hardwareConcurrency} cores | ${browserInfo.language} | ${browserInfo.timezone} | ${browserInfo.onLine ? "Online" : "Offline"}`;
-  }
-  if (locationInfo?.status === "granted" && locationInfo.latitude !== null) {
-    p += `\nUser Location: ${locationInfo.latitude}, ${locationInfo.longitude}`;
-  }
-  return p;
+  return buildLayeredPrompt({
+    agentMode: options?.agentMode !== false,
+    hasTabs: options?.hasTabs || false,
+    hasUrlInMessage: options?.hasUrlInMessage || false,
+    isResearch: options?.isResearch || false,
+    memoryContext,
+    browserInfo,
+    locationInfo,
+    tabs: options?.tabs,
+  });
 }
 
 async function streamChat(
@@ -385,15 +416,15 @@ export default function Home() {
   const [conversations, setConversations] = useState<Conversation[]>([
     createConversation("Welcome"),
   ]);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(
-    conversations[0]?.id ?? null
-  );
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const thinkingTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const lastBrowseIntentByConv = useRef<Record<string, number>>({});
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [isStreaming, setIsStreaming] = useState(false);
   const [wasCutOff, setWasCutOff] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [agentMode, setAgentMode] = useState<"agent" | "thinking">("agent");
-  const abortRef = useRef<AbortController | null>(null);
   const searchResultsByConv = useRef<Record<string, { url: string; title: string }[]>>({});
   const scrapedContentByConv = useRef<Record<string, { url: string; title: string; content: string }>>({});
   const scrapingInProgress = useRef(false);
@@ -455,16 +486,23 @@ export default function Home() {
   const addThinkingMsg = useCallback(
     (convId: string, text: string): string => {
       const id = generateId();
-      updateConversation(convId, (conv) => ({
-        ...conv,
-        messages: [...conv.messages, {
-          id,
-          role: "assistant" as const,
-          content: text,
-          timestamp: new Date(),
-          isThinking: true,
-        }],
-      }));
+
+      // Delay inserting the thinking bubble to avoid UI flicker for fast operations.
+      // If the work completes quickly, removeThinkingMsg() cancels the timer.
+      const timer = setTimeout(() => {
+        thinkingTimersRef.current.delete(id);
+        updateConversation(convId, (conv) => ({
+          ...conv,
+          messages: [...conv.messages, {
+            id,
+            role: "assistant" as const,
+            content: text,
+            timestamp: new Date(),
+            isThinking: true,
+          }],
+        }));
+      }, 350);
+      thinkingTimersRef.current.set(id, timer);
       return id;
     },
     [updateConversation]
@@ -472,6 +510,11 @@ export default function Home() {
 
   const removeThinkingMsg = useCallback(
     (convId: string, thinkingId: string) => {
+      const timer = thinkingTimersRef.current.get(thinkingId);
+      if (timer) {
+        clearTimeout(timer);
+        thinkingTimersRef.current.delete(thinkingId);
+      }
       updateConversation(convId, (conv) => ({
         ...conv,
         messages: conv.messages.filter((m) => m.id !== thinkingId),
@@ -544,7 +587,7 @@ export default function Home() {
           },
         ];
 
-        const systemPrompt = buildSystemPrompt(browserInfo, location, getMemoryContext());
+        const systemPrompt = buildSystemPrompt(browserInfo, location, getMemoryContext(), { agentMode: false });
 
         streamChat(
           contextMessages,
@@ -611,7 +654,7 @@ export default function Home() {
 
       streamChat(
         [{ role: "user" as const, content: prompt }],
-        buildSystemPrompt(browserInfo, location, getMemoryContext()),
+        buildSystemPrompt(browserInfo, location, getMemoryContext(), { agentMode: false }),
         (chunk) => {
           updateConversation(convId, (conv) => ({
             ...conv,
@@ -708,7 +751,7 @@ export default function Home() {
           role: "user" as const,
           content: `I opened ${description} in the user's browser. Confirm what you opened in 1-2 short sentences with a quick tip. Don't say "welcome" -- just confirm and move on. Use varied language and a kaomoji. Keep it very brief.`,
         }],
-        buildSystemPrompt(browserInfo, location, getMemoryContext()),
+        buildSystemPrompt(browserInfo, location, getMemoryContext(), { agentMode: false }),
         (chunk) => {
           updateConversation(convId, (conv) => ({
             ...conv,
@@ -1341,7 +1384,7 @@ export default function Home() {
                 setIsStreaming(true);
                 streamChat(
                   [{ role: "user" as const, content: `The user asked: "${lastUserMsg}"\n\nI found the video page: ${data.meta?.title || action.value}\n\nDirect video sources extracted:\n${videoList}\n\nThe video is ALREADY playing inline in the chat and the page is open in a new tab. Just write a SHORT, cheerful confirmation (1-2 sentences max). Do NOT use any action tags — everything is already done. Do NOT list URLs or technical details.` }],
-                  buildSystemPrompt(browserInfo, location, getMemoryContext()),
+                  buildSystemPrompt(browserInfo, location, getMemoryContext(), { agentMode: false }),
                   (chunk) => {
                     updateConversation(convId, (conv) => ({
                       ...conv,
@@ -1411,7 +1454,7 @@ export default function Home() {
               const lastUserMsg = userMessages[userMessages.length - 1]?.content || "";
 
               // Feed the page content back to AI for a follow-up response
-              const pageContext = `The user asked: "${lastUserMsg}"\n\nI just read the page at ${action.value}.\n\nTitle: ${data.meta?.title || "Unknown"}\nDescription: ${data.meta?.description || "None"}\n\n${pageHeadings ? `Page Structure:\n${pageHeadings}\n\n` : ""}Content:\n${(data.content || "No content found").slice(0, 3000)}\n\n${pageVideos ? `Video sources found on page:\n${pageVideos}\n\n` : ""}${isVideoPage && foundVideos.length === 0 ? `NOTE: This looks like a video page but I couldn't extract direct video sources. The page has been opened in a new tab for the user.\n\n` : ""}${pageLinks ? `Links found on page:\n${pageLinks}` : ""}`;
+              const pageContext = `User asked: "${lastUserMsg}"\nPage: ${action.value}\nTitle: ${data.meta?.title || "?"}\n${pageHeadings ? `Structure:\n${pageHeadings}\n` : ""}${(data.content || "").slice(0, 2000)}${pageVideos ? `\nVideos:\n${pageVideos}` : ""}${isVideoPage && foundVideos.length === 0 ? `\n[No video sources — page opened in new tab]` : ""}${pageLinks ? `\nLinks:\n${pageLinks}` : ""}`;
 
               const followUpId = generateId();
               updateConversation(convId, (conv2) => ({
@@ -1428,8 +1471,8 @@ export default function Home() {
               abortRef.current = followUpAbort;
               setIsStreaming(true);
               streamChat(
-                [{ role: "user" as const, content: pageContext + "\n\nIMPORTANT: Look at the user's original request above. Based on what they asked, use the links from the page to take the RIGHT action:\n- If video sources were found on the page (mp4/webm/m3u8 URLs), use [ACTION:OPEN_URL:video_url] to play the video directly\n- If they want a specific video/item -> find it in the links and use [ACTION:READ_URL:url] to navigate to it (NOT EMBED — video sites don't work in embeds)\n- If the specific item they want is NOT in the links on this page, look for pagination links (Next, page 2, >>) and use [ACTION:READ_URL:next_page_url] to keep searching\n- If they want a section/category -> find the link and navigate there with READ_URL\n- If they want to search -> construct the site's search URL with READ_URL\n- If they just wanted to read -> summarize\n- If this is a video page and you found the right content, open it in their browser with [ACTION:OPEN_URL:page_url]\n- If the page was already opened in a new tab (video page fallback), just tell the user it's open\nYou MUST use action tags to complete their request. Don't just describe the page — ACT on it! Keep navigating until you find what they want." }],
-                buildSystemPrompt(browserInfo, location, getMemoryContext()),
+                [{ role: "user" as const, content: pageContext + "\n\nACT on the user's request using the links above. Use [ACTION:BROWSE:url] to navigate to items, sections, or next pages. Use [ACTION:OPEN_URL:url] for direct video sources. Don't just describe — navigate. Keep going until you find what they want." }],
+                buildSystemPrompt(browserInfo, location, getMemoryContext(), { hasTabs: true, hasUrlInMessage: true }),
                 (chunk) => {
                   updateConversation(convId, (conv) => ({
                     ...conv,
@@ -1691,31 +1734,9 @@ export default function Home() {
           ),
         }));
 
-        // For image requests: also scrape top source pages for MORE images, then show carousel
+        // For image requests: use dedicated image API results (already fetched above)
         if (isImageQuery) {
-          const imgThinkId = addThinkingMsg(convId, `grabbing more images from sources...`);
-          // Scrape top 5 search result pages for additional images
-          const sourceUrls = (searchData.results || []).map((r: { url: string }) => r.url);
-          const extraImages: { url: string; alt?: string }[] = [];
-          const scrapeResults = await Promise.all(
-            sourceUrls.map(async (url: string) => {
-              try {
-                const res = await fetch(`/api/images?url=${encodeURIComponent(url)}`);
-                const data = await res.json();
-                return (data.images || []).map((img: { url: string; alt: string }) => ({ url: img.url, alt: img.alt || query }));
-              } catch { return []; }
-            })
-          );
-          for (const pageImgs of scrapeResults) {
-            for (const img of pageImgs) {
-              if (!isImageDuplicate(img.url, searchImages) && !isImageDuplicate(img.url, extraImages)) {
-                extraImages.push(img);
-              }
-            }
-          }
-          removeThinkingMsg(convId, imgThinkId);
-
-          const allImages = [...searchImages, ...extraImages];
+          const allImages = searchImages;
 
           // HYBRID: If user wants images AND research, carry images into the deep research path
           if (isHybridQuery) {
@@ -1734,10 +1755,10 @@ export default function Home() {
                   id: commentId,
                   role: "assistant" as const,
                   content: allImages.length > 0
-                    ? `Here are some ${cleanTopic} images I found for you~ \u{FF1D}w\u{FF1D} Grabbed ${allImages.length} from across multiple sources!`
+                    ? `Here are ${allImages.length} ${cleanTopic} images I found for you~ \u{FF1D}w\u{FF1D}`
                     : `Hmm I couldn't find many images for "${cleanTopic}" ;w; Maybe try a different search term?`,
                   timestamp: new Date(),
-                  sources: sources.length > 0 ? sources.slice(0, 15) : undefined,
+                  sources: sources.length > 0 ? sources.slice(0, 8) : undefined,
                   images: allImages.length > 0 ? allImages : undefined,
                   searchQuery: query,
                 },
@@ -1994,48 +2015,71 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
         updatedAt: new Date(),
       }));
 
-      const apiMessages = allMessages
+      // Sliding window: cap conversation to last 24 messages (~12 turns)
+      // Keeps context rich enough for continuity without bloating input tokens
+      const MAX_CONTEXT_MESSAGES = 24;
+      const windowedMessages = allMessages.length > MAX_CONTEXT_MESSAGES
+        ? allMessages.slice(-MAX_CONTEXT_MESSAGES)
+        : allMessages;
+
+      const apiMessages = windowedMessages
         .filter((m) => !m.isThinking)
         .map((m) => {
           let content = m.content;
-          // Enrich assistant messages with context about what was shown (images, sources, videos, embeds)
+          // Compact context annotations for assistant messages
           if (m.role === "assistant") {
             const extras: string[] = [];
             if (m.images && m.images.length > 0) {
-              const altTexts = m.images.slice(0, 5).map((img) => img.alt || "").filter(Boolean);
-              extras.push(`[I showed ${m.images.length} images${altTexts.length > 0 ? ` of: ${altTexts.join(", ")}` : ""}]`);
+              extras.push(`[showed ${m.images.length} images]`);
             }
             if (m.videos && m.videos.length > 0) {
-              const videoTitles = m.videos.slice(0, 3).map((v) => v.title || v.url).join(", ");
-              extras.push(`[I played ${m.videos.length} video(s): ${videoTitles}]`);
+              extras.push(`[played ${m.videos.length} video(s)]`);
             }
             if (m.webEmbeds && m.webEmbeds.length > 0) {
-              const embedTitles = m.webEmbeds.slice(0, 3).map((e) => e.title || e.url).join(", ");
-              extras.push(`[I opened: ${embedTitles}]`);
-            }
-            if (m.sources && m.sources.length > 0) {
-              const sourceTitles = m.sources.slice(0, 5).map((s) => s.title).join(", ");
-              extras.push(`[Sources shown: ${sourceTitles}]`);
+              const embedTitles = m.webEmbeds.slice(0, 2).map((e) => e.title || e.url).join(", ");
+              extras.push(`[opened: ${embedTitles}]`);
             }
             if (extras.length > 0) {
-              content = content + "\n" + extras.join("\n");
+              content = content + "\n" + extras.join(" ");
             }
           }
           return { role: m.role, content };
         });
 
+      const lastUserContent = windowedMessages.filter(m => m.role === "user").pop()?.content || "";
+      const browseIntent = isBrowseIntent(lastUserContent);
+      const resultPickIntent = isResultPickIntent(lastUserContent);
+
+      // Track last browse intent per conversation (used to decay stale browsing context)
+      if (browseIntent) {
+        lastBrowseIntentByConv.current[convId] = Date.now();
+      }
+      const lastBrowseAt = lastBrowseIntentByConv.current[convId] || 0;
+      const browseContextFresh = Date.now() - lastBrowseAt < 5 * 60 * 1000; // 5 minutes
+
+      // Compact search results injection only when user is explicitly picking/opening results
       const convSearchResults = searchResultsByConv.current[convId] || [];
-      if (convSearchResults.length > 0) {
+      const isSearchCommand = SEARCH_COMMAND_REGEX.test(lastUserContent);
+      const shouldInjectResults = convSearchResults.length > 0
+        && (resultPickIntent || (browseIntent && browseContextFresh && !isSearchCommand));
+      if (shouldInjectResults) {
         const resultsList = convSearchResults
+          .slice(0, 15)
           .map((r, i) => `${i + 1}. ${r.title} - ${r.url}`)
           .join("\n");
         apiMessages.push({
           role: "assistant",
-          content: `[Previous search results available]:\n${resultsList}\n\nI can open any of these by number with [ACTION:OPEN_RESULT:N], or embed any by URL with [ACTION:EMBED:url|title]. If the user says "embed the first result" I should use [ACTION:EMBED:${convSearchResults[0]?.url || "url"}|${convSearchResults[0]?.title || "title"}].`,
+          content: `[Results]:\n${resultsList}`,
         });
       }
 
-      const systemPrompt = buildSystemPrompt(browserInfo, location, getMemoryContext());
+      // Context-aware prompt: include browser/action layers only when needed
+      const activeConv = conversations.find((c) => c.id === convId);
+      const systemPrompt = buildSystemPrompt(browserInfo, location, getMemoryContext(), {
+        hasTabs: browseIntent && (activeConv?.tabs?.length || 0) > 0,
+        hasUrlInMessage: browseIntent && messageHasUrl(lastUserContent),
+        tabs: browseIntent ? activeConv?.tabs : undefined,
+      });
 
       abortRef.current = new AbortController();
 
@@ -2535,9 +2579,22 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
         generateTitle(activeConversationId, content);
       }
 
+      // Context gate: only run navigation/pagination pre-interceptors when we actually have browsing/search context.
+      const browseIntent = isBrowseIntent(content);
+      if (browseIntent) {
+        lastBrowseIntentByConv.current[activeConversationId] = Date.now();
+      }
+      const lastBrowseAt = lastBrowseIntentByConv.current[activeConversationId] || 0;
+      const browseContextFresh = Date.now() - lastBrowseAt < 5 * 60 * 1000; // 5 minutes
+      const convForIntercept = conversations.find((c) => c.id === activeConversationId);
+      const hasBrowsingContext = browseContextFresh && !!(
+        (convForIntercept?.tabs && convForIntercept.tabs.length > 0) ||
+        ((searchResultsByConv.current[activeConversationId] || []).length > 0)
+      );
+
       // Client-side URL detection: if user says "open X.com" or "go to X", open it directly
       // This bypasses AI filtering — the AI will still respond, but the URL opens immediately
-      const openMatch = content.match(/(?:open|go\s*to|visit|browse|navigate\s*to)\s+(?:https?:\/\/)?([a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z]{2,})+(?:\/\S*)?)/i);
+      const openMatch = content.match(/^\s*(?:open|go\s*to|visit|browse|navigate\s*to)\s+(?:https?:\/\/)?([a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z]{2,})+(?:\/\S*)?)\s*$/i);
       if (openMatch) {
         let directUrl = openMatch[0].replace(/^(?:open|go\s*to|visit|browse|navigate\s*to)\s+/i, "").trim();
         if (!directUrl.startsWith("http")) directUrl = "https://" + directUrl;
@@ -2549,7 +2606,7 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
         }
       } else {
         // Also match "open [site name]" without a domain — resolve known sites
-        const siteMatch = content.match(/(?:open|go\s*to)\s+(\w+\s*(?:videos?|hub|tube)?)\s*$/i);
+        const siteMatch = content.match(/^\s*(?:open|go\s*to)\s+(\w+\s*(?:videos?|hub|tube)?)\s*$/i);
         if (siteMatch) {
           const name = siteMatch[1].toLowerCase().replace(/\s+/g, "");
           const known: Record<string, string> = {
@@ -2812,8 +2869,8 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
 
       // ── PRE-AI INTERCEPTOR: Pagination / "next page" / "page N" ──
       // Catch "next page", "page 2", "more results", "keep going" and navigate to next page
-      const paginationMatch = content.match(/(?:next\s+page|page\s+(\d+)|more\s+(?:results|videos?)|keep\s+going|show\s+more|continue|go\s+to\s+page\s+(\d+))/i);
-      if (paginationMatch) {
+      const paginationMatch = content.match(/^\s*(?:next\s+page|page\s+(\d+)|more\s+(?:results|videos?)|go\s+to\s+page\s+(\d+))\s*$/i);
+      if (paginationMatch && hasBrowsingContext) {
         const conv = conversations.find((c) => c.id === activeConversationId);
         let contextUrl = "";
         
@@ -2974,7 +3031,7 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
       // ── PRE-AI INTERCEPTOR: "Go to [section/category]" on current site ──
       // Catch "go to the [X] section" or "show me [X] category" and navigate there
       const sectionMatch = content.match(/(?:go\s+to|show\s+me|open|browse)\s+(?:the\s+)?([a-zA-Z0-9\s]+?)\s+(?:section|category|page|tab)/i);
-      if (sectionMatch) {
+      if (sectionMatch && hasBrowsingContext) {
         const sectionName = sectionMatch[1].trim().toLowerCase();
         const conv = conversations.find((c) => c.id === activeConversationId);
         let contextUrl = "";
@@ -3102,103 +3159,10 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
         }
       }
 
-      // ── PRE-AI INTERCEPTOR: Title-based video requests ──
-      // Catch "play this video [TITLE]" or "open [TITLE]" and match against stored search results
-      const titlePlayMatch = content.match(/(?:play|watch|open|get|show)\s+(?:this\s+)?(?:video\s+)?(.{10,})/i);
-      if (titlePlayMatch) {
-        const requestedTitle = titlePlayMatch[1].trim().toLowerCase();
-        const convResults = searchResultsByConv.current[activeConversationId] || [];
-        
-        // Find best matching result by title similarity
-        let bestMatch: { title: string; url: string; snippet?: string } | null = null;
-        let bestScore = 0;
-        for (const result of convResults) {
-          const resultTitle = result.title.toLowerCase();
-          // Check if requested title is contained in result title or vice versa
-          if (resultTitle.includes(requestedTitle) || requestedTitle.includes(resultTitle)) {
-            const score = Math.min(requestedTitle.length, resultTitle.length) / Math.max(requestedTitle.length, resultTitle.length);
-            if (score > bestScore) {
-              bestScore = score;
-              bestMatch = result;
-            }
-          }
-          // Also check word overlap
-          const requestedWords = requestedTitle.split(/\s+/).filter(w => w.length > 2);
-          const resultWords = resultTitle.split(/\s+/).filter(w => w.length > 2);
-          const matchingWords = requestedWords.filter(w => resultWords.some(rw => rw.includes(w) || w.includes(rw)));
-          if (matchingWords.length >= 2) {
-            const wordScore = matchingWords.length / Math.max(requestedWords.length, 1);
-            if (wordScore > bestScore) {
-              bestScore = wordScore;
-              bestMatch = result;
-            }
-          }
-        }
-
-        if (bestMatch && bestScore > 0.3) {
-          console.log(`%c[CLIENT] 🎬 Title match found: "${bestMatch.title}" (score: ${bestScore.toFixed(2)})`, "color: #00ff88; font-weight: bold");
-          const interceptId = generateId();
-          updateConversation(activeConversationId, (c) => ({
-            ...c,
-            messages: [...c.messages, { id: interceptId, role: "assistant" as const, content: `Found it! Opening "${bestMatch!.title}"~`, timestamp: new Date() }],
-          }));
-          
-          // Open the video
-          try {
-            window.open(bestMatch.url, "_blank", "noopener,noreferrer");
-          } catch (e) {
-            console.error("[CLIENT] Failed to open matched video:", e);
-          }
-
-          // Also try to extract and play the video inline
-          setIsStreaming(true);
-          const thinkId = addThinkingMsg(activeConversationId, `loading video player...`);
-          const capturedConvId = activeConversationId;
-          const capturedUrl = bestMatch.url;
-          const capturedTitle = bestMatch.title;
-
-          (async () => {
-            try {
-              const isJsHeavy = /\b(xvideos|pornhub|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|rule34video)\b/i.test(capturedUrl);
-              const res = await fetch(`${isJsHeavy ? "/api/browse" : "/api/url"}?url=${encodeURIComponent(capturedUrl)}&maxContent=4000`);
-              const data = await res.json();
-              removeThinkingMsg(capturedConvId, thinkId);
-
-              // Check for video sources
-              const videos = data.videos || [];
-              const playableVideos = videos.filter((v: { url: string; type?: string }) => {
-                const u = v.url.toLowerCase();
-                return /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(u) || /^video\//i.test(v.type || "") || /mpegurl|dash/i.test(v.type || "");
-              });
-
-              if (playableVideos.length > 0) {
-                const videoEmbeds = playableVideos.slice(0, 3).map((v: { url: string; type?: string; quality?: string; poster?: string }) => ({
-                  url: v.url,
-                  platform: "other" as const,
-                  title: capturedTitle,
-                }));
-                updateConversation(capturedConvId, (c) => ({
-                  ...c,
-                  messages: c.messages.map((m) =>
-                    m.id === interceptId ? { ...m, videos: videoEmbeds } : m
-                  ),
-                }));
-              }
-              setIsStreaming(false);
-            } catch (e) {
-              console.error("[CLIENT] Video extraction failed:", e);
-              removeThinkingMsg(capturedConvId, thinkId);
-              setIsStreaming(false);
-            }
-          })();
-          return; // Don't send to AI
-        }
-      }
-
       // ── PRE-AI INTERCEPTOR: Contextual video/item requests ──
       // Catch "play me/send me/get me the Nth video" before the AI can refuse or do a generic search
       const videoItemMatch = content.match(/(?:play|watch|send|get|show|give|open)\s+(?:me\s+)?(?:the\s+)?(?:(\d+)(?:st|nd|rd|th)?|first|second|third|fourth|fifth)\s*(?:videos?|vids?|results?|one|link|clip|item|entry)/i);
-      if (videoItemMatch) {
+      if (videoItemMatch && hasBrowsingContext) {
         let targetIndex = 0;
         const numMatch = content.match(/(\d+)(?:st|nd|rd|th)/i);
         if (numMatch) {
@@ -3372,196 +3336,9 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
         }
       }
 
-      // ── PRE-AI INTERCEPTOR: Bare number/ordinal selection from stored results ──
-      // Catch "2", "the second one", "second", "number 3" when there are stored search results
-      const convResults = searchResultsByConv.current[activeConversationId] || [];
-      if (convResults.length > 0) {
-        let pickIndex = -1;
-        const bareNum = content.trim().match(/^(\d+)$/);
-        const ordinalNum = content.match(/(?:the\s+)?(?:(\d+)(?:st|nd|rd|th)|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)(?:\s+one)?$/i);
-        const numberPick = content.match(/^(?:number|#|no\.?)\s*(\d+)$/i);
-        if (bareNum) {
-          pickIndex = parseInt(bareNum[1], 10) - 1;
-        } else if (numberPick) {
-          pickIndex = parseInt(numberPick[1], 10) - 1;
-        } else if (ordinalNum) {
-          const numM = content.match(/(\d+)(?:st|nd|rd|th)/i);
-          if (numM) pickIndex = parseInt(numM[1], 10) - 1;
-          else if (/first/i.test(content)) pickIndex = 0;
-          else if (/second/i.test(content)) pickIndex = 1;
-          else if (/third/i.test(content)) pickIndex = 2;
-          else if (/fourth/i.test(content)) pickIndex = 3;
-          else if (/fifth/i.test(content)) pickIndex = 4;
-          else if (/sixth/i.test(content)) pickIndex = 5;
-          else if (/seventh/i.test(content)) pickIndex = 6;
-          else if (/eighth/i.test(content)) pickIndex = 7;
-          else if (/ninth/i.test(content)) pickIndex = 8;
-          else if (/tenth/i.test(content)) pickIndex = 9;
-        }
-
-        if (pickIndex >= 0 && pickIndex < convResults.length) {
-          const picked = convResults[pickIndex];
-          console.log(`%c[CLIENT] 🎯 Bare pick #${pickIndex + 1}: ${picked.title} -> ${picked.url}`, "color: #00ffcc; font-weight: bold");
-          const pickId = generateId();
-          const isVideoUrl = /\b(video|watch|view_video|clip|embed|play|rule34video|pornhub|xvideos|xhamster|redtube|tube8|spankbang|xnxx|youporn)\b/i.test(picked.url);
-          updateConversation(activeConversationId, (c) => ({
-            ...c,
-            messages: [...c.messages, {
-              id: pickId, role: "assistant" as const, timestamp: new Date(),
-              content: isVideoUrl ? `Loading ${picked.title}~` : `Here's #${pickIndex + 1}: ${picked.title}~`,
-              webEmbeds: isVideoUrl ? undefined : [{ url: picked.url, title: picked.title }],
-            }],
-          }));
-          // For video URLs, trigger deep video extraction pipeline
-          if (isVideoUrl) {
-            setIsStreaming(true);
-            const capturedConvId = activeConversationId;
-            (async () => {
-              const thinkId = addThinkingMsg(capturedConvId, `extracting video from ${picked.title}...`);
-              try {
-                const urlRes = await fetch(`/api/browse?url=${encodeURIComponent(picked.url)}&maxContent=4000`);
-                const urlData = await urlRes.json();
-                let foundVids: { url: string; type?: string; quality?: string }[] = urlData.videos || [];
-                let playable = foundVids.filter((v: { url: string; type?: string }) => /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(v.url) || /^video\//i.test(v.type || ""));
-                // Puppeteer fallback if no direct videos
-                if (playable.length === 0) {
-                  console.log(`%c[CLIENT] 🎬 No direct videos, trying Puppeteer extraction`, "color: #ff9900; font-weight: bold");
-                  try {
-                    const extractRes = await fetch(`/api/video-extract?url=${encodeURIComponent(picked.url)}`);
-                    const extractData = await extractRes.json();
-                    if (extractData.videos?.length > 0) {
-                      foundVids = extractData.videos;
-                      playable = foundVids.filter((v: { url: string; type?: string }) => /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(v.url) || /^video\//i.test(v.type || "") || /mpegurl|dash/i.test(v.type || ""));
-                    }
-                  } catch (e) { console.error("[CLIENT] Puppeteer extraction failed:", e); }
-                }
-                removeThinkingMsg(capturedConvId, thinkId);
-                if (playable.length > 0) {
-                  const videoEmbeds = playable.slice(0, 3).map((v: { url: string }) => ({ url: v.url, platform: "other" as const, title: picked.title }));
-                  updateConversation(capturedConvId, (c) => ({
-                    ...c,
-                    messages: c.messages.map((m) => m.id === pickId ? {
-                      ...m, content: `Here's ${picked.title}~ Enjoy!`,
-                      videos: videoEmbeds,
-                      sources: [{ url: picked.url, title: picked.title, favicon: `https://www.google.com/s2/favicons?domain=${(() => { try { return new URL(picked.url).hostname; } catch { return ""; } })()}&sz=16` }],
-                    } : m),
-                  }));
-                } else {
-                  // Fallback: just open in new tab
-                  updateConversation(capturedConvId, (c) => ({
-                    ...c,
-                    messages: c.messages.map((m) => m.id === pickId ? {
-                      ...m, content: `Opening ${picked.title} in a new tab~`,
-                      webEmbeds: [{ url: picked.url, title: picked.title }],
-                    } : m),
-                  }));
-                }
-                try { window.open(picked.url, "_blank", "noopener,noreferrer"); } catch {}
-                setIsStreaming(false);
-              } catch (e) {
-                console.error("[CLIENT] Video extraction failed:", e);
-                removeThinkingMsg(capturedConvId, thinkId);
-                try { window.open(picked.url, "_blank", "noopener,noreferrer"); } catch {}
-                setIsStreaming(false);
-              }
-            })();
-          } else {
-            try { window.open(picked.url, "_blank", "noopener,noreferrer"); } catch (e) { console.error("[CLIENT] Failed to open picked result:", e); }
-          }
-          return; // Don't send to AI
-        }
-
-        // ── Title-based fuzzy match against stored results ──
-        // Catch "click this one [zaviel]Full Eevee Animation" or "play [zaviel]Full Eevee Animation"
-        // by matching words from the user's message against stored result titles
-        const userWords = content.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(w => w.length > 2);
-        if (userWords.length >= 2) {
-          let bestTitleMatch: { url: string; title: string } | null = null;
-          let bestTitleScore = 0;
-          for (const result of convResults) {
-            const titleWords = result.title.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(w => w.length > 2);
-            if (titleWords.length === 0) continue;
-            const matchedWords = titleWords.filter(tw => userWords.some(uw => uw === tw || uw.includes(tw) || tw.includes(uw)));
-            const score = matchedWords.length / titleWords.length;
-            if (score > bestTitleScore) {
-              bestTitleScore = score;
-              bestTitleMatch = result;
-            }
-          }
-          // Require at least 50% of title words to match AND at least 2 matched words
-          if (bestTitleMatch && bestTitleScore >= 0.5) {
-            const titleWords = bestTitleMatch.title.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(w => w.length > 2);
-            const matchedCount = titleWords.filter(tw => userWords.some(uw => uw === tw || uw.includes(tw) || tw.includes(uw))).length;
-            if (matchedCount >= 2) {
-              console.log(`%c[CLIENT] 🎯 Title-matched pick: "${bestTitleMatch.title}" (score: ${bestTitleScore.toFixed(2)}, matched: ${matchedCount}/${titleWords.length}) -> ${bestTitleMatch.url}`, "color: #00ffcc; font-weight: bold");
-              const pickId = generateId();
-              const isVideoUrl = /\b(video|watch|view_video|clip|embed|play|rule34video|pornhub|xvideos|xhamster|redtube|tube8|spankbang|xnxx|youporn)\b/i.test(bestTitleMatch.url);
-              updateConversation(activeConversationId, (c) => ({
-                ...c,
-                messages: [...c.messages, {
-                  id: pickId, role: "assistant" as const, timestamp: new Date(),
-                  content: isVideoUrl ? `Loading ${bestTitleMatch!.title}~` : `Here you go~ ${bestTitleMatch!.title}`,
-                  webEmbeds: isVideoUrl ? undefined : [{ url: bestTitleMatch!.url, title: bestTitleMatch!.title }],
-                }],
-              }));
-              if (isVideoUrl) {
-                setIsStreaming(true);
-                const capturedConvId = activeConversationId;
-                const matchedResult = bestTitleMatch;
-                (async () => {
-                  const thinkId = addThinkingMsg(capturedConvId, `extracting video from ${matchedResult.title}...`);
-                  try {
-                    const urlRes = await fetch(`/api/browse?url=${encodeURIComponent(matchedResult.url)}&maxContent=4000`);
-                    const urlData = await urlRes.json();
-                    let foundVids: { url: string; type?: string; quality?: string }[] = urlData.videos || [];
-                    let playable = foundVids.filter((v: { url: string; type?: string }) => /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(v.url) || /^video\//i.test(v.type || ""));
-                    if (playable.length === 0) {
-                      try {
-                        const extractRes = await fetch(`/api/video-extract?url=${encodeURIComponent(matchedResult.url)}`);
-                        const extractData = await extractRes.json();
-                        if (extractData.videos?.length > 0) {
-                          foundVids = extractData.videos;
-                          playable = foundVids.filter((v: { url: string; type?: string }) => /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(v.url) || /^video\//i.test(v.type || "") || /mpegurl|dash/i.test(v.type || ""));
-                        }
-                      } catch (e) { console.error("[CLIENT] Puppeteer extraction failed:", e); }
-                    }
-                    removeThinkingMsg(capturedConvId, thinkId);
-                    if (playable.length > 0) {
-                      const videoEmbeds = playable.slice(0, 3).map((v: { url: string }) => ({ url: v.url, platform: "other" as const, title: matchedResult.title }));
-                      updateConversation(capturedConvId, (c) => ({
-                        ...c,
-                        messages: c.messages.map((m) => m.id === pickId ? {
-                          ...m, content: `Here's ${matchedResult.title}~ Enjoy!`,
-                          videos: videoEmbeds,
-                          sources: [{ url: matchedResult.url, title: matchedResult.title, favicon: `https://www.google.com/s2/favicons?domain=${(() => { try { return new URL(matchedResult.url).hostname; } catch { return ""; } })()}&sz=16` }],
-                        } : m),
-                      }));
-                    } else {
-                      updateConversation(capturedConvId, (c) => ({
-                        ...c,
-                        messages: c.messages.map((m) => m.id === pickId ? {
-                          ...m, content: `Opening ${matchedResult.title} in a new tab~`,
-                          webEmbeds: [{ url: matchedResult.url, title: matchedResult.title }],
-                        } : m),
-                      }));
-                    }
-                    try { window.open(matchedResult.url, "_blank", "noopener,noreferrer"); } catch {}
-                    setIsStreaming(false);
-                  } catch (e) {
-                    console.error("[CLIENT] Video extraction failed:", e);
-                    removeThinkingMsg(capturedConvId, thinkId);
-                    try { window.open(matchedResult.url, "_blank", "noopener,noreferrer"); } catch {}
-                    setIsStreaming(false);
-                  }
-                })();
-              } else {
-                try { window.open(bestTitleMatch.url, "_blank", "noopener,noreferrer"); } catch (e) { console.error("[CLIENT] Failed to open title-matched result:", e); }
-              }
-              return; // Don't send to AI
-            }
-          }
-        }
-      }
+      // All ambiguous cases (bare numbers, ordinals, title matching) are handled by the AI
+      // via [ACTION:OPEN_RESULT:N] with proper conversation context awareness.
+      // This prevents interceptors from hijacking game answers, casual chat, etc.
 
       // Pass updatedMessages directly — don't read from state (React batching race)
       sendToAI(activeConversationId, updatedMessages);
