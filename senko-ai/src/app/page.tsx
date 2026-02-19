@@ -11,19 +11,33 @@ import { useLocation } from "@/hooks/use-location";
 import { useMemory, parseMemoryTags } from "@/hooks/use-memory";
 import type { Message, Conversation, AppSettings, BrowserInfo, LocationInfo, WebSource, SenkoTab } from "@/types/chat";
 import { buildLayeredPrompt, messageHasUrl } from "@/lib/prompt-builder";
+import { parseIntent } from "@/lib/intent-parser";
 import researchPromptText from "@/app/prompts/research.txt";
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
 }
 
-// Strip internal tags from content for display (STATUS, MEMORY, ACTION, think blocks)
+// Strip internal tags from content for display (STATUS, MEMORY, ACTION, think blocks, metadata tags)
 function stripInternalTags(content: string): string {
   return content
     .replace(/[^\S\n]*\[STATUS:[^\]]*\]?[^\S\n]*/gi, " ")
     .replace(/[^\S\n]*\[MEMORY:[^\]]*\]?[^\S\n]*/gi, " ")
     .replace(/[^\S\n]*\[ACTION:[^\]]*\]?[^\S\n]*/gi, " ")
     .replace(/[^\S\n]*ACTION:\s*[A-Z_]*:?[^\n]*/gi, " ")
+    // Catch-all: strip any [key:value] metadata tags the AI leaks (e.g. [happy:...], [_topic:...], [video_title:...])
+    .replace(/\[(?:_?[a-z][a-z0-9_]*):(?:[^\]]{0,200})\]/gi, "")
+    // Also catch tags without colons (e.g. [_played eevee video]) and tags with spaces in key
+    .replace(/\[_[a-z][a-z0-9_ ]{0,50}[^\]]{0,150}\]/gi, "")
+    // Catch orphan tag fragments: "key:value]" without opening bracket (preceded by any non-alphanum)
+    .replace(/([^a-zA-Z0-9]|^)(?:_?[a-z][a-z0-9_]*):(?:[^\]]{0,200})\]/gi, "$1")
+    // Catch orphan colon-less fragments: "_played video]" (missing opening bracket, no colon)
+    .replace(/([^a-zA-Z0-9]|^)_[a-z][a-z0-9_ ]{0,50}\]/gi, "$1")
+    // Strip trailing clusters of tag-like metadata at end of content (with or without colons)
+    .replace(/(?:[_a-z][a-z0-9_]*:[^\]]*\]){1,}\s*$/gi, "")
+    .replace(/(?:_[a-z][a-z0-9_ ]*\]){1,}\s*$/gi, "")
+    // Strip incomplete tag openings left at end during streaming (e.g. "[happy:" with no closing ])
+    .replace(/\[_?[a-z][a-z0-9_]*:[^\]]*$/gi, "")
     .replace(/<think>[\s\S]*?<\/think>/g, "")
     .replace(/<think>[\s\S]*$/g, "")
     .replace(/\n{3,}/g, "\n\n")
@@ -1162,16 +1176,21 @@ export default function Home() {
                 webEmbeds.push({ url, title: hostname || url });
               }
             }
-            try {
-              window.open(url, "_blank", "noopener,noreferrer");
-              console.log(`%c[BROWSE] ✅ Window opened`, "color: #00ff88", url);
-              // Queue for text scraping (skip video sites — they get deep video extraction instead)
-              if (!url.includes("google.com/search") && !url.includes("youtube.com/results") && !ytId && !isVideoSiteUrl) {
-                console.log(`%c[BROWSE] 📄 Queuing page for scrape`, "color: #88ccff", url);
-                urlsToScrape.push(url);
+            // Only open a new tab for non-video sites — video sites get inline extraction, no tab needed
+            if (!isVideoSiteUrl) {
+              try {
+                window.open(url, "_blank", "noopener,noreferrer");
+                console.log(`%c[BROWSE] ✅ Window opened`, "color: #00ff88", url);
+                // Queue for text scraping (skip search result pages and YouTube)
+                if (!url.includes("google.com/search") && !url.includes("youtube.com/results") && !ytId) {
+                  console.log(`%c[BROWSE] 📄 Queuing page for scrape`, "color: #88ccff", url);
+                  urlsToScrape.push(url);
+                }
+              } catch (e) {
+                console.error(`%c[BROWSE] ❌ Failed to open window`, "color: #ff4444", url, e);
               }
-            } catch (e) {
-              console.error(`%c[BROWSE] ❌ Failed to open window`, "color: #ff4444", url, e);
+            } else {
+              console.log(`%c[BROWSE] 🎬 Video site — skipping tab, will extract inline`, "color: #ff9900", url);
             }
           }
         }
@@ -1191,11 +1210,19 @@ export default function Home() {
           const results = searchResultsByConv.current[convId] || [];
           console.log(`%c[BROWSE] 📋 Opening search result #${idx + 1}`, "color: #00ccff; font-weight: bold", { index: idx, totalResults: results.length, result: results[idx] });
           if (results[idx]) {
-            try {
-              window.open(results[idx].url, "_blank", "noopener,noreferrer");
-              urlsToScrape.push(results[idx].url);
-              console.log(`%c[BROWSE] ✅ Opened result`, "color: #00ff88", results[idx].url);
-            } catch (e) { console.error(`%c[BROWSE] ❌ Failed`, "color: #ff4444", e); }
+            const resultUrl = results[idx].url;
+            // For video sites, use BROWSE for inline extraction instead of opening a tab
+            const isVideoSite = /\b(xvideos|pornhub|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|rule34video|rule34world)\b/i.test(resultUrl);
+            if (isVideoSite) {
+              console.log(`%c[BROWSE] 🎬 Video site result — using BROWSE for inline extraction`, "color: #ff9900", resultUrl);
+              processActions(convId, messageId, `[ACTION:BROWSE:${resultUrl}]`);
+            } else {
+              try {
+                window.open(resultUrl, "_blank", "noopener,noreferrer");
+                urlsToScrape.push(resultUrl);
+                console.log(`%c[BROWSE] ✅ Opened result`, "color: #00ff88", resultUrl);
+              } catch (e) { console.error(`%c[BROWSE] ❌ Failed`, "color: #ff4444", e); }
+            }
           } else {
             console.warn(`%c[BROWSE] ⚠️ Result #${idx + 1} not found`, "color: #ffaa00", { available: results.length });
           }
@@ -1326,25 +1353,60 @@ export default function Home() {
               // Re-filter after potential Puppeteer results
               const playableVideos = foundVideos.filter((v: { url: string; type?: string }) => {
                 const u = v.url.toLowerCase();
+                // Skip get_file URLs (KVS sites — duplicate of CDN URL, 404s without browser cookies)
+                if (/\/get_file\//i.test(u)) return false;
+                // Skip known ad domains
+                if (/\b(banhq|otcagpqmeoqb|eunow4u)\b/i.test(u)) return false;
                 return /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(u) || /^video\//i.test(v.type || "") || /mpegurl|dash/i.test(v.type || "");
               });
 
+              // Deduplicate by normalized URL — extract core filename across different CDN patterns
+              const normalizeVideoUrl = (url: string): string => {
+                try {
+                  const u = new URL(url);
+                  const path = u.pathname.toLowerCase();
+                  // Extract video filename from query params (CDN URLs like remote_control.php?file=...)
+                  const fileParam = u.searchParams.get('file') || u.searchParams.get('url');
+                  if (fileParam) {
+                    const decoded = decodeURIComponent(fileParam).toLowerCase();
+                    const fname = decoded.match(/([^\/]+\.(?:mp4|webm|m3u8|mpd|ogg|mov))$/i)?.[1];
+                    if (fname) return fname;
+                    const segments = decoded.split('/').filter(Boolean);
+                    if (segments.length > 0) return segments[segments.length - 1];
+                  }
+                  // Extract filename from path
+                  const pathFilename = path.match(/([^\/]+\.(?:mp4|webm|m3u8|mpd|ogg|mov))$/i)?.[1];
+                  if (pathFilename) return pathFilename;
+                  return `${u.hostname}${path}`;
+                } catch {
+                  return url.split('?')[0].toLowerCase();
+                }
+              };
+              
+              const seenVideoKeys = new Set<string>();
+              const uniquePlayableVideos = playableVideos.filter((v: { url: string }) => {
+                const normalizedKey = normalizeVideoUrl(v.url);
+                if (seenVideoKeys.has(normalizedKey)) {
+                  console.log(`%c[DEDUP] 💧 Filtered duplicate video: ${v.url.slice(0, 100)}`, "color: #888; font-style: italic");
+                  return false;
+                }
+                seenVideoKeys.add(normalizedKey);
+                return true;
+              });
+
               // If we found playable video sources, auto-play the best one + open page in new tab
-              if (playableVideos.length > 0) {
-                const bestVideo = playableVideos[0]; // Already sorted by quality in the API
+              if (uniquePlayableVideos.length > 0) {
+                const bestVideo = uniquePlayableVideos[0]; // Already sorted by quality in the API
                 console.log(`%c[READ_URL] 🎬 AUTO-PLAYING video: ${bestVideo.url} (${bestVideo.type || "unknown"}, ${bestVideo.quality || "?"})`, "color: #00ff88; font-weight: bold");
 
                 // Add video embed to the message for inline playback
-                const videoEmbeds = playableVideos.slice(0, 3).map((v: { url: string; type?: string; quality?: string; poster?: string }) => ({
+                const videoEmbeds = uniquePlayableVideos.slice(0, 3).map((v: { url: string; type?: string; quality?: string; poster?: string }) => ({
                   url: v.url,
                   platform: "other" as const,
                   title: data.meta?.title || "Video",
                 }));
 
-                // Also open the page in a new tab so user can watch there if inline doesn't work
-                try {
-                  window.open(action.value, "_blank", "noopener,noreferrer");
-                } catch (e) { console.error("[READ_URL] Failed to open tab:", e); }
+                // Video is playing inline — no need to open a separate tab
 
                 updateConversation(convId, (conv) => ({
                   ...conv,
@@ -1366,7 +1428,7 @@ export default function Home() {
                 const conv = conversations.find((c) => c.id === convId);
                 const userMessages = conv?.messages.filter((m) => m.role === "user") || [];
                 const lastUserMsg = userMessages[userMessages.length - 1]?.content || "";
-                const videoList = playableVideos.slice(0, 5).map((v: { url: string; type?: string; quality?: string }) => `- ${v.url}${v.quality ? ` (${v.quality})` : ""}${v.type ? ` [${v.type}]` : ""}`).join("\n");
+                const videoList = uniquePlayableVideos.slice(0, 5).map((v: { url: string; type?: string; quality?: string }) => `- ${v.url}${v.quality ? ` (${v.quality})` : ""}${v.type ? ` [${v.type}]` : ""}`).join("\n");
 
                 const followUpId = generateId();
                 updateConversation(convId, (conv2) => ({
@@ -1422,7 +1484,22 @@ export default function Home() {
               }
 
               // Build a context message with the page data — send MORE links for browsing
-              const pageLinks = (data.links || []).slice(0, 50).map((l: { url: string; text: string }, i: number) => `${i + 1}. [${l.text}](${l.url})`).join("\n");
+              // Filter out ad/tracking/junk links that confuse navigation
+              const adLinkPattern = /\b(doubleclick|googlesyndication|googleadservices|adsystem|adserver|adclick|clicktrack|tracker|pagead|pubads|syndication|taboola|outbrain|mgid|exoclick|exosrv|juicyads|trafficjunky|trafficstars|popunder|popads|clickadu|adsterra|propellerads|popcash|hilltopads|adcash|clickaine|revcontent|zergnet|disqus\.com|facebook\.com\/tr|analytics|pixel|beacon|imp\?|\/ad\/|\/ads\/|\/adx\/|banner|sponsor)\b/i;
+              const filteredLinks = (data.links || [])
+                .filter((l: { url: string; text: string }) => {
+                  if (!l.url || !l.text?.trim()) return false;
+                  if (l.text.trim().length < 2) return false;
+                  if (adLinkPattern.test(l.url)) return false;
+                  // Skip javascript: and data: URLs
+                  if (/^(javascript|data|mailto|tel):/i.test(l.url)) return false;
+                  // Skip links that are just "#" or empty anchors
+                  if (l.url === "#" || l.url === "#!" || l.url.endsWith("/#")) return false;
+                  return true;
+                })
+                // Deduplicate by URL
+                .filter((l: { url: string }, i: number, arr: { url: string }[]) => arr.findIndex((a) => a.url === l.url) === i);
+              const pageLinks = filteredLinks.slice(0, 40).map((l: { url: string; text: string }, i: number) => `${i + 1}. [${l.text.trim()}](${l.url})`).join("\n");
               const pageHeadings = (data.headings || []).map((h: { level: number; text: string }) => `${"#".repeat(h.level)} ${h.text}`).join("\n");
               const pageVideos = foundVideos.map((v: { url: string; type?: string; quality?: string }) => `- ${v.url}${v.type ? ` (${v.type})` : ""}${v.quality ? ` [${v.quality}]` : ""}`).join("\n");
 
@@ -1453,6 +1530,77 @@ export default function Home() {
               const userMessages = conv?.messages.filter((m) => m.role === "user") || [];
               const lastUserMsg = userMessages[userMessages.length - 1]?.content || "";
 
+              // ── Adaptive listing page detection ──
+              // If the page has multiple content/video links on the same domain, it's a listing page
+              // Present results as a numbered list instead of blindly navigating
+              let pageOrigin = "";
+              try { pageOrigin = new URL(action.value).origin; } catch { /* skip */ }
+              const contentVideoLinks = filteredLinks.filter((l: { url: string; text: string }) => {
+                const u = l.url.toLowerCase();
+                try {
+                  const lu = new URL(l.url);
+                  if (lu.origin.toLowerCase() !== pageOrigin.toLowerCase()) return false;
+                  if (lu.pathname === "/" || lu.pathname === "") return false;
+                } catch { return false; }
+                if (/\b(login|sign|register|tags|categories|members|privacy|terms|dmca|contact|about|faq|help|home|search)\b/i.test(u) && !/\/(video|watch|view_video|clip|post|thread|article)s?\b/i.test(u)) return false;
+                // Content link: has a meaningful path (video, watch, post, etc.) or decent link text
+                if (/\/(video|watch|view_video|clip|post|thread|article|gallery|image)s?\b/i.test(u)) return true;
+                if (/view_video|viewkey|watch\?v=/i.test(u)) return true;
+                if (l.text?.trim().length > 5 && !(/^\d+$/.test(l.text.trim()))) return true;
+                return false;
+              });
+
+              const isListingPage = contentVideoLinks.length >= 3 && !isVideoPage;
+
+              if (isListingPage) {
+                // Resolve all URLs to absolute
+                const resolvedListItems = contentVideoLinks.slice(0, 20).map((l: { url: string; text: string }) => {
+                  let fullUrl = l.url;
+                  if (fullUrl.startsWith("/")) { try { fullUrl = pageOrigin + fullUrl; } catch { /* keep */ } }
+                  return { text: l.text.trim(), url: fullUrl };
+                });
+
+                // Store results for follow-up picks (OPEN_RESULT interceptor)
+                const newListResults = resolvedListItems.map((l: { text: string; url: string }) => ({ title: l.text, url: l.url, snippet: "" }));
+                const existingResults = searchResultsByConv.current[convId] || [];
+                const seenUrls = new Set(newListResults.map((r: { url: string }) => r.url));
+                searchResultsByConv.current[convId] = [...newListResults, ...existingResults.filter((r: { url: string }) => !seenUrls.has(r.url))].slice(0, 50);
+
+                // Check for auto-pick in the original user message ("click the first video", "play the 3rd one")
+                const userPickMatch = lastUserMsg.match(/(?:click|play|open|watch|pick|select|choose)\s+(?:the\s+)?(?:(\d+)(?:st|nd|rd|th)?|(first|second|third|fourth|fifth|last))\s+(?:video|result|one|link|clip|item)/i);
+                const ordMap: Record<string, number> = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5 };
+                const autoPick = userPickMatch ? (userPickMatch[1] ? parseInt(userPickMatch[1]) : (ordMap[userPickMatch[2]?.toLowerCase()] || 0)) : 0;
+                const autoPickIdx = autoPick === -1 ? resolvedListItems.length - 1 : autoPick - 1;
+
+                if (autoPick > 0 && autoPickIdx >= 0 && autoPickIdx < resolvedListItems.length) {
+                  // Auto-navigate to the picked item
+                  const picked = resolvedListItems[autoPickIdx];
+                  console.log(`%c[READ_URL] 🎯 Listing auto-pick #${autoPick}: "${picked.text}" → ${picked.url}`, "color: #00ffcc; font-weight: bold");
+                  removeThinkingMsg(convId, thinkId);
+                  updateConversation(convId, (c) => ({
+                    ...c,
+                    messages: c.messages.map((m) =>
+                      m.id === messageId ? { ...m, content: stripInternalTags(m.content) + `\nFound ${resolvedListItems.length} results~ Picking #${autoPick}: "${picked.text}"...` } : m
+                    ),
+                  }));
+                  processActions(convId, messageId, `[ACTION:BROWSE:${picked.url}]`);
+                  return; // processActions handles the rest
+                }
+
+                // No auto-pick — present numbered list and let user choose
+                const listText = resolvedListItems.slice(0, 10).map((l: { text: string }, i: number) => `${i + 1}. ${l.text}`).join("\n");
+                const listMsg = `Found ${resolvedListItems.length} items~\n\n${listText}${resolvedListItems.length > 10 ? `\n\n...and ${resolvedListItems.length - 10} more` : ""}\n\nWhich one do you want? Just say the number~`;
+                removeThinkingMsg(convId, thinkId);
+                updateConversation(convId, (c) => ({
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === messageId ? { ...m, content: stripInternalTags(m.content) + `\n${listMsg}` } : m
+                  ),
+                }));
+                setIsStreaming(false);
+                return; // Wait for user selection
+              }
+
               // Feed the page content back to AI for a follow-up response
               const pageContext = `User asked: "${lastUserMsg}"\nPage: ${action.value}\nTitle: ${data.meta?.title || "?"}\n${pageHeadings ? `Structure:\n${pageHeadings}\n` : ""}${(data.content || "").slice(0, 2000)}${pageVideos ? `\nVideos:\n${pageVideos}` : ""}${isVideoPage && foundVideos.length === 0 ? `\n[No video sources — page opened in new tab]` : ""}${pageLinks ? `\nLinks:\n${pageLinks}` : ""}`;
 
@@ -1470,27 +1618,25 @@ export default function Home() {
               const followUpAbort = new AbortController();
               abortRef.current = followUpAbort;
               setIsStreaming(true);
+              let followUpRaw = "";
               streamChat(
-                [{ role: "user" as const, content: pageContext + "\n\nACT on the user's request using the links above. Use [ACTION:BROWSE:url] to navigate to items, sections, or next pages. Use [ACTION:OPEN_URL:url] for direct video sources. Don't just describe — navigate. Keep going until you find what they want." }],
+                [{ role: "user" as const, content: pageContext + "\n\nYou are navigating step-by-step for the user. Look at the numbered links above and pick the ONE that best matches what the user wants. Use [ACTION:BROWSE:url] to navigate deeper (search results, video pages, categories). For video pages, BROWSE triggers auto-extraction — just navigate there. IGNORE ad/spam links. If this is a search results page, pick the best matching result link. If the user hasn't reached their goal yet, keep navigating — don't stop. Output just the action tag and a brief 1-sentence status." }],
                 buildSystemPrompt(browserInfo, location, getMemoryContext(), { hasTabs: true, hasUrlInMessage: true }),
                 (chunk) => {
+                  followUpRaw += chunk;
                   updateConversation(convId, (conv) => ({
                     ...conv,
                     messages: conv.messages.map((m) =>
-                      m.id === followUpId ? { ...m, content: stripInternalTags(m.content + chunk) } : m
+                      m.id === followUpId ? { ...m, content: stripInternalTags(followUpRaw) } : m
                     ),
                   }));
                 },
                 () => {
-                  // Get the raw content before cleaning for action processing
-                  const conv = conversations.find((c) => c.id === convId);
-                  const rawContent = conv?.messages.find((m) => m.id === followUpId)?.content || "";
-
                   updateConversation(convId, (conv2) => ({
                     ...conv2,
                     messages: conv2.messages.map((m) =>
                       m.id === followUpId ? (() => {
-                        const { cleanText, extractedSources } = parseAIOutput(m.content);
+                        const { cleanText, extractedSources } = parseAIOutput(followUpRaw);
                         const existing = m.sources || [];
                         const seen = new Set(existing.map((s) => s.url));
                         const merged = [...existing];
@@ -1502,10 +1648,10 @@ export default function Home() {
                   setIsStreaming(false);
                   abortRef.current = null;
 
-                  // Process any chained actions from the follow-up response
-                  if (rawContent.includes("[ACTION:")) {
+                  // Process any chained actions from the follow-up response (uses raw content, not stripped)
+                  if (followUpRaw.includes("[ACTION:")) {
                     console.log(`%c[READ_URL] 🔗 Chaining actions from follow-up`, "color: #00ffcc; font-weight: bold");
-                    processActions(convId, followUpId, rawContent);
+                    processActions(convId, followUpId, followUpRaw);
                   }
                 },
                 (err) => { console.error("READ_URL follow-up error:", err); setIsStreaming(false); abortRef.current = null; },
@@ -1550,7 +1696,13 @@ export default function Home() {
             const urlRes = await fetch(`/api/browse?url=${encodeURIComponent(videoUrl)}&maxContent=4000`);
             const urlData = await urlRes.json();
             let foundVids: { url: string; type?: string; quality?: string }[] = urlData.videos || [];
-            let playable = foundVids.filter((v: { url: string; type?: string }) => /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(v.url) || /^video\//i.test(v.type || "") || /mpegurl|dash/i.test(v.type || ""));
+            const filterPlayable = (vids: { url: string; type?: string }[]) => vids.filter((v) => {
+              const u = v.url.toLowerCase();
+              if (/\/get_file\//i.test(u)) return false;
+              if (/\b(banhq|otcagpqmeoqb|eunow4u)\b/i.test(u)) return false;
+              return /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(u) || /^video\//i.test(v.type || "") || /mpegurl|dash/i.test(v.type || "");
+            });
+            let playable = filterPlayable(foundVids);
             // Puppeteer video-extract fallback if browse didn't find playable videos
             if (playable.length === 0) {
               console.log(`%c[BROWSE] 🎬 No direct videos from browse, trying video-extract fallback`, "color: #ff9900");
@@ -1559,7 +1711,7 @@ export default function Home() {
                 const extractData = await extractRes.json();
                 if (extractData.videos?.length > 0) {
                   foundVids = extractData.videos;
-                  playable = foundVids.filter((v: { url: string; type?: string }) => /\.(mp4|webm|m3u8|mpd|ogg|mov)\b/i.test(v.url) || /^video\//i.test(v.type || "") || /mpegurl|dash/i.test(v.type || ""));
+                  playable = filterPlayable(foundVids);
                 } else if (extractData.isListingPage && extractData.videoLinks?.length > 0) {
                   // Listing page detected - store video links for follow-up
                   console.log(`%c[BROWSE] 📄 Listing page with ${extractData.videoLinks.length} video links`, "color: #ff9900; font-weight: bold");
@@ -1578,7 +1730,40 @@ export default function Home() {
             removeThinkingMsg(convId, thinkId);
             if (playable.length > 0) {
               console.log(`%c[BROWSE] 🎬 Found ${playable.length} playable videos!`, "color: #00ff88; font-weight: bold");
-              const videoEmbeds = playable.slice(0, 3).map((v: { url: string }) => ({
+              
+              // Deduplicate videos (same logic as READ_URL)
+              const normalizeVideoUrl = (url: string): string => {
+                try {
+                  const u = new URL(url);
+                  const path = u.pathname.toLowerCase();
+                  const fileParam = u.searchParams.get('file') || u.searchParams.get('url');
+                  if (fileParam) {
+                    const decoded = decodeURIComponent(fileParam).toLowerCase();
+                    const fname = decoded.match(/([^\/]+\.(?:mp4|webm|m3u8|mpd|ogg|mov))$/i)?.[1];
+                    if (fname) return fname;
+                    const segments = decoded.split('/').filter(Boolean);
+                    if (segments.length > 0) return segments[segments.length - 1];
+                  }
+                  const pathFilename = path.match(/([^\/]+\.(?:mp4|webm|m3u8|mpd|ogg|mov))$/i)?.[1];
+                  if (pathFilename) return pathFilename;
+                  return `${u.hostname}${path}`;
+                } catch {
+                  return url.split('?')[0].toLowerCase();
+                }
+              };
+              
+              const seenVideoKeys = new Set<string>();
+              const uniquePlayable = playable.filter((v: { url: string }) => {
+                const normalizedKey = normalizeVideoUrl(v.url);
+                if (seenVideoKeys.has(normalizedKey)) {
+                  console.log(`%c[DEDUP] 💧 Filtered duplicate video: ${v.url.slice(0, 100)}`, "color: #888; font-style: italic");
+                  return false;
+                }
+                seenVideoKeys.add(normalizedKey);
+                return true;
+              });
+              
+              const videoEmbeds = uniquePlayable.slice(0, 3).map((v: { url: string }) => ({
                 url: v.url, platform: "other" as const, title: urlData.meta?.title || "Video",
               }));
               updateConversation(convId, (c) => ({
@@ -2592,6 +2777,154 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
         ((searchResultsByConv.current[activeConversationId] || []).length > 0)
       );
 
+      // ── NLP INTENT PARSER: Adaptive site-search detection ──
+      // Uses compromise NLP to parse intent from any phrasing — replaces brittle regex for site+query patterns
+      const nlpIntent = parseIntent(content);
+      console.log(`%c[NLP] 🧠 Parsed intent:`, "color: #cc88ff; font-weight: bold", nlpIntent);
+
+      if (nlpIntent.type === "site-search" && nlpIntent.site && nlpIntent.query) {
+        const siteUrl = nlpIntent.site;
+        const searchQuery = nlpIntent.query;
+        const nlpAutoPick = nlpIntent.autoPick || 0;
+
+        console.log(`%c[NLP] 🔍 Site search: "${searchQuery}" on ${siteUrl}`, "color: #00ffcc; font-weight: bold");
+        // Most video sites (KVS-based: rule34video, etc.) use path-based search: /search/QUERY/
+        // General sites use query param: /search?q=QUERY
+        // Path-based is more universal for video sites and returns correct link hrefs
+        const searchUrl = `${siteUrl}/search/${encodeURIComponent(searchQuery)}/`;
+        const nlpInterceptId = generateId();
+        updateConversation(activeConversationId, (c) => ({
+          ...c,
+          messages: [...c.messages, { id: nlpInterceptId, role: "assistant" as const, content: `Searching for "${searchQuery}" on ${nlpIntent.siteName || siteUrl}~`, timestamp: new Date() }],
+        }));
+        setIsStreaming(true);
+        const nlpThinkId = addThinkingMsg(activeConversationId, `searching ${nlpIntent.siteName || siteUrl} for "${searchQuery}"...`);
+        const nlpConvId = activeConversationId;
+
+        (async () => {
+          try {
+            // Use /api/browse for JS-heavy sites to get accurate rendered links
+            const isJsHeavy = /\b(xvideos|pornhub|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|rule34video|twitter|x\.com|reddit|instagram|tiktok)\b/i.test(siteUrl);
+            const res = await fetch(`${isJsHeavy ? "/api/browse" : "/api/url"}?url=${encodeURIComponent(searchUrl)}&maxContent=12000`);
+            const data = await res.json();
+            removeThinkingMsg(nlpConvId, nlpThinkId);
+
+            if (data.error) {
+              updateConversation(nlpConvId, (c) => ({
+                ...c,
+                messages: c.messages.map((m) =>
+                  m.id === nlpInterceptId ? { ...m, content: `Couldn't reach that site ;w; ${data.error}` } : m
+                ),
+              }));
+              setIsStreaming(false);
+              return;
+            }
+
+            // Filter video/content links (same logic as before)
+            const links: { url: string; text: string }[] = data.links || [];
+            const adPattern = /\b(doubleclick|googlesyndication|adsystem|adserver|exoclick|exosrv|juicyads|trafficjunky|trafficstars|popunder|popads|adsterra|propellerads|spankurbate|rule34comic|adglare)\b/i;
+            const videoLinks = links.filter((l) => {
+              const u = l.url.toLowerCase();
+              try { const lu = new URL(l.url); if (lu.pathname === "/" || lu.pathname === "") return false; } catch { return false; }
+              if (adPattern.test(u)) return false;
+              if (u.includes("/login") || u.includes("/register") || u.includes("/signup") || u.includes("/tags") || u.includes("/categories") || u.includes("/members")) return false;
+              if (/\/(video|watch|view_video|clip)s?\b/i.test(u)) return true;
+              if (/view_video|viewkey|watch\?v=/i.test(u)) return true;
+              return false;
+            });
+            const contentLinks = videoLinks.length > 0 ? videoLinks : links.filter((l) => {
+              const u = l.url.toLowerCase();
+              const t = l.text.toLowerCase();
+              try { const lu = new URL(l.url); if (lu.pathname === "/" || lu.pathname === "") return false; } catch { return false; }
+              if (u === searchUrl.toLowerCase() || u === siteUrl.toLowerCase() || u === siteUrl.toLowerCase() + "/") return false;
+              if (/^https?:\/\//i.test(t)) return false;
+              if (adPattern.test(u)) return false;
+              if (/\b(login|sign|register|page|next|prev|tag|categor|sort|filter|lang|privacy|terms|dmca|contact|about|faq|help|home|menu|search|advanced)\b/i.test(t) && t.length < 30) return false;
+              if (t.length > 5 && !(/^\d+$/.test(t))) return true;
+              return false;
+            });
+
+            if (contentLinks.length > 0) {
+              // Resolve URLs to absolute
+              const resolvedLinks = contentLinks.slice(0, 20).map((l) => {
+                let fullUrl = l.url;
+                if (fullUrl.startsWith("/")) { try { fullUrl = new URL(siteUrl).origin + fullUrl; } catch { /* keep */ } }
+                return { text: l.text, url: fullUrl };
+              });
+
+              // Store results for follow-up picks
+              const nlpResults = resolvedLinks.map((l) => ({ title: l.text, url: l.url, snippet: "" }));
+              const existingResults = searchResultsByConv.current[nlpConvId] || [];
+              const seenUrls = new Set(nlpResults.map((r: { url: string }) => r.url));
+              searchResultsByConv.current[nlpConvId] = [...nlpResults, ...existingResults.filter((r: { url: string }) => !seenUrls.has(r.url))].slice(0, 50);
+
+              // Auto-pick if user specified Nth
+              const pickIdx = nlpAutoPick === -1 ? resolvedLinks.length - 1 : nlpAutoPick - 1;
+              if (nlpAutoPick !== 0 && pickIdx >= 0 && pickIdx < resolvedLinks.length) {
+                const picked = resolvedLinks[pickIdx];
+                console.log(`%c[NLP] 🎯 Auto-pick #${nlpAutoPick}: "${picked.text}" → ${picked.url}`, "color: #00ffcc; font-weight: bold");
+                updateConversation(nlpConvId, (c) => ({
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === nlpInterceptId ? { ...m, content: `Found ${resolvedLinks.length} results~ Picking #${nlpAutoPick}: "${picked.text}"...` } : m
+                  ),
+                }));
+                processActions(nlpConvId, nlpInterceptId, `[ACTION:BROWSE:${picked.url}]`);
+                return;
+              }
+
+              // No auto-pick — present numbered list (escape brackets to prevent markdown mangling titles like "[zaviel]")
+              const resultList = resolvedLinks.slice(0, 10).map((l, i) => `${i + 1}. ${l.text.replace(/\[/g, "\\[").replace(/\]/g, "\\]")}`).join("\n");
+              const resultMsg = `Found ${resolvedLinks.length} results for "${searchQuery}"~\n\n${resultList}${resolvedLinks.length > 10 ? `\n\n...and ${resolvedLinks.length - 10} more` : ""}\n\nWhich one do you wanna watch? Just say the number~`;
+              updateConversation(nlpConvId, (c) => ({
+                ...c,
+                messages: c.messages.map((m) =>
+                  m.id === nlpInterceptId ? { ...m, content: resultMsg, webEmbeds: [{ url: searchUrl, title: `${searchQuery} - Search Results` }] } : m
+                ),
+              }));
+            } else {
+              updateConversation(nlpConvId, (c) => ({
+                ...c,
+                messages: c.messages.map((m) =>
+                  m.id === nlpInterceptId ? { ...m, content: `Hmm couldn't find any results for "${searchQuery}" on there ;w;`, webEmbeds: [{ url: searchUrl, title: `Search: ${searchQuery}` }] } : m
+                ),
+              }));
+            }
+            setIsStreaming(false);
+          } catch (e) {
+            console.error("[NLP] Site search failed:", e);
+            removeThinkingMsg(nlpConvId, nlpThinkId);
+            setIsStreaming(false);
+            sendToAI(nlpConvId, updatedMessages);
+          }
+        })();
+        return; // Don't send to AI
+      }
+
+      // ── NLP PICK-RESULT: "play option 5", "5", "option 3", "play the 3rd video" ──
+      // Only intercept if there are stored search results to pick from
+      if (nlpIntent.type === "pick-result" && nlpIntent.autoPick) {
+        const pickResults = searchResultsByConv.current[activeConversationId] || [];
+        if (pickResults.length > 0) {
+          const pickIdx = nlpIntent.autoPick === -1 ? pickResults.length - 1 : nlpIntent.autoPick - 1;
+          if (pickIdx >= 0 && pickIdx < pickResults.length) {
+            const picked = pickResults[pickIdx];
+            console.log(`%c[NLP] 🎯 Pick result #${nlpIntent.autoPick}: "${picked.title}" → ${picked.url}`, "color: #00ffcc; font-weight: bold");
+            const pickMsgId = generateId();
+            const pickConvId = activeConversationId;
+            updateConversation(pickConvId, (c) => ({
+              ...c,
+              messages: [...c.messages, { id: pickMsgId, role: "assistant" as const, content: `Playing #${nlpIntent.autoPick}: "${picked.title}"~`, timestamp: new Date() }],
+            }));
+            setIsStreaming(true);
+            // Use BROWSE for inline video extraction instead of opening a tab
+            processActions(pickConvId, pickMsgId, `[ACTION:BROWSE:${picked.url}]`);
+            return; // Don't send to AI
+          }
+        }
+        // No results or out of range — fall through to AI
+      }
+
       // Client-side URL detection: if user says "open X.com" or "go to X", open it directly
       // This bypasses AI filtering — the AI will still respond, but the URL opens immediately
       const openMatch = content.match(/^\s*(?:open|go\s*to|visit|browse|navigate\s*to)\s+(?:https?:\/\/)?([a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z]{2,})+(?:\/\S*)?)\s*$/i);
@@ -2634,9 +2967,11 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
       // ── PRE-AI INTERCEPTOR: "What videos are on this page" with URL ──
       // Catch "what videos are on [URL]" / "what's on this page [URL]" and BROWSE it directly
       // Also catches URLs at the end of the message when asking about videos/content
+      // EXCLUDE action verbs (play, open, watch) - those mean navigate to the URL, not browse for content
       const urlInMessage = content.match(/(https?:\/\/[^\s]+)/i);
+      const hasActionVerb = /\b(?:play|open|watch|go\s+to|visit|browse|navigate|embed)\b/i.test(content);
       const asksAboutContent = /what(?:'s|\s+are|\s+is)?.*(?:videos?|content|on\s+(?:this|that)\s+page)|(?:show|list|get|find).*(?:videos?|content)/i.test(content);
-      const pageContentMatch = (urlInMessage && asksAboutContent) ? urlInMessage
+      const pageContentMatch = (urlInMessage && asksAboutContent && !hasActionVerb) ? urlInMessage
         : content.match(/(?:what(?:'s|\s+are|\s+is)?\s+(?:some\s+)?(?:videos?|content|links?|stuff)\s+(?:are\s+)?(?:on|at|from)\s+(?:this\s+page\s+)?)(https?:\/\/[^\s]+)/i)
         || content.match(/(https?:\/\/[^\s]+)\s+(?:what(?:'s|\s+are|\s+is)?\s+(?:some\s+)?(?:videos?|content|links?|stuff)\s+(?:are\s+)?(?:on|at|there))/i)
         || content.match(/(?:show\s+me|list|get)\s+(?:the\s+)?(?:videos?|content|links?)\s+(?:on|from|at)\s+(https?:\/\/[^\s]+)/i);
@@ -2732,139 +3067,6 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
           }
         })();
         return; // Don't send to AI
-      }
-
-      // ── PRE-AI INTERCEPTOR: "Look up X on Y site" ──
-      // Catch "look up eevee on rule34video" / "search for X on Y" and fetch the site's search page directly
-      const siteSearchMatch = content.match(/(?:look\s*up|search\s*(?:for)?|find)\s+(.+?)\s+(?:on|at|from)\s+([a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z]{2,})+)/i)
-        || content.match(/(?:look\s*up|search\s*(?:for)?|find)\s+(.+?)\s+(?:on|at|from)\s+(\w+(?:video|hub|tube|porn|xxx|rule34|hentai)\w*)/i)
-        || content.match(/(?:look\s*up|search\s*(?:for)?|find)\s+(.+?)\s+(?:on|at)\s+(?:that\s+)?(?:site|website|page)/i);
-      if (siteSearchMatch) {
-        const searchQuery = siteSearchMatch[1].trim();
-        let siteName = siteSearchMatch[2]?.trim() || "";
-
-        // If "that site/website" was matched, find the site from conversation context
-        let siteUrl = "";
-        if (!siteName || /^(?:that\s+)?(?:site|website|page)$/i.test(siteName)) {
-          const conv = conversations.find((c) => c.id === activeConversationId);
-          if (conv) {
-            const tabs = conv.tabs || [];
-            if (tabs.length > 0) {
-              const activeTab = tabs.find((t) => t.active) || tabs[tabs.length - 1];
-              try { siteUrl = new URL(activeTab.url).origin; } catch { /* skip */ }
-            }
-            if (!siteUrl) {
-              for (let i = conv.messages.length - 1; i >= 0; i--) {
-                const msg = conv.messages[i];
-                if (msg.webEmbeds?.length) { try { siteUrl = new URL(msg.webEmbeds[msg.webEmbeds.length - 1].url).origin; } catch { /* skip */ } break; }
-                if (msg.sources?.length) { try { siteUrl = new URL(msg.sources[msg.sources.length - 1].url).origin; } catch { /* skip */ } break; }
-              }
-            }
-          }
-        } else {
-          // Construct URL from site name
-          if (!siteName.includes(".")) siteName = siteName + ".com";
-          if (!siteName.startsWith("http")) siteName = "https://" + siteName;
-          siteUrl = siteName;
-        }
-
-        if (siteUrl && searchQuery) {
-          console.log(`%c[CLIENT] 🔍 Pre-AI site search: "${searchQuery}" on ${siteUrl}`, "color: #00ffcc; font-weight: bold");
-          const searchUrl = `${siteUrl}/search/?q=${encodeURIComponent(searchQuery)}`;
-          const interceptId = generateId();
-          updateConversation(activeConversationId, (c) => ({
-            ...c,
-            messages: [...c.messages, { id: interceptId, role: "assistant" as const, content: `Searching for "${searchQuery}" on there~`, timestamp: new Date() }],
-          }));
-          setIsStreaming(true);
-          const thinkId = addThinkingMsg(activeConversationId, `searching ${siteUrl} for "${searchQuery}"...`);
-          const capturedConvId = activeConversationId;
-
-          (async () => {
-            try {
-              // Use /api/browse for JS-heavy sites to get accurate rendered links
-              const isJsHeavy = /\b(xvideos|pornhub|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|rule34video|twitter|x\.com|reddit|instagram|tiktok)\b/i.test(siteUrl);
-              const res = await fetch(`${isJsHeavy ? "/api/browse" : "/api/url"}?url=${encodeURIComponent(searchUrl)}&maxContent=12000`);
-              const data = await res.json();
-              removeThinkingMsg(capturedConvId, thinkId);
-
-              if (data.error) {
-                updateConversation(capturedConvId, (c) => ({
-                  ...c,
-                  messages: c.messages.map((m) =>
-                    m.id === interceptId ? { ...m, content: `Couldn't reach that site ;w; ${data.error}` } : m
-                  ),
-                }));
-                setIsStreaming(false);
-                return;
-              }
-
-              // Store the search URL as a tab for context
-
-              // Find video/content links
-              const links: { url: string; text: string }[] = data.links || [];
-              const videoLinks = links.filter((l) => {
-                const u = l.url.toLowerCase();
-                try { const lu = new URL(l.url); if (lu.pathname === "/" || lu.pathname === "") return false; } catch { return false; }
-                if (/spankurbate|rule34comic|exoclick|trafficjunky|juicyads|adglare/i.test(u)) return false;
-                if (u.includes("/login") || u.includes("/register") || u.includes("/signup") || u.includes("/tags") || u.includes("/categories") || u.includes("/members")) return false;
-                if (/\/(video|watch|view_video|clip)s?\b/i.test(u)) return true;
-                if (/view_video|viewkey|watch\?v=/i.test(u)) return true;
-                return false;
-              });
-
-              // Fall back to broader content links if no video-specific ones
-              const contentLinks = videoLinks.length > 0 ? videoLinks : links.filter((l) => {
-                const u = l.url.toLowerCase();
-                const t = l.text.toLowerCase();
-                try { const lu = new URL(l.url); if (lu.pathname === "/" || lu.pathname === "") return false; } catch { return false; }
-                if (u === searchUrl.toLowerCase() || u === siteUrl.toLowerCase() || u === siteUrl.toLowerCase() + "/") return false;
-                if (/^https?:\/\//i.test(t)) return false;
-                if (/spankurbate|rule34comic|exoclick|trafficjunky|juicyads|adglare/i.test(u)) return false;
-                if (/\b(login|sign|register|page|next|prev|tag|categor|sort|filter|lang|privacy|terms|dmca|contact|about|faq|help|home|menu|search|advanced)\b/i.test(t) && t.length < 30) return false;
-                if (t.length > 5 && !(/^\d+$/.test(t))) return true;
-                return false;
-              });
-
-              if (contentLinks.length > 0) {
-                // Merge new site results with existing ones (new first, old kept for topic-switching)
-                const newSiteResults = contentLinks.slice(0, 20).map((l) => {
-                  let fullUrl = l.url;
-                  if (fullUrl.startsWith("/")) { try { fullUrl = new URL(siteUrl).origin + fullUrl; } catch { /* keep */ } }
-                  return { title: l.text, url: fullUrl, snippet: "" };
-                });
-                const existingSiteResults = searchResultsByConv.current[capturedConvId] || [];
-                const seenSiteUrls = new Set(newSiteResults.map((r: { url: string }) => r.url));
-                searchResultsByConv.current[capturedConvId] = [...newSiteResults, ...existingSiteResults.filter((r: { url: string }) => !seenSiteUrls.has(r.url))].slice(0, 50);
-
-                // Build a numbered list of results
-                const resultList = contentLinks.slice(0, 10).map((l, i) => `${i + 1}. ${l.text}`).join("\n");
-                const resultMsg = `Found ${contentLinks.length} results for "${searchQuery}"~\n\n${resultList}${contentLinks.length > 10 ? `\n\n...and ${contentLinks.length - 10} more` : ""}\n\nWhich one do you wanna watch?`;
-
-                updateConversation(capturedConvId, (c) => ({
-                  ...c,
-                  messages: c.messages.map((m) =>
-                    m.id === interceptId ? { ...m, content: resultMsg, webEmbeds: [{ url: searchUrl, title: `${searchQuery} - Search Results` }] } : m
-                  ),
-                }));
-              } else {
-                updateConversation(capturedConvId, (c) => ({
-                  ...c,
-                  messages: c.messages.map((m) =>
-                    m.id === interceptId ? { ...m, content: `Hmm couldn't find any results for "${searchQuery}" on there ;w;`, webEmbeds: [{ url: searchUrl, title: `Search: ${searchQuery}` }] } : m
-                  ),
-                }));
-              }
-              setIsStreaming(false);
-            } catch (e) {
-              console.error("[CLIENT] Site search intercept failed:", e);
-              removeThinkingMsg(capturedConvId, thinkId);
-              setIsStreaming(false);
-              sendToAI(capturedConvId, updatedMessages);
-            }
-          })();
-          return; // Don't send to AI
-        }
       }
 
       // ── PRE-AI INTERCEPTOR: Pagination / "next page" / "page N" ──
