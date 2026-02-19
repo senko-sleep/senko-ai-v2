@@ -29,7 +29,9 @@ function getFaviconUrl(url: string): string {
 }
 
 function hasRichContent(content: string): boolean {
-  return /```|^\s*[-*]\s|^\s*\d+\.\s|^#{1,3}\s|\*\*|__|\|.*\|/m.test(content);
+  // Only recognize specific rich content patterns that are definitely Markdown
+  // Avoid matching simple text with asterisks like *blush*
+  return /```|^\s*[-*]\s|^\s*\d+\.\s|^#{1,3}\s|\|\s*.*\s*\|/m.test(content);
 }
 
 export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatMessageProps) {

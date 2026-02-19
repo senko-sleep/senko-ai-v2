@@ -1461,7 +1461,7 @@ app.get("/browse", async (req, res) => {
     // Set cookies for age-gated sites (Pornhub, XVideos, etc.)
     const urlObj = new URL(url);
     const domain = urlObj.hostname.replace(/^www\./, "");
-    if (/pornhub|xvideos|xhamster|redtube|youporn|tube8|spankbang|xnxx/i.test(domain)) {
+    if (/pornhub|xvideos|xhamster|redtube|youporn|tube8|spankbang|xnxx|rule34video|rule34world|eporner|tnaflix/i.test(domain)) {
       await page.setCookie(
         { name: "accessAgeDisclaimerPH", value: "1", domain: `.${domain}` },
         { name: "accessAgeDisclaimerXV", value: "1", domain: `.${domain}` },
@@ -1720,7 +1720,7 @@ app.get("/video-extract", async (req, res) => {
     // Set cookies for age-gated sites (Pornhub, XVideos, etc.)
     const urlObj = new URL(url);
     const domain = urlObj.hostname.replace(/^www\./, "");
-    if (/pornhub|xvideos|xhamster|redtube|youporn|tube8|spankbang|xnxx/i.test(domain)) {
+    if (/pornhub|xvideos|xhamster|redtube|youporn|tube8|spankbang|xnxx|rule34video|rule34world|eporner|tnaflix/i.test(domain)) {
       await page.setCookie(
         { name: "accessAgeDisclaimerPH", value: "1", domain: `.${domain}` },
         { name: "accessAgeDisclaimerXV", value: "1", domain: `.${domain}` },
