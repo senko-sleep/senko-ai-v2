@@ -160,7 +160,7 @@ export function ChatInput({
                   size="sm"
                   onClick={handleSend}
                   disabled={!content.trim() || disabled}
-                  className="mb-0.5 h-11 w-11 shrink-0 rounded-xl bg-[var(--senko-accent)] p-0 text-black hover:brightness-90 disabled:opacity-30 sm:h-10 sm:w-10 transition-all hover:shadow-[0_0_20px_var(--senko-accent-dim)]"
+                  className="mb-0.5 h-11 w-11 shrink-0 rounded-xl bg-[var(--senko-accent)] p-0 text-black hover:brightness-90 disabled:opacity-30 sm:h-10 sm:w-10 transition-all"
                 >
                   <Send className="h-5 w-5" />
                 </Button>
@@ -174,7 +174,7 @@ export function ChatInput({
       </div>
 
       <p className="mt-2 text-center text-[11px] text-zinc-600 hidden sm:block">
-        Senko can search the web, open apps, browse sites, and more~ but double-check important stuff!
+        Senko can search the web, open apps, and browse sites. Double-check important info.
       </p>
     </div>
   );

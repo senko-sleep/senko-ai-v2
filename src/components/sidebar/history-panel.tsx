@@ -32,6 +32,34 @@ function formatRelativeDate(date: Date): string {
   }).format(date);
 }
 
+function getDateGroup(date: Date): string {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today.getTime() - 86400000);
+  const weekAgo = new Date(today.getTime() - 7 * 86400000);
+  const d = new Date(date);
+
+  if (d >= today) return "Today";
+  if (d >= yesterday) return "Yesterday";
+  if (d >= weekAgo) return "This Week";
+  return "Older";
+}
+
+function getLastMessageSnippet(conv: Conversation): string {
+  const msgs = conv.messages.filter((m) => !m.isThinking);
+  if (msgs.length === 0) return "";
+  const last = msgs[msgs.length - 1];
+  let text = last.content
+    .replace(/\[ACTION:[^\]]+\]/g, "")
+    .replace(/\[STATUS:[^\]]+\]/g, "")
+    .replace(/\[MEMORY:[^\]]+\]/g, "")
+    .replace(/<think>[\s\S]*?<\/think>/g, "")
+    .replace(/[#*_~`>]/g, "")
+    .trim();
+  if (text.length > 60) text = text.slice(0, 57) + "...";
+  return text;
+}
+
 export function HistoryPanel({
   conversations,
   activeConversationId,
@@ -82,49 +110,75 @@ export function HistoryPanel({
             </p>
           </div>
         ) : (
-          <div className="space-y-1">
-            {filtered.map((conversation) => (
-              <button
-                key={conversation.id}
-                onClick={() => onSelectConversation(conversation.id)}
-                className={cn(
-                  "group flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left transition-all",
-                  activeConversationId === conversation.id
-                    ? "bg-[var(--senko-accent)]/10 text-white"
-                    : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-300"
-                )}
-              >
-                <MessageSquare className="h-4 w-4 shrink-0 text-zinc-600" />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[13px] font-medium">
-                    {conversation.title}
-                  </p>
-                  <p className="text-[11px] text-zinc-600">
-                    {formatRelativeDate(new Date(conversation.updatedAt))}
-                    {" -- "}
-                    {conversation.messages.length} msg
-                    {conversation.messages.length !== 1 ? "s" : ""}
-                  </p>
-                </div>
-                <span
-                  role="button"
-                  tabIndex={0}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDeleteConversation(conversation.id);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.stopPropagation();
-                      onDeleteConversation(conversation.id);
-                    }
-                  }}
-                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg p-0 text-zinc-700 opacity-0 transition-opacity hover:bg-red-500/10 hover:text-red-400 group-hover:opacity-100 cursor-pointer"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </span>
-              </button>
-            ))}
+          <div className="space-y-0.5">
+            {(() => {
+              let lastGroup = "";
+              return filtered.map((conversation) => {
+                const group = getDateGroup(new Date(conversation.updatedAt));
+                const showGroupHeader = group !== lastGroup;
+                lastGroup = group;
+                const snippet = getLastMessageSnippet(conversation);
+                const hasTabs = (conversation.tabs?.length || 0) > 0;
+
+                return (
+                  <div key={conversation.id}>
+                    {showGroupHeader && (
+                      <p className="px-2 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-600">
+                        {group}
+                      </p>
+                    )}
+                    <button
+                      onClick={() => onSelectConversation(conversation.id)}
+                      className={cn(
+                        "group flex w-full items-start gap-2.5 rounded-xl px-3 py-2.5 text-left transition-all",
+                        activeConversationId === conversation.id
+                          ? "bg-[var(--senko-accent)]/10 text-white"
+                          : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-300"
+                      )}
+                    >
+                      <MessageSquare className="h-4 w-4 shrink-0 text-zinc-600 mt-0.5" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <p className="truncate text-[13px] font-medium flex-1">
+                            {conversation.title}
+                          </p>
+                          {hasTabs && (
+                            <span className="shrink-0 h-1.5 w-1.5 rounded-full bg-cyan-400/60" title="Has open tabs" />
+                          )}
+                        </div>
+                        {snippet && (
+                          <p className="truncate text-[11px] text-zinc-600 mt-0.5 leading-snug">
+                            {snippet}
+                          </p>
+                        )}
+                        <p className="text-[10px] text-zinc-700 mt-0.5">
+                          {formatRelativeDate(new Date(conversation.updatedAt))}
+                          {" · "}
+                          {conversation.messages.length} msg{conversation.messages.length !== 1 ? "s" : ""}
+                        </p>
+                      </div>
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteConversation(conversation.id);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.stopPropagation();
+                            onDeleteConversation(conversation.id);
+                          }
+                        }}
+                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg p-0 text-zinc-700 opacity-0 transition-opacity hover:bg-red-500/10 hover:text-red-400 group-hover:opacity-100 cursor-pointer mt-0.5"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </span>
+                    </button>
+                  </div>
+                );
+              });
+            })()}
           </div>
         )}
       </div>

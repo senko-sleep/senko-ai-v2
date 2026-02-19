@@ -24,10 +24,14 @@ export function ImageLightbox({ src, alt, onClose }: ImageLightboxProps) {
 
   useEffect(() => {
     document.addEventListener("keydown", handleKeyDown);
+    // Prevent layout shift: compensate for scrollbar width before hiding overflow
+    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+    document.body.style.paddingRight = `${scrollbarWidth}px`;
     document.body.style.overflow = "hidden";
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
       document.body.style.overflow = "";
+      document.body.style.paddingRight = "";
     };
   }, [handleKeyDown]);
 

@@ -4,41 +4,71 @@ import os from "os";
 
 export const runtime = "nodejs";
 
-// Whitelist of safe app names -> commands per platform
+// Builds a PowerShell command that searches both user and common Start Menu folders
+// for a .lnk matching the display name, then launches it — no Store dependency.
+function psSearch(displayName: string): string {
+  const escaped = displayName.replace(/'/g, "''");
+  return `powershell -Command "$n='${escaped}';$dirs=@([Environment]::GetFolderPath('StartMenu'),[Environment]::GetFolderPath('CommonStartMenu'));$lnk=$dirs|ForEach-Object{Get-ChildItem -Path $_ -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue}|Where-Object{$_.BaseName -like \\"*$n*\\"}|Select-Object -First 1;if($lnk){Start-Process $lnk.FullName}else{Start-Process '${escaped}'}"`;
+}
+
+// Known app name -> executable mappings per platform
 const APP_COMMANDS: Record<string, Record<string, string>> = {
-  // Windows
+  // Windows - mix of traditional apps and UWP/Store apps
   win32: {
-    chrome: "start chrome",
-    "google chrome": "start chrome",
-    firefox: "start firefox",
-    edge: "start msedge",
-    notepad: "start notepad",
-    calculator: "start calc",
-    calc: "start calc",
-    paint: "start mspaint",
-    explorer: "start explorer",
-    "file explorer": "start explorer",
-    cmd: "start cmd",
-    terminal: "start wt",
-    "windows terminal": "start wt",
-    powershell: "start powershell",
-    settings: "start ms-settings:",
-    spotify: "start spotify:",
-    discord: "start discord:",
-    steam: "start steam:",
-    vscode: "start code",
-    "visual studio code": "start code",
-    "task manager": "start taskmgr",
-    snipping: "start snippingtool",
-    "snipping tool": "start snippingtool",
-    word: "start winword",
-    excel: "start excel",
-    powerpoint: "start powerpnt",
-    outlook: "start outlook",
-    teams: "start msteams:",
-    "microsoft teams": "start msteams:",
-    obs: "start obs64",
-    vlc: "start vlc",
+    // Traditional desktop apps
+    chrome: 'start "" "chrome"',
+    "google chrome": 'start "" "chrome"',
+    firefox: 'start "" "firefox"',
+    edge: 'start "" "msedge"',
+    notepad: 'start "" "notepad"',
+    calculator: 'start "" "calc"',
+    calc: 'start "" "calc"',
+    paint: 'start "" "mspaint"',
+    explorer: 'start "" "explorer"',
+    "file explorer": 'start "" "explorer"',
+    cmd: 'start "" "cmd"',
+    terminal: 'start "" "wt"',
+    "windows terminal": 'start "" "wt"',
+    powershell: 'start "" "powershell"',
+    "task manager": 'start "" "taskmgr"',
+    snipping: 'start "" "snippingtool"',
+    "snipping tool": 'start "" "SnippingTool"',
+    word: 'start "" "winword"',
+    excel: 'start "" "excel"',
+    powerpoint: 'start "" "powerpnt"',
+    outlook: 'start "" "outlook"',
+    obs: 'start "" "obs64"',
+    vlc: 'start "" "vlc"',
+    brave: 'start "" "brave"',
+    "brave browser": 'start "" "brave"',
+    vscode: 'start "" "code"',
+    "visual studio code": 'start "" "code"',
+    // Apps found via Start Menu path search (no Store dependency)
+    spotify: psSearch("Spotify"),
+    discord: psSearch("Discord"),
+    steam: psSearch("Steam"),
+    settings: 'start "" "ms-settings:"',
+    "microsoft store": 'start "" "ms-windows-store:"',
+    store: 'start "" "ms-windows-store:"',
+    teams: psSearch("Microsoft Teams"),
+    "microsoft teams": psSearch("Microsoft Teams"),
+    xbox: psSearch("Xbox"),
+    photos: psSearch("Photos"),
+    mail: psSearch("Mail"),
+    calendar: psSearch("Calendar"),
+    "to do": psSearch("Microsoft To Do"),
+    todo: psSearch("Microsoft To Do"),
+    "microsoft to do": psSearch("Microsoft To Do"),
+    slack: psSearch("Slack"),
+    zoom: psSearch("Zoom"),
+    telegram: psSearch("Telegram"),
+    whatsapp: psSearch("WhatsApp"),
+    figma: psSearch("Figma"),
+    "epic games": psSearch("Epic Games Launcher"),
+    epic: psSearch("Epic Games Launcher"),
+    blender: psSearch("Blender"),
+    gimp: psSearch("GIMP"),
+    audacity: psSearch("Audacity"),
   },
   // macOS
   darwin: {
@@ -92,31 +122,61 @@ export async function POST(req: NextRequest) {
     const command = platformApps[appName];
 
     if (!command) {
-      // Try to open it directly as a best-effort on Windows
-      if (platform === "win32") {
-        const safeApp = appName.replace(/[^a-zA-Z0-9 _-]/g, "");
-        if (!safeApp) {
-          return Response.json({
-            error: `Unknown app: "${app}". Available: ${Object.keys(platformApps).join(", ")}`,
-          }, { status: 400 });
-        }
+      // Try to open ANY app directly - no whitelist restrictions
+      const safeApp = appName.replace(/[^a-zA-Z0-9 _.-]/g, "");
+      if (!safeApp) {
+        return Response.json({ error: `Invalid app name: "${app}"` }, { status: 400 });
+      }
 
+      if (platform === "win32") {
+        // Windows: Try multiple methods in sequence
+        // 1. Direct exe name (fastest, works for apps on PATH)
+        // 2. PowerShell Start Menu search (finds installed apps by display name without Store)
+        // 3. explorer shell:AppsFolder search (UWP fallback)
         return new Promise<Response>((resolve) => {
-          exec(`start ${safeApp}`, { timeout: 5000 }, (err) => {
+          // First try direct exe name
+          const exeCommand = `start "" "${safeApp}"`;
+          exec(exeCommand, { timeout: 5000 }, (err1) => {
+            if (!err1) {
+              resolve(Response.json({ success: true, app: safeApp, platform, command: exeCommand, method: "exe" }));
+              return;
+            }
+            // Exe failed — search Start Menu shortcuts (.lnk) by display name
+            const psCommand = `powershell -Command "$name = '${safeApp}'; $dirs = @([Environment]::GetFolderPath('StartMenu'), [Environment]::GetFolderPath('CommonStartMenu')); $lnk = $dirs | ForEach-Object { Get-ChildItem -Path $_ -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue } | Where-Object { $_.BaseName -like \\"*$name*\\" } | Select-Object -First 1; if ($lnk) { Start-Process $lnk.FullName } else { Start-Process '${safeApp}' }"`;
+            exec(psCommand, { timeout: 10000 }, (err2) => {
+              if (!err2) {
+                resolve(Response.json({ success: true, app: safeApp, platform, command: psCommand, method: "startmenu" }));
+              } else {
+                resolve(Response.json({
+                  error: `Could not open "${app}". Tried direct launch and Start Menu search.`,
+                }, { status: 400 }));
+              }
+            });
+          });
+        });
+      } else if (platform === "darwin") {
+        const directCommand = `open -a "${safeApp}"`;
+        return new Promise<Response>((resolve) => {
+          exec(directCommand, { timeout: 10000 }, (err) => {
             if (err) {
-              resolve(Response.json({
-                error: `Could not open "${app}". Available: ${Object.keys(platformApps).join(", ")}`,
-              }, { status: 400 }));
+              resolve(Response.json({ error: `Could not open "${app}": ${err.message}` }, { status: 400 }));
             } else {
-              resolve(Response.json({ success: true, app: safeApp, platform }));
+              resolve(Response.json({ success: true, app: safeApp, platform, command: directCommand }));
+            }
+          });
+        });
+      } else {
+        // Linux: just run the command
+        return new Promise<Response>((resolve) => {
+          exec(safeApp, { timeout: 10000 }, (err) => {
+            if (err) {
+              resolve(Response.json({ error: `Could not open "${app}": ${err.message}` }, { status: 400 }));
+            } else {
+              resolve(Response.json({ success: true, app: safeApp, platform, command: safeApp }));
             }
           });
         });
       }
-
-      return Response.json({
-        error: `Unknown app: "${app}". Available: ${Object.keys(platformApps).join(", ")}`,
-      }, { status: 400 });
     }
 
     return new Promise<Response>((resolve) => {

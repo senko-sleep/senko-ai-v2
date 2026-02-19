@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { config } from "@/lib/config";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 // ---------------------------------------------------------------------------
 // Senko AI - Single Unified API
@@ -20,16 +20,19 @@ interface ChatMessage {
 // Fallback models when primary hits rate limits (ordered by preference)
 const GROQ_FALLBACK_MODELS = [
   "llama-3.3-70b-versatile",
-  "llama-3.1-8b-instant",
+  "meta-llama/llama-4-maverick-17b-128e-instruct",
   "meta-llama/llama-4-scout-17b-16e-instruct",
+  "llama-3.1-8b-instant",
 ];
 
 async function streamGroq(
   messages: ChatMessage[],
-  signal?: AbortSignal,
+  connectTimeoutMs: number,
   modelOverride?: string
 ): Promise<ReadableStream<Uint8Array>> {
   const model = modelOverride || config.groqModel;
+  // Signal only for the initial connection — NOT passed to the stream reader
+  const connectSignal = AbortSignal.timeout(connectTimeoutMs);
   const res = await fetch(config.groqUrl, {
     method: "POST",
     headers: {
@@ -43,7 +46,7 @@ async function streamGroq(
       temperature: 0.7,
       max_tokens: 8192,
     }),
-    signal,
+    signal: connectSignal,
   });
 
   if (!res.ok) {
@@ -141,25 +144,69 @@ function createLineProcessor() {
   };
 }
 
+// -- Keepalive heartbeat wrapper ------------------------------------------
+// Wraps any SSE stream and injects `: ping\n\n` comments every 15s.
+// This prevents Vercel/Next.js from killing idle connections mid-stream
+// (e.g. while a reasoning model is thinking before its first token).
+function withKeepalive(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  const reader = source.getReader();
+  let pingTimer: ReturnType<typeof setInterval> | null = null;
+
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      pingTimer = setInterval(() => {
+        try { controller.enqueue(encoder.encode(": ping\n\n")); } catch { /* stream closed */ }
+      }, 15_000);
+    },
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) {
+        if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+        controller.close();
+        return;
+      }
+      controller.enqueue(value);
+    },
+    cancel() {
+      if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+      reader.cancel();
+    },
+  });
+}
+
 // -- OpenRouter streaming (fallback - free models, OpenAI-compatible) --------
 
-const OPENROUTER_FALLBACK_MODELS = [
-  "deepseek/deepseek-r1-0528:free",
-  "tngtech/deepseek-r1t2-chimera:free",
+// Fast models first, slow reasoning models last
+const OPENROUTER_FAST_MODELS = [
   "openai/gpt-oss-120b:free",
+  "arcee-ai/arcee-trinity-large:free",
   "meta-llama/llama-3.3-70b-instruct:free",
+  "arcee-ai/trinity-mini:free",
   "stepfun/step-3.5-flash:free",
+  "z-ai/glm-4.5-air:free",
+  "nvidia/llama-3.3-nemotron-super-49b-v1:free",
+];
+
+// Reasoning models — slow to start (long <think> blocks), need longer connection timeout
+const OPENROUTER_REASONING_MODELS = [
+  "openrouter/aurora-alpha",
+  "qwen/qwen3-235b-a22b-thinking-2507",
+  "tngtech/deepseek-r1t2-chimera:free",
+  "deepseek/deepseek-r1-0528:free",
 ];
 
 async function streamOpenRouter(
   messages: ChatMessage[],
-  signal?: AbortSignal,
+  connectTimeoutMs: number,
   modelOverride?: string
 ): Promise<ReadableStream<Uint8Array>> {
   const apiKey = config.openRouterApiKey;
   if (!apiKey) throw new Error("OpenRouter API key not configured");
   
   const model = modelOverride || config.openRouterModel;
+  // Signal only for the initial connection — NOT passed to the stream reader
+  const connectSignal = AbortSignal.timeout(connectTimeoutMs);
   const res = await fetch(config.openRouterUrl, {
     method: "POST",
     headers: {
@@ -175,7 +222,7 @@ async function streamOpenRouter(
       temperature: 0.7,
       max_tokens: 8192,
     }),
-    signal,
+    signal: connectSignal,
   });
 
   if (!res.ok) {
@@ -329,13 +376,13 @@ export async function POST(req: NextRequest) {
 
     // Strategy: Groq first (fastest ~500tok/s), Ollama fallback (local), OpenRouter last resort
     
-    // 1. Try Groq (fastest inference available)
+    // 1. Try Groq (fastest inference available) — 10s connection timeout, stream is unlimited
     if (config.groqApiKey) {
       const allGroqModels = [config.groqModel, ...GROQ_FALLBACK_MODELS.filter(m => m !== config.groqModel)];
       for (const model of allGroqModels) {
         try {
           console.log(`[chat] Trying Groq model: ${model}`);
-          const stream = await streamGroq(chatMessages, undefined, model);
+          const stream = withKeepalive(await streamGroq(chatMessages, 10_000, model));
           return new Response(stream, {
             headers: {
               "Content-Type": "text/event-stream",
@@ -354,7 +401,7 @@ export async function POST(req: NextRequest) {
     const ollamaOk = await isOllamaUp();
     if (ollamaOk) {
       try {
-        const stream = await streamOllama(chatMessages);
+        const stream = withKeepalive(await streamOllama(chatMessages));
         return new Response(stream, {
           headers: {
             "Content-Type": "text/event-stream",
@@ -368,12 +415,32 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 3. Try OpenRouter (last resort — free but slower models)
+    // 3. Try OpenRouter fast models first (15s connection timeout)
     if (config.openRouterApiKey) {
-      for (const orModel of OPENROUTER_FALLBACK_MODELS) {
+      for (const orModel of OPENROUTER_FAST_MODELS) {
         try {
           console.log(`[chat] Trying OpenRouter model: ${orModel}`);
-          const stream = await streamOpenRouter(chatMessages, undefined, orModel);
+          const stream = withKeepalive(await streamOpenRouter(chatMessages, 15_000, orModel));
+          return new Response(stream, {
+            headers: {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache, no-store",
+              Connection: "keep-alive",
+              "X-AI-Provider": `openrouter (${orModel})`,
+            },
+          });
+        } catch (orErr) {
+          console.error(`[chat] OpenRouter ${orModel} failed:`, orErr instanceof Error ? orErr.message : orErr);
+        }
+      }
+    }
+
+    // 4. Try OpenRouter reasoning models last (55s connection timeout — they think before responding)
+    if (config.openRouterApiKey) {
+      for (const orModel of OPENROUTER_REASONING_MODELS) {
+        try {
+          console.log(`[chat] Trying OpenRouter reasoning model: ${orModel}`);
+          const stream = withKeepalive(await streamOpenRouter(chatMessages, 55_000, orModel));
           return new Response(stream, {
             headers: {
               "Content-Type": "text/event-stream",

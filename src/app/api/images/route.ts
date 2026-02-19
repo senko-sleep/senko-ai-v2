@@ -20,6 +20,8 @@ export async function GET(req: NextRequest) {
     const params = new URLSearchParams();
     if (query) params.set("q", query);
     if (scrapeUrl) params.set("url", scrapeUrl);
+    const page = req.nextUrl.searchParams.get("page");
+    if (page) params.set("page", page);
 
     const res = await fetch(`${baseUrl}/images?${params.toString()}`, {
       signal: AbortSignal.timeout(30000),

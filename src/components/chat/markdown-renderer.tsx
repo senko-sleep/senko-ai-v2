@@ -57,7 +57,33 @@ function CodeBlock({
   );
 }
 
+function preprocessMarkdown(text: string): string {
+  let result = text;
+
+  // 1. Headers: insert \n\n before ## headers that aren't at line start
+  //    e.g. "...text## Header" -> "...text\n\n## Header"
+  result = result.replace(/([^\n])(#{1,6} )/g, '$1\n\n$2');
+
+  // 2. Headers running into text: detect where header ends by finding
+  //    a lowercase letter followed immediately by uppercase (camelCase boundary)
+  //    e.g. "## Latest NewsThe world" -> "## Latest News\n\nThe world"
+  result = result.replace(/(#{1,6} .+?)([a-z])([A-Z])/g, '$1$2\n\n$3');
+
+  // 3. Unordered list items: insert \n\n before "* " that aren't at line start
+  //    Skip if previous char is * (part of ** bold)
+  result = result.replace(/([^\n])(\* )/g, (match, before, listMarker) => {
+    if (before === '*') return match;
+    return before + '\n\n' + listMarker;
+  });
+
+  // 4. Ordered list items: insert \n\n before "1. " etc that aren't at line start
+  result = result.replace(/([^\n])(\d+\. )/g, '$1\n\n$2');
+
+  return result;
+}
+
 export function MarkdownRenderer({ content }: MarkdownRendererProps) {
+  const processed = preprocessMarkdown(content);
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -67,7 +93,7 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
           if (isInline) {
             return (
               <code
-                className="rounded-md bg-[var(--senko-accent)]/[0.10] px-2 py-0.5 text-[14px] text-[#ffb347] font-mono"
+                className="rounded-md bg-white/[0.06] px-2 py-0.5 text-[14px] text-zinc-300 font-mono"
                 {...props}
               >
                 {children}
@@ -83,11 +109,11 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
           return <p className="mb-3 last:mb-0 leading-[1.75] text-white/95 text-[15px]">{children}</p>;
         },
         ul({ children }) {
-          return <ul className="mb-3 ml-5 list-disc space-y-1.5 marker:text-[var(--senko-accent)]/60">{children}</ul>;
+          return <ul className="mb-3 ml-5 list-disc space-y-1.5 marker:text-zinc-500">{children}</ul>;
         },
         ol({ children }) {
           return (
-            <ol className="mb-3 ml-5 list-decimal space-y-1.5 marker:text-[var(--senko-accent)]/60">{children}</ol>
+            <ol className="mb-3 ml-5 list-decimal space-y-1.5 marker:text-zinc-500">{children}</ol>
           );
         },
         li({ children }) {
@@ -95,21 +121,21 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
         },
         h1({ children }) {
           return (
-            <h1 className="mb-3 mt-5 text-xl font-bold text-[var(--senko-accent)] first:mt-0">
+            <h1 className="mb-3 mt-5 text-xl font-bold text-white first:mt-0">
               {children}
             </h1>
           );
         },
         h2({ children }) {
           return (
-            <h2 className="mb-2.5 mt-4 text-lg font-bold text-[var(--senko-accent)] first:mt-0">
+            <h2 className="mb-2.5 mt-4 text-lg font-bold text-white first:mt-0">
               {children}
             </h2>
           );
         },
         h3({ children }) {
           return (
-            <h3 className="mb-2 mt-3 text-base font-semibold text-[#ffb347] first:mt-0">
+            <h3 className="mb-2 mt-3 text-base font-semibold text-zinc-200 first:mt-0">
               {children}
             </h3>
           );
@@ -124,7 +150,7 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
         },
         blockquote({ children }) {
           return (
-            <blockquote className="my-3 border-l-3 border-[var(--senko-accent)]/50 pl-4 text-zinc-300 bg-[var(--senko-accent)]/[0.04] rounded-r-xl py-2 pr-3">
+            <blockquote className="my-3 border-l-3 border-zinc-600 pl-4 text-zinc-300 bg-white/[0.02] rounded-r-xl py-2 pr-3">
               {children}
             </blockquote>
           );
@@ -135,7 +161,7 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
               href={href}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-[var(--senko-accent)] underline decoration-[var(--senko-accent)]/30 underline-offset-3 transition-colors hover:text-[#ffcc80] hover:decoration-[var(--senko-accent)]/60"
+              className="inline-flex items-center gap-1 text-[var(--senko-accent)] underline decoration-[var(--senko-accent)]/30 underline-offset-3 transition-colors hover:text-white hover:decoration-white/40"
             >
               {children}
               <ExternalLink className="inline h-3.5 w-3.5" />
@@ -184,7 +210,7 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
         },
       }}
     >
-      {content}
+      {processed}
     </ReactMarkdown>
   );
 }

@@ -24,6 +24,11 @@ function proxyPage(absUrl: string): string {
   return `/api/proxy?url=${encodeURIComponent(absUrl)}`;
 }
 
+/** Escape a string for safe use in an HTML attribute value */
+function htmlEscape(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 /** Rewrite all attribute URLs in HTML to go through the proxy */
 function rewriteHtml(html: string, pageUrl: string): string {
   const base = pageUrl.replace(/[?#].*$/, "");
@@ -61,13 +66,24 @@ function rewriteHtml(html: string, pageUrl: string): string {
     }
   );
 
-  // Rewrite action= on <form> tags
+  // Rewrite <form action=> — set action to /api/proxy and inject a hidden url input.
+  // For GET forms, the browser natively submits as /api/proxy?url=X&key=eevee&...
+  // and the proxy route reads the `url` param correctly.
   html = html.replace(
-    /(<form\b[^>]*?\s)action\s*=\s*(["'])(.*?)\2/gi,
-    (_m, pre, q, val) => {
-      if (val.startsWith("javascript:")) return _m;
-      const abs = resolveUrl(val, base);
-      return `${pre}action=${q}${proxyPage(abs)}${q}`;
+    /(<form\b)([^>]*?)(\saction\s*=\s*(["'])(.*?)\4)([^>]*>)/gi,
+    (_m, formOpen, before, _actionAttr, _q, actionVal, after) => {
+      if (actionVal.startsWith("javascript:")) return _m;
+      const abs = actionVal ? resolveUrl(actionVal, base) : pageUrl;
+      const hiddenInput = `<input type="hidden" name="url" value="${htmlEscape(abs)}"/>`;
+      return `${formOpen}${before} action="/api/proxy"${after}${hiddenInput}`;
+    }
+  );
+  // Also handle forms with no action attribute (submit to current page)
+  html = html.replace(
+    /(<form\b)((?:(?!\saction\s*=)[^>])*>)/gi,
+    (_m, formOpen, rest) => {
+      const hiddenInput = `<input type="hidden" name="url" value="${htmlEscape(pageUrl)}"/>`;
+      return `${formOpen} action="/api/proxy"${rest}${hiddenInput}`;
     }
   );
 
@@ -164,17 +180,19 @@ function isAdDomain(testUrl: string): boolean {
 export async function GET(req: NextRequest) {
   let url = req.nextUrl.searchParams.get("url");
   if (!url) {
-    return new Response("URL parameter is missing", { status: 400 });
+    return new Response("url required", { status: 400 });
   }
 
-  // Basic validation and protocol fixing
-  try {
-    if (!url.startsWith("http")) {
-      url = "https://" + url;
-    }
-    new URL(url); // Validate
-  } catch {
-    return new Response("Invalid URL provided", { status: 400 });
+  // If extra query params exist (from form submissions), append them to the target URL.
+  // e.g. /api/proxy?url=https://site.com/search&key=eevee&apply=Search
+  // → fetch https://site.com/search?key=eevee&apply=Search
+  const extraParams = new URLSearchParams();
+  req.nextUrl.searchParams.forEach((val, key) => {
+    if (key !== "url" && key !== "asset") extraParams.append(key, val);
+  });
+  if (extraParams.toString()) {
+    const sep = url.includes("?") ? "&" : "?";
+    url = url + sep + extraParams.toString();
   }
 
   // Block ad/tracker requests
@@ -182,23 +200,10 @@ export async function GET(req: NextRequest) {
     return new Response("", { status: 204 });
   }
 
-  // Unwrap search engine redirects (Google, Bing, etc.)
-  // Often search results are wrapped: https://www.google.com/url?q=https://real-site.com
-  try {
-    const parsed = new URL(url);
-    if ((parsed.hostname.includes("google.") || parsed.hostname.includes("bing.com")) && parsed.pathname === "/url") {
-      const target = parsed.searchParams.get("q") || parsed.searchParams.get("url");
-      if (target && target.startsWith("http")) {
-        console.log(`%c[PROXY] 🔄 Unwrapping redirect: ${url} -> ${target}`, "color: #ffaa00");
-        url = target;
-      }
-    }
-  } catch { /* skip unwrapping on error */ }
-
   const isSubResource = req.nextUrl.searchParams.get("asset") === "1";
 
   try {
-    const res = await fetch(url!, {
+    const res = await fetch(url, {
       headers: {
         "User-Agent": UA,
         Accept: isSubResource
@@ -206,9 +211,9 @@ export async function GET(req: NextRequest) {
           : "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "identity",
-        Referer: new URL(url!).origin + "/",
+        Referer: new URL(url).origin + "/",
       },
-      signal: AbortSignal.timeout(20000),
+      signal: AbortSignal.timeout(15000),
       redirect: "follow",
     });
 
@@ -268,10 +273,13 @@ export async function GET(req: NextRequest) {
     // Inject navigation interceptor + frame-bust prevention
     // Pass the REAL page URL so fetch/XHR resolve relative URLs against the original site, not localhost
     const pageOrigin = new URL(url).origin;
+    // Escape for safe embedding in JS string literal
+    const safeUrl = url.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/<\//g, "<\\/");
+    const safeOrigin = pageOrigin.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/<\//g, "<\\/");
     const proxyScript = `<script>
 (function(){
-  var PAGE_BASE = "${url}";
-  var PAGE_ORIGIN = "${pageOrigin}";
+  var PAGE_BASE = "${safeUrl}";
+  var PAGE_ORIGIN = "${safeOrigin}";
 
   // Block ad/tracker domains
   var AD_HOSTS = ['acquiredeceasedundress.com','darnobedienceupscale.com','ospaxgapf.com','doubleclick.net','googlesyndication.com','trafficjunky.com','exoclick.com','juicyads.com','popads.net','popcash.net','propellerads.com','adservice.google.com','adglare.net','adglare.org','spankurbate.com','rule34comic.party'];
@@ -309,15 +317,30 @@ export async function GET(req: NextRequest) {
     }
   }, true);
 
-  // Intercept form submissions
+  // Fallback for dynamically-created forms not in original HTML
   document.addEventListener('submit', function(e) {
     var form = e.target;
-    if (!form || !form.action) return;
-    if (form.action.includes('/api/proxy')) return;
+    if (!form || !form.tagName || form.tagName !== 'FORM') return;
+    var action = form.getAttribute('action') || '';
+    if (action === '/api/proxy' || action.includes('/api/proxy?')) return; // already rewritten
     e.preventDefault();
-    var resolved = resolveAgainstPage(form.getAttribute('action')) || form.action;
-    form.action = '/api/proxy?url=' + encodeURIComponent(resolved);
-    form.submit();
+    var rawAction = action || '';
+    var resolved = rawAction ? (resolveAgainstPage(rawAction) || PAGE_BASE) : PAGE_BASE;
+    // Inject hidden url field and redirect to proxy
+    var method = (form.method || 'get').toLowerCase();
+    if (method === 'get') {
+      var fd = new FormData(form);
+      var ps = new URLSearchParams();
+      fd.forEach(function(v, k) { if (typeof v === 'string') ps.append(k, v); });
+      ps.set('url', resolved);
+      window.location.href = '/api/proxy?' + ps.toString();
+    } else {
+      var h = document.createElement('input');
+      h.type = 'hidden'; h.name = 'url'; h.value = resolved;
+      form.appendChild(h);
+      form.setAttribute('action', '/api/proxy');
+      form.submit();
+    }
   }, true);
 
   // Intercept fetch to proxy API calls — resolve against original site, block ads
@@ -460,7 +483,7 @@ export async function GET(req: NextRequest) {
   <div class="box">
     <h2>Couldn't load this site inline</h2>
     <p>${err instanceof Error ? err.message : "Connection failed"}</p>
-    <p style="margin-top:1rem"><a href="${url}" target="_blank" rel="noopener">Open in browser instead →</a></p>
+    <p style="margin-top:1rem"><a href="${url.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;")}" target="_blank" rel="noopener">Open in browser instead →</a></p>
   </div>
 </body></html>`;
     return new Response(errorHtml, {

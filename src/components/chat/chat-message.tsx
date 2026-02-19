@@ -1,13 +1,14 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Pencil, Check, Copy, RotateCcw, Globe, AlertTriangle } from "lucide-react";
+import { Pencil, Check, Copy, RotateCcw, Globe, AlertTriangle, Grid3X3 } from "lucide-react";
+import { ReadAloudButton } from "./read-aloud-button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { MarkdownRenderer } from "./markdown-renderer";
 import { MapEmbed } from "./map-embed";
 import { ImageCarousel } from "./image-carousel";
-import { GifCarousel } from "./gif-carousel";
+import { ImageGallery } from "./image-gallery";
 import { VideoEmbed } from "./video-embed";
 import { WebEmbed } from "./web-embed";
 import type { Message } from "@/types/chat";
@@ -28,16 +29,12 @@ function getFaviconUrl(url: string): string {
   }
 }
 
-function hasRichContent(content: string): boolean {
-  // Only recognize specific rich content patterns that are definitely Markdown
-  // Avoid matching simple text with asterisks like *blush*
-  return /```|^\s*[-*]\s|^\s*\d+\.\s|^#{1,3}\s|\|\s*.*\s*\|/m.test(content);
-}
 
 export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatMessageProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content);
   const [copied, setCopied] = useState(false);
+  const [showGallery, setShowGallery] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -82,9 +79,14 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
   const hasImages = message.images && message.images.length > 0;
   const hasVideos = message.videos && message.videos.length > 0;
   const hasWebEmbeds = message.webEmbeds && message.webEmbeds.length > 0;
-  const hasGifs = message.gifs && message.gifs.length > 0;
   const hasMap = !!message.mapEmbed;
-  const hasAttachments = hasSources || hasImages || hasVideos || hasWebEmbeds || hasMap || hasGifs;
+  const hasAttachments = hasSources || hasImages || hasVideos || hasWebEmbeds || hasMap;
+function hasRichContent(content: string): boolean {
+  // Only trigger markdown rendering for genuinely structured content.
+  // Deliberately excludes inline bold/italic to avoid tainting casual chat and roleplay emotes.
+  return /```|^#{1,6}\s|^\s*[-*]\s\S|^\s*\d+\.\s\S|\|.+\|/m.test(content);
+}
+
   const isRich = !isUser && hasRichContent(message.content);
   const isShort = message.content.length < 80 && !message.content.includes("\n");
 
@@ -92,17 +94,17 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
   if (isThinking) {
     return (
       <div className="flex w-full px-3 py-2 mb-1 justify-start sm:px-6 relative z-0">
-        <div className="thinking-shimmer thinking-glow rounded-2xl rounded-bl-sm border border-[var(--senko-accent)]/[0.12] px-5 py-3.5 w-fit max-w-[85%] sm:px-6 sm:py-4 sm:max-w-[70%] animate-slide-in">
+        <div className="thinking-shimmer rounded-2xl rounded-bl-sm border border-white/[0.06] px-5 py-3.5 w-fit max-w-[85%] sm:px-6 sm:py-4 sm:max-w-[70%] animate-slide-in">
           <div className="flex items-center gap-3.5">
             <span className="flex items-center gap-1.5">
-              <span className="thinking-dot inline-block h-2 w-2 rounded-full bg-[var(--senko-accent)]" style={{ animationDelay: "0ms" }} />
-              <span className="thinking-dot inline-block h-2 w-2 rounded-full bg-[#ffb347]" style={{ animationDelay: "0.2s" }} />
-              <span className="thinking-dot inline-block h-2 w-2 rounded-full bg-[var(--senko-accent)]" style={{ animationDelay: "0.4s" }} />
+              <span className="thinking-dot inline-block h-2 w-2 rounded-full bg-zinc-500" style={{ animationDelay: "0ms" }} />
+              <span className="thinking-dot inline-block h-2 w-2 rounded-full bg-zinc-500" style={{ animationDelay: "0.2s" }} />
+              <span className="thinking-dot inline-block h-2 w-2 rounded-full bg-zinc-500" style={{ animationDelay: "0.4s" }} />
             </span>
             {message.content ? (
-              <span className="text-[14px] text-[var(--senko-accent)]/80 font-medium tracking-wide">{message.content}</span>
+              <span className="text-[14px] text-zinc-400 font-medium tracking-wide">{message.content}</span>
             ) : (
-              <span className="text-[14px] text-[var(--senko-accent)]/80 font-medium tracking-wide">thinking...</span>
+              <span className="text-[14px] text-zinc-400 font-medium tracking-wide">thinking...</span>
             )}
           </div>
         </div>
@@ -274,10 +276,13 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
       </div>
 
       {/* Action bar — outside bubble so overflow-hidden doesn't clip it */}
-      <div className="flex gap-2 mt-1 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className="flex gap-2 mt-1 ml-2 opacity-60 group-hover:opacity-100 transition-opacity">
         <button onClick={handleCopy} className="rounded-lg p-2 text-zinc-600 hover:text-zinc-400 hover:bg-white/[0.06] transition-all">
           {copied ? <Check className="h-4 w-4 text-[var(--senko-accent)]" /> : <Copy className="h-4 w-4" />}
         </button>
+        {message.content && (
+          <ReadAloudButton messageId={message.id} text={message.content} />
+        )}
         {onRegenerate && (
           <button onClick={() => onRegenerate(message.id)} className="rounded-lg p-2 text-zinc-600 hover:text-zinc-400 hover:bg-white/[0.06] transition-all">
             <RotateCcw className="h-4 w-4" />
@@ -288,16 +293,29 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink }: ChatM
       {/* Images - full chat width */}
       {hasImages && (
         <div className="w-full mt-3">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[10px] text-white/30">{message.images!.length} image{message.images!.length !== 1 ? "s" : ""}</span>
+            <button
+              onClick={() => setShowGallery(true)}
+              className="flex items-center gap-1 px-2 py-1 text-[10px] text-white/40 hover:text-[var(--senko-accent)] bg-white/[0.03] hover:bg-[var(--senko-accent)]/10 border border-white/[0.06] hover:border-[var(--senko-accent)]/30 rounded-md transition-all"
+            >
+              <Grid3X3 className="h-3 w-3" />
+              Gallery
+            </button>
+          </div>
           <ImageCarousel images={message.images!} />
         </div>
       )}
 
-      {/* GIFs - full chat width */}
-      {hasGifs && (
-        <div className="w-full mt-3">
-          <GifCarousel gifs={message.gifs!} />
-        </div>
+      {/* Gallery Mode Overlay */}
+      {showGallery && hasImages && (
+        <ImageGallery
+          images={message.images!}
+          query={message.searchQuery}
+          onClose={() => setShowGallery(false)}
+        />
       )}
+
     </div>
   );
 }

@@ -17,6 +17,7 @@ import {
   RefreshCw,
   Type,
   CornerDownLeft,
+  Volume2,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +26,8 @@ import { Separator } from "@/components/ui/separator";
 import { useBrowserInfo } from "@/hooks/use-browser-info";
 import { useLocation } from "@/hooks/use-location";
 import { usePermissions } from "@/hooks/use-permissions";
+import { audioManager } from "@/lib/audio-manager";
+import { VOICE_PRESETS } from "@/lib/voice-synth";
 import type { AppSettings } from "@/types/chat";
 
 interface SettingsPanelProps {
@@ -327,6 +330,41 @@ export function SettingsPanel({
                 ))}
               </div>
             </div>
+          </div>
+        </section>
+
+        <Separator className="bg-white/[0.06]" />
+
+        {/* Voice Settings */}
+        <section>
+          <h3 className="mb-2.5 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.12em] text-zinc-500">
+            <Volume2 className="h-4 w-4" />
+            Voice
+          </h3>
+          <div className="glass-panel rounded-xl p-4 space-y-3">
+            <div className="flex flex-col gap-1">
+              {Object.entries(VOICE_PRESETS).map(([key, preset]) => (
+                <Button
+                  key={key}
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    updateSetting("voicePreset", key);
+                    audioManager?.setVoice(key);
+                  }}
+                  className={`h-8 justify-start rounded-lg px-3 text-[12px] font-medium transition-all ${
+                    settings.voicePreset === key
+                      ? "bg-[var(--senko-accent)]/15 text-[var(--senko-accent)]"
+                      : "text-zinc-500 hover:bg-white/5 hover:text-zinc-400"
+                  }`}
+                >
+                  {preset.name}
+                </Button>
+              ))}
+            </div>
+            <p className="text-[10px] text-zinc-600 leading-relaxed">
+              Powered by ElevenLabs. Click the speaker icon on any message to hear it spoken.
+            </p>
           </div>
         </section>
       </div>
