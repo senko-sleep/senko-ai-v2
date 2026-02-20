@@ -2788,10 +2788,30 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
         const nlpAutoPick = nlpIntent.autoPick || 0;
 
         console.log(`%c[NLP] 🔍 Site search: "${searchQuery}" on ${siteUrl}`, "color: #00ffcc; font-weight: bold");
-        // Most video sites (KVS-based: rule34video, etc.) use path-based search: /search/QUERY/
-        // General sites use query param: /search?q=QUERY
-        // Path-based is more universal for video sites and returns correct link hrefs
-        const searchUrl = `${siteUrl}/search/${encodeURIComponent(searchQuery)}/`;
+        // Site-aware search URL construction — different sites need different formats
+        // Matches the patterns documented in browser.txt
+        const buildSiteSearchUrl = (site: string, query: string): string => {
+          const host = site.replace(/^https?:\/\//, "").replace(/\/+$/, "").toLowerCase();
+          if (host.includes("rule34video"))   return `${site}/search/?q=${encodeURIComponent(query)}`;
+          if (host.includes("pornhub"))       return `${site}/video/search?search=${encodeURIComponent(query)}`;
+          if (host.includes("xvideos"))       return `${site}/?k=${encodeURIComponent(query)}`;
+          if (host.includes("xhamster"))      return `${site}/search/${encodeURIComponent(query)}`;
+          if (host.includes("spankbang"))     return `${site}/s/${encodeURIComponent(query)}/`;
+          if (host.includes("xnxx"))          return `${site}/search/${encodeURIComponent(query)}`;
+          if (host.includes("redtube"))       return `${site}/?search=${encodeURIComponent(query)}`;
+          if (host.includes("youtube"))       return `${site}/results?search_query=${encodeURIComponent(query)}`;
+          if (host.includes("reddit"))        return `${site}/search/?q=${encodeURIComponent(query)}`;
+          if (host.includes("x.com") || host.includes("twitter")) return `${site}/search?q=${encodeURIComponent(query)}`;
+          if (host.includes("amazon"))        return `${site}/s?k=${encodeURIComponent(query)}`;
+          if (host.includes("nhentai"))       return `${site}/search/?q=${encodeURIComponent(query)}`;
+          if (host.includes("rule34.xxx"))    return `${site}/index.php?page=post&s=list&tags=${encodeURIComponent(query)}`;
+          if (host.includes("e621"))          return `${site}/posts?tags=${encodeURIComponent(query)}`;
+          if (host.includes("gelbooru"))      return `${site}/index.php?page=post&s=list&tags=${encodeURIComponent(query)}`;
+          if (host.includes("danbooru"))      return `${site}/posts?tags=${encodeURIComponent(query)}`;
+          // Fallback: try query-param first (works on most sites), path-based as last resort
+          return `${site}/search?q=${encodeURIComponent(query)}`;
+        };
+        const searchUrl = buildSiteSearchUrl(siteUrl, searchQuery);
         const nlpInterceptId = generateId();
         updateConversation(activeConversationId, (c) => ({
           ...c,
@@ -2803,62 +2823,47 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
 
         (async () => {
           try {
-            // Use /api/browse for JS-heavy sites to get accurate rendered links
             const isJsHeavy = /\b(xvideos|pornhub|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|rule34video|twitter|x\.com|reddit|instagram|tiktok)\b/i.test(siteUrl);
-            const res = await fetch(`${isJsHeavy ? "/api/browse" : "/api/url"}?url=${encodeURIComponent(searchUrl)}&maxContent=12000`);
-            const data = await res.json();
-            removeThinkingMsg(nlpConvId, nlpThinkId);
-
-            if (data.error) {
-              updateConversation(nlpConvId, (c) => ({
-                ...c,
-                messages: c.messages.map((m) =>
-                  m.id === nlpInterceptId ? { ...m, content: `Couldn't reach that site ;w; ${data.error}` } : m
-                ),
-              }));
-              setIsStreaming(false);
-              return;
-            }
-
-            // Filter video/content links (same logic as before)
-            const links: { url: string; text: string }[] = data.links || [];
             const adPattern = /\b(doubleclick|googlesyndication|adsystem|adserver|exoclick|exosrv|juicyads|trafficjunky|trafficstars|popunder|popads|adsterra|propellerads|spankurbate|rule34comic|adglare)\b/i;
-            const videoLinks = links.filter((l) => {
-              const u = l.url.toLowerCase();
-              try { const lu = new URL(l.url); if (lu.pathname === "/" || lu.pathname === "") return false; } catch { return false; }
-              if (adPattern.test(u)) return false;
-              if (u.includes("/login") || u.includes("/register") || u.includes("/signup") || u.includes("/tags") || u.includes("/categories") || u.includes("/members")) return false;
-              if (/\/(video|watch|view_video|clip)s?\b/i.test(u)) return true;
-              if (/view_video|viewkey|watch\?v=/i.test(u)) return true;
-              return false;
-            });
-            const contentLinks = videoLinks.length > 0 ? videoLinks : links.filter((l) => {
-              const u = l.url.toLowerCase();
-              const t = l.text.toLowerCase();
-              try { const lu = new URL(l.url); if (lu.pathname === "/" || lu.pathname === "") return false; } catch { return false; }
-              if (u === searchUrl.toLowerCase() || u === siteUrl.toLowerCase() || u === siteUrl.toLowerCase() + "/") return false;
-              if (/^https?:\/\//i.test(t)) return false;
-              if (adPattern.test(u)) return false;
-              if (/\b(login|sign|register|page|next|prev|tag|categor|sort|filter|lang|privacy|terms|dmca|contact|about|faq|help|home|menu|search|advanced)\b/i.test(t) && t.length < 30) return false;
-              if (t.length > 5 && !(/^\d+$/.test(t))) return true;
-              return false;
-            });
+            let siteHost = "";
+            try { siteHost = new URL(siteUrl).hostname.replace(/^www\./, ""); } catch { siteHost = siteUrl.replace(/^https?:\/\//, "").replace(/\/.*/, ""); }
 
-            if (contentLinks.length > 0) {
-              // Resolve URLs to absolute
-              const resolvedLinks = contentLinks.slice(0, 20).map((l) => {
+            // ── Reusable: filter video/content links from a page's link list ──
+            const filterContentLinks = (links: { url: string; text: string }[], refUrl: string) => {
+              const videoLinks = links.filter((l) => {
+                const u = l.url.toLowerCase();
+                try { const lu = new URL(l.url); if (lu.pathname === "/" || lu.pathname === "") return false; } catch { return false; }
+                if (adPattern.test(u)) return false;
+                if (u.includes("/login") || u.includes("/register") || u.includes("/signup") || u.includes("/tags") || u.includes("/categories") || u.includes("/members")) return false;
+                if (/\/(video|watch|view_video|clip)s?\b/i.test(u)) return true;
+                if (/view_video|viewkey|watch\?v=/i.test(u)) return true;
+                return false;
+              });
+              return videoLinks.length > 0 ? videoLinks : links.filter((l) => {
+                const u = l.url.toLowerCase();
+                const t = l.text.toLowerCase();
+                try { const lu = new URL(l.url); if (lu.pathname === "/" || lu.pathname === "") return false; } catch { return false; }
+                if (u === refUrl.toLowerCase() || u === siteUrl.toLowerCase() || u === siteUrl.toLowerCase() + "/") return false;
+                if (/^https?:\/\//i.test(t)) return false;
+                if (adPattern.test(u)) return false;
+                if (/\b(login|sign|register|page|next|prev|tag|categor|sort|filter|lang|privacy|terms|dmca|contact|about|faq|help|home|menu|search|advanced)\b/i.test(t) && t.length < 30) return false;
+                if (t.length > 5 && !(/^\d+$/.test(t))) return true;
+                return false;
+              });
+            };
+
+            // ── Reusable: resolve URLs to absolute, store results, auto-pick or present list ──
+            const presentResults = (rawLinks: { url: string; text: string }[], embedUrl: string) => {
+              const resolvedLinks = rawLinks.slice(0, 20).map((l) => {
                 let fullUrl = l.url;
                 if (fullUrl.startsWith("/")) { try { fullUrl = new URL(siteUrl).origin + fullUrl; } catch { /* keep */ } }
                 return { text: l.text, url: fullUrl };
               });
-
-              // Store results for follow-up picks
               const nlpResults = resolvedLinks.map((l) => ({ title: l.text, url: l.url, snippet: "" }));
               const existingResults = searchResultsByConv.current[nlpConvId] || [];
               const seenUrls = new Set(nlpResults.map((r: { url: string }) => r.url));
               searchResultsByConv.current[nlpConvId] = [...nlpResults, ...existingResults.filter((r: { url: string }) => !seenUrls.has(r.url))].slice(0, 50);
 
-              // Auto-pick if user specified Nth
               const pickIdx = nlpAutoPick === -1 ? resolvedLinks.length - 1 : nlpAutoPick - 1;
               if (nlpAutoPick !== 0 && pickIdx >= 0 && pickIdx < resolvedLinks.length) {
                 const picked = resolvedLinks[pickIdx];
@@ -2870,26 +2875,151 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
                   ),
                 }));
                 processActions(nlpConvId, nlpInterceptId, `[ACTION:BROWSE:${picked.url}]`);
-                return;
+                return; // processActions manages streaming state
               }
-
-              // No auto-pick — present numbered list (escape brackets to prevent markdown mangling titles like "[zaviel]")
               const resultList = resolvedLinks.slice(0, 10).map((l, i) => `${i + 1}. ${l.text.replace(/\[/g, "\\[").replace(/\]/g, "\\]")}`).join("\n");
               const resultMsg = `Found ${resolvedLinks.length} results for "${searchQuery}"~\n\n${resultList}${resolvedLinks.length > 10 ? `\n\n...and ${resolvedLinks.length - 10} more` : ""}\n\nWhich one do you wanna watch? Just say the number~`;
               updateConversation(nlpConvId, (c) => ({
                 ...c,
                 messages: c.messages.map((m) =>
-                  m.id === nlpInterceptId ? { ...m, content: resultMsg, webEmbeds: [{ url: searchUrl, title: `${searchQuery} - Search Results` }] } : m
+                  m.id === nlpInterceptId ? { ...m, content: resultMsg, webEmbeds: [{ url: embedUrl, title: `${searchQuery} - Search Results` }] } : m
                 ),
               }));
-            } else {
-              updateConversation(nlpConvId, (c) => ({
-                ...c,
-                messages: c.messages.map((m) =>
-                  m.id === nlpInterceptId ? { ...m, content: `Hmm couldn't find any results for "${searchQuery}" on there ;w;`, webEmbeds: [{ url: searchUrl, title: `Search: ${searchQuery}` }] } : m
-                ),
-              }));
+              setIsStreaming(false);
+            };
+
+            // ── Reusable: browse a URL and try to extract content links ──
+            const browseAndFilter = async (url: string): Promise<{ url: string; text: string }[]> => {
+              try {
+                const r = await fetch(`${isJsHeavy ? "/api/browse" : "/api/url"}?url=${encodeURIComponent(url)}&maxContent=12000`);
+                const d = await r.json();
+                if (d.error) return [];
+                return filterContentLinks(d.links || [], url);
+              } catch { return []; }
+            };
+
+            // ── Strategy 1: Direct site search URL ──
+            console.log(`%c[NLP] 📡 Strategy 1: Direct site search → ${searchUrl}`, "color: #ffaa00");
+            const s1Links = await browseAndFilter(searchUrl);
+            if (s1Links.length > 0) {
+              console.log(`%c[NLP] ✅ Strategy 1: ${s1Links.length} results`, "color: #00ff88");
+              removeThinkingMsg(nlpConvId, nlpThinkId);
+              presentResults(s1Links, searchUrl);
+              return;
             }
+            console.log(`%c[NLP] ❌ Strategy 1 failed (no content links)`, "color: #ff6666");
+
+            // Update status — trying harder
+            updateConversation(nlpConvId, (c) => ({
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id === nlpInterceptId ? { ...m, content: `Searching harder for "${searchQuery}" on ${nlpIntent.siteName || siteUrl}...` } : m
+              ),
+            }));
+
+            // ── Strategy 2: DDG site-scoped search (site:domain.com query) ──
+            console.log(`%c[NLP] 📡 Strategy 2: DDG site:${siteHost} ${searchQuery}`, "color: #ffaa00");
+            try {
+              const ddgRes = await fetch(`/api/search?q=${encodeURIComponent(`site:${siteHost} ${searchQuery}`)}`);
+              const ddgData = await ddgRes.json();
+              const ddgResults: { title: string; url: string; snippet?: string }[] = ddgData.results || [];
+              const siteResults = ddgResults.filter((r) => r.url.toLowerCase().includes(siteHost));
+              console.log(`%c[NLP] DDG site-scoped: ${ddgResults.length} total, ${siteResults.length} on-site`, "color: #88ccff");
+
+              if (siteResults.length > 0) {
+                // If DDG returned a search/listing page on the site, browse it for real links
+                const searchPageHit = siteResults.find((r) => /[?&](q|search|query|k|tags)=/i.test(r.url) || /\/search\b/i.test(r.url));
+                if (searchPageHit) {
+                  console.log(`%c[NLP] 📡 Strategy 2b: Browse DDG search-page hit → ${searchPageHit.url}`, "color: #ffaa00");
+                  const s2bLinks = await browseAndFilter(searchPageHit.url);
+                  if (s2bLinks.length > 0) {
+                    console.log(`%c[NLP] ✅ Strategy 2b: ${s2bLinks.length} results`, "color: #00ff88");
+                    removeThinkingMsg(nlpConvId, nlpThinkId);
+                    presentResults(s2bLinks, searchPageHit.url);
+                    return;
+                  }
+                }
+                // DDG results themselves are content pages — use them directly
+                const ddgContentLinks = siteResults
+                  .filter((r) => { try { const u = new URL(r.url); return u.pathname !== "/" && u.pathname !== ""; } catch { return false; } })
+                  .filter((r) => !adPattern.test(r.url))
+                  .map((r) => ({ text: r.title, url: r.url }));
+                if (ddgContentLinks.length > 0) {
+                  console.log(`%c[NLP] ✅ Strategy 2: ${ddgContentLinks.length} DDG direct results`, "color: #00ff88");
+                  removeThinkingMsg(nlpConvId, nlpThinkId);
+                  presentResults(ddgContentLinks, searchUrl);
+                  return;
+                }
+              }
+            } catch (e) { console.error("[NLP] Strategy 2 error:", e); }
+            console.log(`%c[NLP] ❌ Strategy 2 failed`, "color: #ff6666");
+
+            // ── Strategy 3: DDG unscoped search (domain + query — broader net) ──
+            console.log(`%c[NLP] 📡 Strategy 3: DDG ${siteHost} ${searchQuery}`, "color: #ffaa00");
+            try {
+              const ddg3Res = await fetch(`/api/search?q=${encodeURIComponent(`${siteHost} ${searchQuery}`)}`);
+              const ddg3Data = await ddg3Res.json();
+              const ddg3Results: { title: string; url: string; snippet?: string }[] = ddg3Data.results || [];
+              const site3Results = ddg3Results.filter((r) => r.url.toLowerCase().includes(siteHost));
+              console.log(`%c[NLP] DDG unscoped: ${ddg3Results.length} total, ${site3Results.length} on-site`, "color: #88ccff");
+
+              if (site3Results.length > 0) {
+                // Browse search page hit if found
+                const searchPageHit = site3Results.find((r) => /[?&](q|search|query|k|tags)=/i.test(r.url) || /\/search\b/i.test(r.url));
+                if (searchPageHit) {
+                  console.log(`%c[NLP] 📡 Strategy 3b: Browse DDG search-page hit → ${searchPageHit.url}`, "color: #ffaa00");
+                  const s3bLinks = await browseAndFilter(searchPageHit.url);
+                  if (s3bLinks.length > 0) {
+                    console.log(`%c[NLP] ✅ Strategy 3b: ${s3bLinks.length} results`, "color: #00ff88");
+                    removeThinkingMsg(nlpConvId, nlpThinkId);
+                    presentResults(s3bLinks, searchPageHit.url);
+                    return;
+                  }
+                }
+                // Use DDG results directly
+                const ddg3ContentLinks = site3Results
+                  .filter((r) => { try { const u = new URL(r.url); return u.pathname !== "/" && u.pathname !== ""; } catch { return false; } })
+                  .filter((r) => !adPattern.test(r.url))
+                  .map((r) => ({ text: r.title, url: r.url }));
+                if (ddg3ContentLinks.length > 0) {
+                  console.log(`%c[NLP] ✅ Strategy 3: ${ddg3ContentLinks.length} DDG direct results`, "color: #00ff88");
+                  removeThinkingMsg(nlpConvId, nlpThinkId);
+                  presentResults(ddg3ContentLinks, searchUrl);
+                  return;
+                }
+              }
+            } catch (e) { console.error("[NLP] Strategy 3 error:", e); }
+            console.log(`%c[NLP] ❌ Strategy 3 failed`, "color: #ff6666");
+
+            // ── Strategy 4: Try alternate query formats on the site directly ──
+            // Some sites use + instead of %20, or tag-style underscores
+            const altQueries = [
+              searchQuery.replace(/\s+/g, "+"),
+              searchQuery.replace(/\s+/g, "_"),
+              searchQuery.split(/\s+/).slice(0, 1).join(" "), // first keyword only
+            ].filter((q, i, arr) => q !== searchQuery && arr.indexOf(q) === i);
+            for (const altQ of altQueries) {
+              const altUrl = buildSiteSearchUrl(siteUrl, altQ);
+              if (altUrl === searchUrl) continue;
+              console.log(`%c[NLP] 📡 Strategy 4: Alt query "${altQ}" → ${altUrl}`, "color: #ffaa00");
+              const s4Links = await browseAndFilter(altUrl);
+              if (s4Links.length > 0) {
+                console.log(`%c[NLP] ✅ Strategy 4: ${s4Links.length} results with "${altQ}"`, "color: #00ff88");
+                removeThinkingMsg(nlpConvId, nlpThinkId);
+                presentResults(s4Links, altUrl);
+                return;
+              }
+            }
+
+            // ── All strategies exhausted ──
+            console.log(`%c[NLP] 💀 All strategies exhausted for "${searchQuery}" on ${siteHost}`, "color: #ff3333; font-weight: bold");
+            removeThinkingMsg(nlpConvId, nlpThinkId);
+            updateConversation(nlpConvId, (c) => ({
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id === nlpInterceptId ? { ...m, content: `Tried everything but couldn't find results for "${searchQuery}" on ${nlpIntent.siteName || siteUrl} ;w; Maybe try different keywords?`, webEmbeds: [{ url: searchUrl, title: `Search: ${searchQuery}` }] } : m
+              ),
+            }));
             setIsStreaming(false);
           } catch (e) {
             console.error("[NLP] Site search failed:", e);
