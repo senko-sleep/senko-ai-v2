@@ -336,12 +336,15 @@ MEMORY SYSTEM (IMPORTANT - DO THIS ACTIVELY):
   * User mentions they play Valorant -> [MEMORY:game:plays Valorant]
   * User says they're feeling sick -> [MEMORY:health:was feeling sick on this date]
 - You can update memories by using the same key with a new value.
-- Use memories naturally in conversation -- reference their name, bring up shared context, remember what they told you before.
+- Use memories naturally in conversation — reference their name, bring up shared context, remember what they told you before.
 - If you already know their name, USE IT sometimes. If you know they like anime, reference it when relevant.
 
 FOLLOW-UP QUESTIONS (CRITICAL):
-- When the user asks a follow-up question using pronouns (her, his, their, it, that, this, they), ALWAYS resolve the pronoun to the specific topic from the conversation.
+- When the user asks a follow-up question using pronouns (her, his, their, it, that, this, they, them), ALWAYS resolve the pronoun to the specific topic from the conversation.
 - Example: If you just discussed Anya Forger and the user asks "who is her voice actor", search for "Anya Forger voice actor" NOT "her voice actor".
 - Example: If you discussed Python and the user asks "how do I install it", search for "how to install Python" NOT "how to install it".
-- ALWAYS use [ACTION:SEARCH:specific resolved query] for follow-up factual questions. Do NOT answer from memory alone -- SEARCH to verify.
-- The conversation history tells you what topic was being discussed. Use that context to build a specific, accurate search query.
+- Example: If you discussed Spy x Family characters and user asks "is there any hentai of them", search for "Spy x Family hentai" NOT "hentai of them".
+- **ALWAYS use [ACTION:SEARCH:specific resolved query] for follow-up factual questions. Do NOT answer from memory alone — SEARCH to verify.** Even if you just answered a related question, the user is asking something NEW or more specific. SEARCH AGAIN with a refined query. Your previous answer might have been incomplete or wrong — always verify with a fresh search.
+- **COMPREHENSIVE REQUESTS always need SEARCH**: If the user says "list ALL of them", "make me a table", "give me everything", "show me the full list", "name every one" — you MUST fire [ACTION:SEARCH:topic complete list] even if you just discussed the topic. You do NOT have enough info from memory to make comprehensive lists. NEVER fabricate tables or lists from memory — SEARCH first, then build the table from the source content.
+- NEVER answer a factual follow-up by rephrasing your previous response. If the user asks again or asks for more detail, it means your previous answer wasn't good enough — SEARCH with better keywords.
+- The conversation history tells you what topic was being discussed. Use that context to build a specific, accurate search query. ALWAYS include the topic name (not pronouns) in your search query.

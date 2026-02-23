@@ -76,6 +76,17 @@ function isSiteReference(phrase: string): boolean {
   return false;
 }
 
+// ── Extract just the site name from a phrase, stopping at common stop words ──
+function extractSiteFromPhrase(raw: string): string {
+  // Stop at common sentence continuation words that aren't part of a site name
+  const stopPattern = /\b(so|because|to|for|where|while|when|since|if|but|or|as|that|which|who|with|about|into|like|just|also|too|please|cause|cuz|bc|cos|we|you|i|they|he|she|it|my|your|our|the|a|an|can|could|would|should|let|lets|ill|gonna|wanna|gotta)\b/i;
+  const match = raw.match(stopPattern);
+  if (match && match.index !== undefined && match.index > 0) {
+    raw = raw.substring(0, match.index).trim();
+  }
+  return raw;
+}
+
 // ── Detect explicit URL in text ──
 function extractUrl(text: string): string | null {
   const match = text.match(/(https?:\/\/[^\s]+)/i);
@@ -149,8 +160,8 @@ export function parseIntent(text: string): ParsedIntent {
       const target = navMatch[1].trim();
       // If the target looks like a site (not a section/action), extract it
       if (isSiteReference(target) || (!SEARCH_WORDS.some(w => target.startsWith(w)) && target.length > 1)) {
-        // Only set as site if it's not clearly a search phrase
-        const potentialSite = target.replace(/\s*(?:and|then)\s+.*$/i, "").trim();
+        // Truncate at stop words, then strip "and/then" continuations
+        const potentialSite = extractSiteFromPhrase(target.replace(/\s*(?:and|then)\s+.*$/i, "").trim());
         if (potentialSite && isSiteReference(potentialSite)) {
           detectedSiteName = potentialSite;
           detectedSite = resolveSiteUrl(potentialSite);
@@ -168,7 +179,9 @@ export function parseIntent(text: string): ParsedIntent {
     const onSiteMatch = clause.match(/^(?:look\s*up|search\s*(?:for)?|find)\s+(.+?)\s+(?:on|in|at|from)\s+(.+)/i);
     if (onSiteMatch) {
       let rawQuery = onSiteMatch[1].trim();
-      const siteRef = onSiteMatch[2].trim();
+      const rawSiteRef = onSiteMatch[2].trim();
+      // Truncate at stop words: "rule34video so we can watch a video" → "rule34video"
+      const siteRef = extractSiteFromPhrase(rawSiteRef);
       
       // Strip count modifiers like "10 videos", "some clips", "a few" — these aren't real search terms
       // If the entire query is just a count + generic noun, treat as empty (browse homepage)
@@ -181,7 +194,7 @@ export function parseIntent(text: string): ParsedIntent {
       }
       
       detectedQuery = rawQuery;
-      if (isSiteReference(siteRef) || siteRef.length > 2) {
+      if (siteRef && isSiteReference(siteRef)) {
         detectedSiteName = siteRef;
         detectedSite = resolveSiteUrl(siteRef);
       }

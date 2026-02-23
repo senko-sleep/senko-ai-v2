@@ -1095,8 +1095,46 @@ export default function Home() {
           }
         }
         if (action.type === "SEARCH") {
-          console.log(`%c[SEARCH] 🔎 Starting web search`, "color: #ffcc00; font-weight: bold; font-size: 12px", { query: action.value });
-          fetchSearchResults(convId, messageId, action.value);
+          let searchQuery = action.value;
+          // Context enrichment: resolve vague/pronoun-heavy queries using recent conversation topic
+          const pronounPattern = /\b(them|they|their|theirs|it|its|he|him|his|she|her|hers|this|that|these|those)\b/i;
+          const hasPronouns = pronounPattern.test(searchQuery);
+          const isVague = searchQuery.split(/\s+/).length <= 4 && hasPronouns;
+          if (isVague) {
+            const conv = conversations.find((c) => c.id === convId);
+            if (conv) {
+              // Find the recent topic from user messages or search queries
+              const recentMsgs = conv.messages.slice(-10);
+              let recentTopic = "";
+              // Check recent search queries first (most specific)
+              for (let i = recentMsgs.length - 1; i >= 0; i--) {
+                const m = recentMsgs[i];
+                if (m.searchQuery) { recentTopic = m.searchQuery; break; }
+              }
+              // Fallback: extract topic from recent user messages
+              if (!recentTopic) {
+                for (let i = recentMsgs.length - 1; i >= 0; i--) {
+                  const m = recentMsgs[i];
+                  if (m.role === "user" && m.content.length > 5) {
+                    // Strip action words to get the topic
+                    const stripped = m.content.replace(/\b(tell me about|who are|what is|what are|show me|look up|search for|list|find)\b/gi, "").trim();
+                    if (stripped.length > 3 && !pronounPattern.test(stripped)) {
+                      recentTopic = stripped;
+                      break;
+                    }
+                  }
+                }
+              }
+              if (recentTopic) {
+                // Extract just the core topic (first few meaningful words)
+                const topicWords = recentTopic.replace(/[?!.]/g, "").trim().split(/\s+/).slice(0, 5).join(" ");
+                searchQuery = `${topicWords} ${searchQuery}`;
+                console.log(`%c[SEARCH] 🧠 Context-enriched: "${action.value}" -> "${searchQuery}"`, "color: #ff66cc; font-weight: bold");
+              }
+            }
+          }
+          console.log(`%c[SEARCH] 🔎 Starting web search`, "color: #ffcc00; font-weight: bold; font-size: 12px", { query: searchQuery });
+          fetchSearchResults(convId, messageId, searchQuery);
         }
         if (action.type === "IMAGE") {
           const parts = action.value.split("|");
@@ -1871,11 +1909,11 @@ export default function Home() {
         const hasImages = allResearchImages.length > 0;
 
         // Phase 3: Generate AI research synthesis using real scraped content
-        // Trim aggressively: 4 sources × 800 chars = ~3200 chars context (fits any model)
+        // Use up to 6 sources × 2500 chars = ~15000 chars context — ensures answer isn't cut off
         const scrapedContext = scrapedPages
           .filter((p) => p.content)
-          .slice(0, 4)
-          .map((p, i) => `[Source ${i + 1}: ${p.title}]\n${p.content.slice(0, 3000).trim()}`)
+          .slice(0, 6)
+          .map((p, i) => `[Source ${i + 1}: ${p.title}]\n${p.content.slice(0, 2500).trim()}`)
           .join("\n\n---\n\n");
 
         const hasScrapedContent = scrapedContext.length > 100;
@@ -1910,14 +1948,16 @@ export default function Home() {
         const sourceCount = scrapedPages.filter((p) => p.content).length;
         // Lean user message — instructions live in the synthesis system prompt
         const contextPrompt = hasScrapedContent
-          ? `Research query: "${query}"${hasImages ? " (images are already shown in the UI — do NOT describe them)" : ""}
+          ? `The user asked: "${query}"
+Answer their SPECIFIC question using ONLY the facts below. If the answer isn't in the sources, say so — do NOT guess.${hasImages ? " (images are already shown in the UI — do NOT describe them)" : ""}
 
 Source content:
 
 ${scrapedContext}`
-          : `Research query: "${query}"${hasImages ? " (images are already shown in the UI — do NOT describe them)" : ""}
+          : `The user asked: "${query}"
+Answer their SPECIFIC question using ONLY the snippets below. If the answer isn't here, say so — do NOT guess.${hasImages ? " (images are already shown in the UI — do NOT describe them)" : ""}
 
-No full page content available. Use these search snippets:
+Search snippets:
 
 ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: string }, i: number) => `${i + 1}. **${r.title}**: ${r.snippet || ""}`).join("\n")}`;
 
@@ -3618,10 +3658,78 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
       // via [ACTION:OPEN_RESULT:N] with proper conversation context awareness.
       // This prevents interceptors from hijacking game answers, casual chat, etc.
 
+      // ── PRE-AI INTERCEPTOR: Follow-up factual/comprehensive requests ──
+      // CONSERVATIVE: Only triggers for very clear follow-up patterns with a RECENT search.
+      // Forces fetchSearchResults with an enriched query so the AI uses real data.
+      {
+        const lower = content.toLowerCase();
+        const wordCount = content.trim().split(/\s+/).length;
+        // Only check last 5 messages for a recent search (not entire history)
+        const conv = conversations.find((c) => c.id === activeConversationId);
+        const last5 = conv ? conv.messages.slice(-5) : [];
+        const recentSearchMsg = last5.find((m) => m.searchQuery);
+
+        if (recentSearchMsg && wordCount <= 12) {
+          // Detect VERY specific comprehensive requests (must reference "them"/"all" in context of listing)
+          const isComprehensive = /\b(list\s+all\s+of\s+them|make\s+(?:me\s+)?a\s+(?:table|list|chart)\s+(?:of|for|with)|all\s+of\s+them|name\s+them\s+all|every\s+single\s+(?:one|character|member))\b/i.test(lower);
+          // Detect short factual follow-ups with pronouns: "is there any X of them", "who is his Y"
+          const pronouns = /\b(them|they|their|theirs|him|his|her|hers|those|these)\b/i;
+          const factualStart = /^\s*(?:is\s+there|are\s+there|who\s+is|what\s+is|what\s+are|does|do\s+they|any\s+\w+\s+of|what\s+about|how\s+about)\b/i;
+          const isFactualFollowUp = wordCount <= 8 && pronouns.test(lower) && factualStart.test(lower);
+
+          if (isComprehensive || isFactualFollowUp) {
+            // Extract recent topic
+            let recentTopic = recentSearchMsg.searchQuery || "";
+            if (!recentTopic) {
+              for (let i = last5.length - 1; i >= 0; i--) {
+                const m = last5[i];
+                if (m.role === "user" && m.content.length > 5 && m.content !== content) {
+                  const stripped = m.content.replace(/\b(tell me about|who are|what is|what are|show me|look up|search for|list|find|some)\b/gi, "").trim();
+                  if (stripped.length > 3 && !pronouns.test(stripped)) { recentTopic = stripped; break; }
+                }
+              }
+            }
+
+            if (recentTopic) {
+              const topicWords = recentTopic.replace(/[?!.]/g, "").trim().split(/\s+/).slice(0, 5).join(" ");
+              let enrichedQuery: string;
+              if (isComprehensive) {
+                enrichedQuery = `${topicWords} complete list`;
+              } else {
+                enrichedQuery = content
+                  .replace(/\b(of\s+)?(them|they|their|those|these|him|his|her|hers)\b/gi, topicWords)
+                  .replace(/\b(is\s+there|are\s+there)\b/gi, "")
+                  .replace(/[?!.]/g, "").replace(/\s+/g, " ").trim();
+                if (!enrichedQuery.toLowerCase().includes(topicWords.toLowerCase().split(" ")[0])) {
+                  enrichedQuery = `${topicWords} ${enrichedQuery}`;
+                }
+              }
+
+              console.log(`%c[FOLLOWUP] 🧠 Follow-up search`, "color: #ff66cc; font-weight: bold", { original: content, enriched: enrichedQuery });
+
+              const followUpMsgId = generateId();
+              updateConversation(activeConversationId, (c) => ({
+                ...c,
+                messages: [...c.messages, {
+                  id: followUpMsgId,
+                  role: "assistant" as const,
+                  content: "",
+                  timestamp: new Date(),
+                  searchQuery: enrichedQuery,
+                }],
+              }));
+              setIsStreaming(true);
+              fetchSearchResults(activeConversationId, followUpMsgId, enrichedQuery);
+              return;
+            }
+          }
+        }
+      }
+
       // Pass updatedMessages directly — don't read from state (React batching race)
       sendToAI(activeConversationId, updatedMessages);
     },
-    [activeConversationId, isStreaming, updateConversation, sendToAI, generateTitle, conversations, addThinkingMsg, removeThinkingMsg]
+    [activeConversationId, isStreaming, updateConversation, sendToAI, generateTitle, conversations, addThinkingMsg, removeThinkingMsg, fetchSearchResults]
   );
 
   const handleEditMessage = useCallback(
