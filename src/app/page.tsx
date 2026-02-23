@@ -24,6 +24,7 @@ function generateId(): string {
 function stripInternalTags(content: string): string {
   return content
     .replace(/[^\S\n]*\[STATUS:[^\]]*\]?[^\S\n]*/gi, " ")
+    .replace(/[^\S\n]*\bSTATUS:[a-z_]+:[^\n]*/gi, " ")
     .replace(/[^\S\n]*\[MEMORY:[^\]]*\]?[^\S\n]*/gi, " ")
     .replace(/[^\S\n]*\[ACTION:[^\]]*\]?[^\S\n]*/gi, " ")
     .replace(/[^\S\n]*ACTION:\s*[A-Z_]*:?[^\n]*/gi, " ")
@@ -157,8 +158,9 @@ function parseAIOutput(text: string): { cleanText: string; extractedSources: Web
     .replace(/\s*\[ACTION:[^\]]+\]\s*/g, " ")
     // Remove [IMAGE:...] tags
     .replace(/\s*\[IMAGE:[^\]]+\]\s*/g, " ")
-    // Remove [STATUS:...] tags
+    // Remove [STATUS:...] tags (with or without brackets)
     .replace(/\s*\[STATUS:[^\]]+\]\s*/g, " ")
+    .replace(/\s*\bSTATUS:[a-z_]+:[^\n]*/gi, " ")
     // Remove [MEMORY:...] tags
     .replace(/\s*\[MEMORY:[^\]]+\]\s*/g, " ")
     // Remove full source citation lines (entire line with [Source N] and URL)
@@ -746,6 +748,7 @@ export default function Home() {
         .replace(/\s*\[ACTION:[^\]]+\]\s*/g, " ")
         .replace(/\s*\[IMAGE:[^\]]+\]\s*/g, " ")
         .replace(/\s*\[STATUS:[^\]]+\]\s*/g, " ")
+        .replace(/\s*\bSTATUS:[a-z_]+:[^\n]*/gi, " ")
         .replace(/\s*\[MEMORY:[^\]]+\]\s*/g, " ")
         .replace(/Image \d+:\s*/gi, "")
         .replace(/!\[[^\]]*\]\([^)]+\)/g, "")
@@ -3761,13 +3764,19 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
         })
       );
 
-      // Use handleSendMessage to process the edited content with all interceptors
-      // This ensures result picking, site search, etc. work on edit too
-      requestAnimationFrame(() => {
-        handleSendMessage(newContent);
-      });
+      // Send trimmed messages directly to AI — do NOT call handleSendMessage
+      // because that would create a DUPLICATE user message
+      setTimeout(() => {
+        setConversations((prev) => {
+          const conv = prev.find((c) => c.id === activeConversationId);
+          if (conv) {
+            sendToAI(activeConversationId, conv.messages);
+          }
+          return prev;
+        });
+      }, 50);
     },
-    [activeConversationId, isStreaming, conversations, handleSendMessage]
+    [activeConversationId, isStreaming, conversations, sendToAI]
   );
 
   const handleRegenerateMessage = useCallback(
