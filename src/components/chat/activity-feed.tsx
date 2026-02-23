@@ -54,29 +54,36 @@ function ElapsedTime({ startedAt, completedAt }: { startedAt: number; completedA
 
 function ActivityItem({ activity }: { activity: Activity }) {
   const Icon = ACTIVITY_ICONS[activity.type] || Brain;
-  const color = ACTIVITY_COLORS[activity.type] || "text-zinc-400";
   const isDone = activity.status === "done";
   const isError = activity.status === "error";
+  const isActive = activity.status === "active";
 
   return (
     <div
-      className={`flex items-center gap-2 px-3 py-1.5 text-[12px] transition-all duration-300 ${
-        isDone ? "opacity-60" : "opacity-100"
+      className={`flex items-center gap-3 px-4 py-2 text-[13px] transition-all duration-300 ${
+        isDone ? "opacity-50" : "opacity-100"
       }`}
     >
-      {activity.status === "active" ? (
-        <Loader2 className={`h-3 w-3 ${color} animate-spin shrink-0`} />
+      {/* Animated dots for active state, icon for completed */}
+      {isActive ? (
+        <div className="flex gap-1 shrink-0">
+          <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-zinc-500" style={{ animationDelay: "0ms" }} />
+          <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-zinc-500" style={{ animationDelay: "150ms" }} />
+          <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-zinc-500" style={{ animationDelay: "300ms" }} />
+        </div>
       ) : isDone ? (
-        <Check className="h-3 w-3 text-zinc-500 shrink-0" />
+        <Check className="h-3.5 w-3.5 text-zinc-600 shrink-0" />
       ) : (
-        <AlertCircle className="h-3 w-3 text-red-400 shrink-0" />
+        <AlertCircle className="h-3.5 w-3.5 text-red-400 shrink-0" />
       )}
-      <Icon className={`h-3 w-3 ${isDone ? "text-zinc-500" : color} shrink-0`} />
-      <span className={`truncate ${isDone ? "text-zinc-500" : isError ? "text-red-400" : "text-zinc-300"}`}>
+      {/* Activity type icon */}
+      <Icon className={`h-3.5 w-3.5 shrink-0 ${isDone ? "text-zinc-600" : isError ? "text-red-400" : "text-zinc-400"}`} />
+      {/* Label */}
+      <span className={`${isDone ? "text-zinc-600" : isError ? "text-red-400" : "text-zinc-300"}`}>
         {activity.label}
       </span>
       {activity.detail && isDone && (
-        <span className="text-[10px] text-zinc-500 truncate">— {activity.detail}</span>
+        <span className="text-[11px] text-zinc-600 truncate">— {activity.detail}</span>
       )}
       <ElapsedTime startedAt={activity.startedAt} completedAt={activity.completedAt} />
     </div>
@@ -89,21 +96,19 @@ interface ActivityFeedProps {
 
 export function ActivityFeed({ activities }: ActivityFeedProps) {
   const now = useSyncExternalStore(subscribeClock, getClockSnapshot, getServerSnapshot);
-  // We use useSyncExternalStore for now, so the component re-renders every 200ms
-  // This lets us check which completed activities have expired
   void now;
 
-  // Build visible list: active + recently completed (within 3s)
+  // Build visible list: active + recently completed (within 2s)
   const visible = activities.filter((a) => {
     if (a.status === "active") return true;
-    if (a.completedAt && now - a.completedAt < 3000) return true;
+    if (a.completedAt && now - a.completedAt < 2000) return true;
     return false;
   });
 
   if (visible.length === 0) return null;
 
   return (
-    <div className="border-b border-white/[0.04] bg-gradient-to-r from-white/[0.015] to-transparent">
+    <div className="border-b border-white/[0.04]">
       {visible.map((activity) => (
         <ActivityItem key={activity.id} activity={activity} />
       ))}

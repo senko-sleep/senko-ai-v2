@@ -6,30 +6,8 @@ import type { WebEmbed as WebEmbedType } from "@/types/chat";
 
 // Sites whose JS-driven video players / heavy dynamic content break through the HTML proxy.
 // For these, show a clean link card instead of a broken iframe.
+// Sites that actively block iframes with X-Frame-Options or CSP - show link card instead
 const UNEMBEDDABLE_PATTERNS = [
-  /rule34video\./i,
-  /rule34\.xxx/i,
-  /xvideos\./i,
-  /xnxx\./i,
-  /pornhub\./i,
-  /xhamster\./i,
-  /redtube\./i,
-  /youporn\./i,
-  /spankbang\./i,
-  /eporner\./i,
-  /tnaflix\./i,
-  /hentaihaven\./i,
-  /hanime\./i,
-  /nhentai\./i,
-  /e621\./i,
-  /gelbooru\./i,
-  /danbooru\./i,
-  /sankaku/i,
-  /hitomi\.la/i,
-  /iwara\./i,
-  /newgrounds\.com/i,
-  /dailymotion\./i,
-  /vimeo\./i,
   /twitch\.tv/i,
   /tiktok\./i,
   /instagram\./i,
@@ -96,39 +74,39 @@ export function WebEmbed({ embed }: WebEmbedProps) {
   // For sites that can't be proxied, render a compact link card
   if (skipIframe) {
     return (
-      <div className="mt-2 w-full max-w-md overflow-hidden rounded-2xl relative group/embed">
+      <div className="w-full max-w-lg overflow-hidden rounded-2xl relative group/embed shadow-xl">
         <div className="absolute -inset-[1px] rounded-2xl bg-gradient-to-br from-[var(--senko-accent)]/30 via-white/[0.08] to-[var(--senko-accent)]/10 pointer-events-none" />
         <a
           href={embed.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="relative flex items-center gap-4 rounded-2xl bg-black hover:bg-white/[0.03] transition-colors px-5 py-4"
+          className="relative flex items-center gap-4 rounded-2xl bg-black hover:bg-white/[0.04] transition-colors px-6 py-5"
         >
-          <div className="flex-shrink-0 h-11 w-11 rounded-xl bg-[var(--senko-accent)]/10 flex items-center justify-center">
-            <Play className="h-5 w-5 text-[var(--senko-accent)]" />
+          <div className="flex-shrink-0 h-12 w-12 rounded-xl bg-[var(--senko-accent)]/10 flex items-center justify-center">
+            <Play className="h-6 w-6 text-[var(--senko-accent)]" />
           </div>
           <div className="min-w-0 flex-1">
-            <p className="text-[14px] text-zinc-200 font-medium truncate">
+            <p className="text-[15px] text-zinc-200 font-medium truncate">
               {embed.title || "Open link"}
             </p>
-            <p className="text-[11px] text-zinc-500 truncate mt-0.5 flex items-center gap-1.5">
-              <Globe className="h-3 w-3 flex-shrink-0" />
+            <p className="text-[12px] text-zinc-500 truncate mt-1 flex items-center gap-1.5">
+              <Globe className="h-3.5 w-3.5 flex-shrink-0" />
               {hostname}
             </p>
           </div>
-          <ExternalLink className="h-4 w-4 text-zinc-500 flex-shrink-0" />
+          <ExternalLink className="h-4.5 w-4.5 text-zinc-500 flex-shrink-0" />
         </a>
       </div>
     );
   }
 
   return (
-    <div className="mt-2 w-full overflow-hidden rounded-2xl relative group/embed">
+    <div className="w-full overflow-hidden rounded-2xl relative group/embed shadow-xl">
       {/* Gradient border effect */}
       <div className="absolute -inset-[1px] rounded-2xl bg-gradient-to-br from-[var(--senko-accent)]/30 via-white/[0.08] to-[var(--senko-accent)]/10 pointer-events-none" />
       <div className="relative rounded-2xl overflow-hidden bg-black">
         {/* Header bar */}
-        <div className="flex items-center justify-between bg-gradient-to-r from-white/[0.04] to-white/[0.02] px-4 py-2.5 border-b border-white/[0.06]">
+        <div className="flex items-center justify-between bg-gradient-to-r from-white/[0.04] to-white/[0.02] px-5 py-3 border-b border-white/[0.08]">
           <div className="flex items-center gap-2.5 min-w-0">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
@@ -138,10 +116,10 @@ export function WebEmbed({ embed }: WebEmbedProps) {
               onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
             />
             <div className="min-w-0">
-              <span className="text-[12px] text-zinc-300 font-medium truncate block">
+              <span className="text-[13px] text-zinc-300 font-medium truncate block">
                 {embed.title || hostname || "Web page"}
               </span>
-              <span className="text-[10px] text-zinc-600 truncate block">
+              <span className="text-[11px] text-zinc-600 truncate block">
                 {hostname}
               </span>
             </div>
@@ -178,7 +156,7 @@ export function WebEmbed({ embed }: WebEmbedProps) {
         {/* iframe */}
         <div
           className="relative w-full bg-black transition-all duration-300"
-          style={{ height: expanded ? "85vh" : "500px" }}
+          style={{ height: expanded ? "85vh" : "560px" }}
         >
           {!loaded && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/95 z-10">

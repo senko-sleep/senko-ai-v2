@@ -71,6 +71,7 @@ export interface Conversation {
   updatedAt: Date;
   status?: SenkoStatus;
   tabs?: SenkoTab[];
+  pinned?: boolean;
 }
 
 export interface BrowserInfo {

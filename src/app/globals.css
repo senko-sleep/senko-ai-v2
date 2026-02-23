@@ -290,6 +290,58 @@
 
 /* thinking-glow removed — Gravity: no decorative glow effects */
 
+/* Skeleton shimmer for thinking state */
+.skeleton-shimmer {
+  position: relative;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+}
+
+.skeleton-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.06) 40%,
+    rgba(255, 255, 255, 0.06) 60%,
+    transparent 100%
+  );
+  animation: skeleton-sweep 1.8s ease-in-out infinite;
+}
+
+@keyframes skeleton-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+/* Typing cursor for streaming */
+.typing-cursor::after {
+  content: '|';
+  display: inline;
+  color: var(--senko-accent);
+  animation: cursor-blink 0.8s step-end infinite;
+  margin-left: 1px;
+  font-weight: 300;
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* Scale-in for menus */
+@keyframes animate-scale-in {
+  0% { opacity: 0; transform: scale(0.95) translateY(4px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.animate-scale-in {
+  animation: animate-scale-in 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
 /* Modern animation classes */
 /* animate-float removed — Gravity: no decorative animations */
 

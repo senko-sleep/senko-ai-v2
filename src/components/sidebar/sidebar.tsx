@@ -17,6 +17,7 @@ interface SidebarProps {
   onSelectConversation: (id: string) => void;
   onNewConversation: () => void;
   onDeleteConversation: (id: string) => void;
+  onPinConversation?: (id: string) => void;
   onSettingsChange: (settings: AppSettings) => void;
   isMobile?: boolean;
   isOpen?: boolean;
@@ -30,6 +31,7 @@ export function Sidebar({
   onSelectConversation,
   onNewConversation,
   onDeleteConversation,
+  onPinConversation,
   onSettingsChange,
   isMobile = false,
   isOpen = true,
@@ -125,6 +127,7 @@ export function Sidebar({
                 onSelectConversation={handleSelectConversation}
                 onNewConversation={handleNewConversation}
                 onDeleteConversation={onDeleteConversation}
+                onPinConversation={onPinConversation}
               />
             ) : (
               <SettingsPanel
@@ -254,6 +257,7 @@ export function Sidebar({
               onSelectConversation={onSelectConversation}
               onNewConversation={onNewConversation}
               onDeleteConversation={onDeleteConversation}
+              onPinConversation={onPinConversation}
             />
           ) : (
             <SettingsPanel

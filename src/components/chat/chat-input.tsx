@@ -173,9 +173,6 @@ export function ChatInput({
         </div>
       </div>
 
-      <p className="mt-2 text-center text-[11px] text-zinc-600 hidden sm:block">
-        Senko can search the web, open apps, and browse sites. Double-check important info.
-      </p>
     </div>
   );
 }

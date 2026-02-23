@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, MessageSquare, Trash2, Search } from "lucide-react";
+import { Plus, MessageSquare, Trash2, Search, Pin } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,7 @@ interface HistoryPanelProps {
   onSelectConversation: (id: string) => void;
   onNewConversation: () => void;
   onDeleteConversation: (id: string) => void;
+  onPinConversation?: (id: string) => void;
 }
 
 function formatRelativeDate(date: Date): string {
@@ -66,12 +67,22 @@ export function HistoryPanel({
   onSelectConversation,
   onNewConversation,
   onDeleteConversation,
+  onPinConversation,
 }: HistoryPanelProps) {
   const [searchQuery, setSearchQuery] = useState("");
 
+  const q = searchQuery.toLowerCase();
   const filtered = conversations.filter((c) =>
-    c.title.toLowerCase().includes(searchQuery.toLowerCase())
+    c.title.toLowerCase().includes(q) ||
+    (q.length >= 3 && c.messages.some((m) => m.content.toLowerCase().includes(q)))
   );
+
+  // Sort: pinned first, then by updatedAt descending
+  const sorted = [...filtered].sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1;
+    if (!a.pinned && b.pinned) return 1;
+    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+  });
 
   return (
     <div className="flex h-full flex-col">
@@ -113,7 +124,7 @@ export function HistoryPanel({
           <div className="space-y-0.5">
             {(() => {
               let lastGroup = "";
-              return filtered.map((conversation) => {
+              return sorted.map((conversation) => {
                 const group = getDateGroup(new Date(conversation.updatedAt));
                 const showGroupHeader = group !== lastGroup;
                 lastGroup = group;
@@ -139,6 +150,9 @@ export function HistoryPanel({
                       <MessageSquare className="h-4 w-4 shrink-0 text-zinc-600 mt-0.5" />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
+                          {conversation.pinned && (
+                            <Pin className="h-3 w-3 shrink-0 text-[var(--senko-accent)]/60 -rotate-45" />
+                          )}
                           <p className="truncate text-[13px] font-medium flex-1">
                             {conversation.title}
                           </p>
@@ -157,23 +171,50 @@ export function HistoryPanel({
                           {conversation.messages.length} msg{conversation.messages.length !== 1 ? "s" : ""}
                         </p>
                       </div>
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDeleteConversation(conversation.id);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
+                      <div className="flex flex-col gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity mt-0.5">
+                        {onPinConversation && (
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onPinConversation(conversation.id);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.stopPropagation();
+                                onPinConversation(conversation.id);
+                              }
+                            }}
+                            className={cn(
+                              "inline-flex h-6 w-6 items-center justify-center rounded-lg p-0 cursor-pointer transition-colors",
+                              conversation.pinned
+                                ? "text-[var(--senko-accent)] hover:bg-[var(--senko-accent)]/10"
+                                : "text-zinc-700 hover:bg-white/[0.06] hover:text-zinc-400"
+                            )}
+                            title={conversation.pinned ? "Unpin" : "Pin"}
+                          >
+                            <Pin className="h-3 w-3 -rotate-45" />
+                          </span>
+                        )}
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={(e) => {
                             e.stopPropagation();
                             onDeleteConversation(conversation.id);
-                          }
-                        }}
-                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg p-0 text-zinc-700 opacity-0 transition-opacity hover:bg-red-500/10 hover:text-red-400 group-hover:opacity-100 cursor-pointer mt-0.5"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </span>
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.stopPropagation();
+                              onDeleteConversation(conversation.id);
+                            }
+                          }}
+                          className="inline-flex h-6 w-6 items-center justify-center rounded-lg p-0 text-zinc-700 hover:bg-red-500/10 hover:text-red-400 cursor-pointer transition-colors"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </span>
+                      </div>
                     </button>
                   </div>
                 );

@@ -12,8 +12,7 @@ import { Button } from "@/components/ui/button";
 import { ChatMessage } from "./chat-message";
 import { ChatInput, type AgentMode } from "./chat-input";
 import { ActivityFeed } from "./activity-feed";
-import { TabBar } from "./tab-bar";
-import type { Message, SenkoStatus, Activity, SenkoTab } from "@/types/chat";
+import type { Message, SenkoStatus, Activity } from "@/types/chat";
 
 const STATUS_ICON_MAP: Record<string, LucideIcon> = {
   happy: Smile,
@@ -51,9 +50,6 @@ interface ChatAreaProps {
   agentMode?: AgentMode;
   onAgentModeChange?: (mode: AgentMode) => void;
   activities?: Activity[];
-  tabs?: SenkoTab[];
-  onCloseTab?: (tabId: string) => void;
-  onSwitchTab?: (tabId: string) => void;
 }
 
 function StatusPill({ status, activities }: { status: SenkoStatus; activities: Activity[] }) {
@@ -128,9 +124,6 @@ export function ChatArea({
   agentMode,
   onAgentModeChange,
   activities = [],
-  tabs = [],
-  onCloseTab,
-  onSwitchTab,
 }: ChatAreaProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -166,7 +159,7 @@ export function ChatArea({
         <div className="relative flex items-center justify-center py-2 px-4">
           <StatusPill status={currentStatus} activities={activities} />
           {tokenCount > 0 && (
-            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[11px] text-zinc-600 font-medium hidden sm:block">
+            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[11px] text-zinc-600 font-medium hidden sm:block opacity-0 hover:opacity-100 transition-opacity duration-200" title="Estimated token count">
               {tokenCount.toLocaleString()} tokens
             </span>
           )}
@@ -228,7 +221,7 @@ export function ChatArea({
               </div>
             </div>
           ) : (
-            <div className="mx-auto max-w-4xl px-1 py-4 sm:px-0 sm:py-5">
+            <div className="mx-auto max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
               {messages.map((message, idx) => {
                 const isLastAssistant = message.role === "assistant" && idx === messages.length - 1;
                 return (
@@ -242,13 +235,8 @@ export function ChatArea({
                           : undefined
                       }
                       onOpenLink={onOpenLink}
+                      isStreaming={isLastAssistant && isStreaming && !message.isThinking}
                     />
-                    {/* Streaming indicator — pulsing accent bar under the last assistant message */}
-                    {isLastAssistant && isStreaming && !message.isThinking && (
-                      <div className="px-3 sm:px-6 pb-1">
-                        <div className="h-0.5 w-16 rounded-full bg-zinc-600/50 animate-pulse" />
-                      </div>
-                    )}
                   </div>
                 );
               })}

@@ -236,7 +236,7 @@ export function ImageGallery({
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={img.url}
-                      alt={img.alt || ""}
+                      alt=""
                       className={cn(
                         "w-full h-auto transition-transform duration-300 group-hover:scale-[1.03]",
                         /\.gif(\?|$)/i.test(img.url) ? "object-contain bg-black/20" : "object-cover"

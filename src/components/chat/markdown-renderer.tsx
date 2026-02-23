@@ -106,47 +106,47 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
           return <>{children}</>;
         },
         p({ children }) {
-          return <p className="mb-3 last:mb-0 leading-[1.75] text-white/95 text-[15px]">{children}</p>;
+          return <p className="mb-5 last:mb-0 leading-[1.8] text-white/90 text-[15px]">{children}</p>;
         },
         ul({ children }) {
-          return <ul className="mb-3 ml-5 list-disc space-y-1.5 marker:text-zinc-500">{children}</ul>;
+          return <ul className="mb-5 ml-5 list-disc space-y-2 marker:text-zinc-600">{children}</ul>;
         },
         ol({ children }) {
           return (
-            <ol className="mb-3 ml-5 list-decimal space-y-1.5 marker:text-zinc-500">{children}</ol>
+            <ol className="mb-5 ml-5 list-decimal space-y-2 marker:text-zinc-600">{children}</ol>
           );
         },
         li({ children }) {
-          return <li className="leading-[1.7] text-white/90 text-[15px]">{children}</li>;
+          return <li className="leading-[1.75] text-white/90 text-[15px]">{children}</li>;
         },
         h1({ children }) {
           return (
-            <h1 className="mb-3 mt-5 text-xl font-bold text-white first:mt-0">
+            <h1 className="mb-5 mt-8 text-[20px] font-semibold text-white first:mt-0">
               {children}
             </h1>
           );
         },
         h2({ children }) {
           return (
-            <h2 className="mb-2.5 mt-4 text-lg font-bold text-white first:mt-0">
+            <h2 className="mb-4 mt-7 text-[17px] font-semibold text-white first:mt-0">
               {children}
             </h2>
           );
         },
         h3({ children }) {
           return (
-            <h3 className="mb-2 mt-3 text-base font-semibold text-zinc-200 first:mt-0">
+            <h3 className="mb-3 mt-6 text-[15px] font-semibold text-zinc-100 first:mt-0">
               {children}
             </h3>
           );
         },
         strong({ children }) {
           return (
-            <strong className="font-bold text-white">{children}</strong>
+            <strong className="font-semibold text-white">{children}</strong>
           );
         },
         em({ children }) {
-          return <em className="italic text-zinc-300">{children}</em>;
+          return <em className="italic text-zinc-200">{children}</em>;
         },
         blockquote({ children }) {
           return (

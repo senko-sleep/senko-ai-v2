@@ -1,0 +1,393 @@
+# Site Configuration for Embeds, Videos, and Browser Behavior
+# Pattern-based matching - not hardcoded to specific sites
+# Patterns are regex and matched in order (first match wins)
+
+defaults:
+  embed:
+    method: proxy  # proxy | iframe | link-card
+    timeout: 20000
+    sandbox: "allow-scripts allow-same-origin allow-popups"
+  video:
+    autoplay: true
+    needs_proxy: false
+    extraction_method: static  # static | puppeteer | network-intercept
+    max_quality: "1080p"
+  browse:
+    use_puppeteer: false
+    wait_for: load  # load | networkidle | domcontentloaded
+    max_content: 20000
+    timeout: 15000
+  images:
+    use_api: false
+    max_results: 100
+
+# Pattern-based rules (matched in order, first match wins)
+rules:
+  # ============================================================================
+  # SOCIAL MEDIA - Cannot be embedded (X-Frame-Options / CSP blocks)
+  # ============================================================================
+  - name: "Twitter/X"
+    pattern: "(twitter|x)\\.com"
+    embed:
+      method: link-card
+      reason: "X-Frame-Options blocks embedding"
+    browse:
+      use_puppeteer: true
+
+  - name: "Instagram"
+    pattern: "instagram\\.com"
+    embed:
+      method: link-card
+      reason: "CSP blocks embedding"
+    browse:
+      use_puppeteer: true
+
+  - name: "TikTok"
+    pattern: "tiktok\\.com"
+    embed:
+      method: link-card
+      reason: "CSP blocks embedding"
+    browse:
+      use_puppeteer: true
+
+  - name: "Facebook"
+    pattern: "facebook\\.com"
+    embed:
+      method: link-card
+      reason: "X-Frame-Options blocks embedding"
+    browse:
+      use_puppeteer: true
+
+  - name: "Twitch"
+    pattern: "twitch\\.tv"
+    embed:
+      method: link-card
+      reason: "Requires parent parameter"
+    video:
+      extraction_method: static
+
+  # ============================================================================
+  # VIDEO PLATFORMS - Native embed support
+  # ============================================================================
+  - name: "YouTube"
+    pattern: "(youtube\\.com|youtu\\.be)"
+    video:
+      extraction_method: oembed
+      embed_url_template: "https://www.youtube.com/embed/{video_id}"
+      id_patterns:
+        - "v=([a-zA-Z0-9_-]{11})"
+        - "youtu\\.be/([a-zA-Z0-9_-]{11})"
+        - "embed/([a-zA-Z0-9_-]{11})"
+    embed:
+      method: iframe
+      sandbox: "allow-scripts allow-same-origin allow-presentation"
+
+  - name: "Vimeo"
+    pattern: "vimeo\\.com"
+    video:
+      extraction_method: oembed
+      embed_url_template: "https://player.vimeo.com/video/{video_id}"
+      id_patterns:
+        - "vimeo\\.com/(\\d+)"
+    embed:
+      method: iframe
+
+  - name: "Dailymotion"
+    pattern: "dailymotion\\.com"
+    video:
+      extraction_method: oembed
+      embed_url_template: "https://www.dailymotion.com/embed/video/{video_id}"
+      id_patterns:
+        - "video/([a-zA-Z0-9]+)"
+    embed:
+      method: iframe
+
+  # ============================================================================
+  # ADULT VIDEO SITES - Need Puppeteer for video extraction
+  # ============================================================================
+  - name: "XVideos"
+    pattern: "xvideos\\.(com|es|net)"
+    browse:
+      use_puppeteer: true
+      wait_for: networkidle
+    video:
+      extraction_method: network-intercept
+      needs_proxy: true
+      cdn_patterns:
+        - "cdn.*xvideos"
+        - "vid-egc"
+      referer_required: true
+      referer: "https://www.xvideos.com/"
+    embed:
+      method: link-card
+      reason: "Video extraction via Puppeteer - iframe doesn't work"
+
+  - name: "Pornhub"
+    pattern: "pornhub\\.(com|net|org)"
+    browse:
+      use_puppeteer: true
+      wait_for: networkidle
+    video:
+      extraction_method: network-intercept
+      needs_proxy: true
+      cdn_patterns:
+        - "phncdn\\.com"
+        - "cdn.*pornhub"
+      referer_required: true
+      referer: "https://www.pornhub.com/"
+    embed:
+      method: link-card
+      reason: "Video extraction via Puppeteer - iframe doesn't work"
+
+  - name: "XHamster"
+    pattern: "xhamster\\.(com|desi)"
+    browse:
+      use_puppeteer: true
+      wait_for: networkidle
+    video:
+      extraction_method: network-intercept
+      needs_proxy: true
+      cdn_patterns:
+        - "xhcdn\\.com"
+        - "cdn.*xhamster"
+      referer_required: true
+    embed:
+      method: link-card
+      reason: "Video extraction via Puppeteer - iframe doesn't work"
+
+  - name: "Rule34Video"
+    pattern: "rule34video\\.(com|net)"
+    browse:
+      use_puppeteer: true
+      wait_for: networkidle
+    video:
+      extraction_method: network-intercept
+      needs_proxy: true
+      cdn_patterns:
+        - "boomio-cdn"
+        - "remote_control\\.php"
+        - "get_file"
+      referer_required: true
+      referer: "https://rule34video.com/"
+      # KVS player sites need special handling
+      player_type: kvs
+    embed:
+      method: link-card
+      reason: "Video extraction via Puppeteer - iframe doesn't work"
+
+  - name: "SpankBang"
+    pattern: "spankbang\\.com"
+    browse:
+      use_puppeteer: true
+      wait_for: networkidle
+    video:
+      extraction_method: network-intercept
+      needs_proxy: true
+    embed:
+      method: link-card
+      reason: "Video extraction via Puppeteer - iframe doesn't work"
+
+  - name: "XNXX"
+    pattern: "xnxx\\.(com|es|net)"
+    browse:
+      use_puppeteer: true
+      wait_for: networkidle
+    video:
+      extraction_method: network-intercept
+      needs_proxy: true
+      cdn_patterns:
+        - "cdn.*xnxx"
+        - "vid-egc"
+      referer_required: true
+    embed:
+      method: link-card
+      reason: "Video extraction via Puppeteer - iframe doesn't work"
+
+  - name: "RedTube"
+    pattern: "redtube\\.(com|net)"
+    browse:
+      use_puppeteer: true
+      wait_for: networkidle
+    video:
+      extraction_method: network-intercept
+      needs_proxy: true
+    embed:
+      method: link-card
+      reason: "Video extraction via Puppeteer - iframe doesn't work"
+
+  - name: "YouPorn"
+    pattern: "youporn\\.com"
+    browse:
+      use_puppeteer: true
+      wait_for: networkidle
+    video:
+      extraction_method: network-intercept
+      needs_proxy: true
+    embed:
+      method: link-card
+      reason: "Video extraction via Puppeteer - iframe doesn't work"
+
+  - name: "Eporner"
+    pattern: "eporner\\.com"
+    browse:
+      use_puppeteer: true
+      wait_for: networkidle
+    video:
+      extraction_method: network-intercept
+      needs_proxy: true
+    embed:
+      method: link-card
+      reason: "Video extraction via Puppeteer - iframe doesn't work"
+
+  # ============================================================================
+  # ANIME/HENTAI VIDEO SITES
+  # ============================================================================
+  - name: "HentaiHaven"
+    pattern: "hentaihaven\\.(xxx|com|org)"
+    browse:
+      use_puppeteer: true
+      wait_for: networkidle
+    video:
+      extraction_method: network-intercept
+      needs_proxy: true
+    embed:
+      method: link-card
+      reason: "Video extraction via Puppeteer - iframe doesn't work"
+
+  - name: "Hanime"
+    pattern: "hanime\\.tv"
+    browse:
+      use_puppeteer: true
+      wait_for: networkidle
+    video:
+      extraction_method: network-intercept
+      needs_proxy: true
+    embed:
+      method: link-card
+      reason: "Video extraction via Puppeteer - iframe doesn't work"
+
+  - name: "Iwara"
+    pattern: "iwara\\.tv"
+    browse:
+      use_puppeteer: true
+      wait_for: networkidle
+    video:
+      extraction_method: network-intercept
+      needs_proxy: true
+    embed:
+      method: link-card
+      reason: "Video extraction via Puppeteer - iframe doesn't work"
+
+  # ============================================================================
+  # BOORU/IMAGE SITES - API-based image fetching
+  # ============================================================================
+  - name: "Rule34.xxx"
+    pattern: "rule34\\.xxx"
+    images:
+      use_api: true
+      api_format: booru
+      api_url: "https://api.rule34.xxx/index.php?page=dapi&s=post&q=index&json=1"
+      max_results: 100
+    embed:
+      method: proxy
+
+  - name: "Gelbooru"
+    pattern: "gelbooru\\.com"
+    images:
+      use_api: true
+      api_format: booru
+      api_url: "https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1"
+      max_results: 100
+    embed:
+      method: proxy
+
+  - name: "e621"
+    pattern: "e621\\.net"
+    images:
+      use_api: true
+      api_format: e621
+      api_url: "https://e621.net/posts.json"
+      max_results: 100
+      requires_user_agent: true
+    embed:
+      method: proxy
+
+  - name: "Danbooru"
+    pattern: "danbooru\\.donmai\\.us"
+    images:
+      use_api: true
+      api_format: danbooru
+      api_url: "https://danbooru.donmai.us/posts.json"
+      max_results: 100
+    embed:
+      method: proxy
+
+  - name: "Sankaku"
+    pattern: "sankaku"
+    images:
+      use_api: false  # Requires auth
+    embed:
+      method: proxy
+
+  - name: "nHentai"
+    pattern: "nhentai\\.(net|to)"
+    browse:
+      use_puppeteer: true
+    embed:
+      method: proxy
+
+  - name: "Hitomi"
+    pattern: "hitomi\\.la"
+    browse:
+      use_puppeteer: true
+    embed:
+      method: proxy
+
+  # ============================================================================
+  # NEWS/CONTENT SITES - Standard proxy embedding
+  # ============================================================================
+  - name: "Reddit"
+    pattern: "reddit\\.com"
+    browse:
+      use_puppeteer: true
+      wait_for: networkidle
+    embed:
+      method: proxy
+
+  - name: "Wikipedia"
+    pattern: "wikipedia\\.org"
+    embed:
+      method: iframe
+      sandbox: "allow-scripts allow-same-origin"
+
+  - name: "GitHub"
+    pattern: "github\\.com"
+    embed:
+      method: proxy
+
+  # ============================================================================
+  # DIRECT MEDIA FILES - Play directly without extraction
+  # ============================================================================
+  - name: "Direct Video Files"
+    pattern: "\\.(mp4|webm|m3u8|mpd|ogg|mov)(\\?|$)"
+    video:
+      direct_play: true
+      needs_proxy: false
+      extraction_method: none
+
+  - name: "Direct Image Files"
+    pattern: "\\.(jpg|jpeg|png|gif|webp|svg|bmp)(\\?|$)"
+    images:
+      direct_display: true
+
+  # ============================================================================
+  # GENERIC FALLBACK - Applies to all other sites
+  # ============================================================================
+  - name: "Generic Site"
+    pattern: ".*"
+    embed:
+      method: proxy
+    browse:
+      use_puppeteer: false
+    video:
+      extraction_method: static

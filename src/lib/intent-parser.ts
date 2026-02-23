@@ -3,6 +3,7 @@ import nlp from "compromise";
 // ── Intent types ──
 export interface ParsedIntent {
   type: "site-search" | "open-url" | "page-content" | "pick-result" | "pagination" | "section-nav" | "none";
+  confidence: number;  // 0–1 confidence score; only auto-execute if >= 0.8
   site?: string;       // resolved URL (e.g., "https://rule34video.com")
   siteName?: string;   // raw site name from user (e.g., "rule 34 video")
   query?: string;      // search query (e.g., "eevee")
@@ -90,20 +91,20 @@ export function parseIntent(text: string): ParsedIntent {
   if (explicitUrl) {
     // "what videos are on https://..." → page-content
     if (/what(?:'s|\s+are|\s+is)?.*(?:videos?|content|on\s+(?:this|that)\s+page)/i.test(lower)) {
-      return { type: "page-content", url: explicitUrl };
+      return { type: "page-content", confidence: 0.95, url: explicitUrl };
     }
     // "open/go to https://..." → open-url
     if (/^\s*(?:open|go\s*to|visit|browse|navigate)/i.test(lower)) {
-      return { type: "open-url", url: explicitUrl };
+      return { type: "open-url", confidence: 0.95, url: explicitUrl };
     }
-    // URL with other intent — treat as open-url
-    return { type: "open-url", url: explicitUrl };
+    // URL with other intent — treat as open-url but lower confidence (no explicit verb)
+    return { type: "open-url", confidence: 0.7, url: explicitUrl };
   }
 
   // ── 2. Pagination detection ──
   if (/^\s*(?:next\s+page|page\s+\d+|more\s+(?:results|videos?))\s*$/i.test(lower)) {
     const pageMatch = lower.match(/page\s+(\d+)/);
-    return { type: "pagination", pageNum: pageMatch ? parseInt(pageMatch[1]) : 0 };
+    return { type: "pagination", confidence: 0.9, pageNum: pageMatch ? parseInt(pageMatch[1]) : 0 };
   }
 
   // ── 3. Result pick detection: "play the 3rd video", "play option 5", "option 5", "5" ──
@@ -115,14 +116,20 @@ export function parseIntent(text: string): ParsedIntent {
     const isBareNumber = /^\s*\d+\s*$/.test(lower);
     // Pick if: (verb + noun), (verb + number), (option/number ref), or bare number
     if ((hasPickVerb && hasResultNoun) || (hasPickVerb && ordinal > 0) || isOptionRef || isBareNumber) {
-      return { type: "pick-result", autoPick: ordinal };
+      // Confidence: verb+noun = high, bare number = low (could be game answer)
+      const pickConfidence = (hasPickVerb && hasResultNoun) ? 0.95
+        : (hasPickVerb && ordinal > 0) ? 0.85
+        : isOptionRef ? 0.9
+        : isBareNumber ? 0.4  // bare numbers are ambiguous — might be game answers
+        : 0.6;
+      return { type: "pick-result", confidence: pickConfidence, autoPick: ordinal };
     }
   }
 
   // ── 4. Section navigation: "go to the yuri section" ──
   const sectionMatch = lower.match(/(?:go\s+to|show\s+me|open|browse)\s+(?:the\s+)?([a-zA-Z0-9\s]+?)\s+(?:section|category|page|tab)\b/i);
   if (sectionMatch) {
-    return { type: "section-nav", section: sectionMatch[1].trim() };
+    return { type: "section-nav", confidence: 0.9, section: sectionMatch[1].trim() };
   }
 
   // ── 5. Site-search detection (the main adaptive parser) ──
@@ -157,11 +164,23 @@ export function parseIntent(text: string): ParsedIntent {
       detectedQuery = searchMatch[1].trim();
     }
 
-    // ── "X on SITE" pattern: "look up eevee on rule34video" ──
-    const onSiteMatch = clause.match(/^(?:look\s*up|search\s*(?:for)?|find)\s+(.+?)\s+(?:on|at|from)\s+(.+)/i);
+    // ── "X on/in SITE" pattern: "look up eevee on rule34video", "look up eevee in rule34video" ──
+    const onSiteMatch = clause.match(/^(?:look\s*up|search\s*(?:for)?|find)\s+(.+?)\s+(?:on|in|at|from)\s+(.+)/i);
     if (onSiteMatch) {
-      detectedQuery = onSiteMatch[1].trim();
+      let rawQuery = onSiteMatch[1].trim();
       const siteRef = onSiteMatch[2].trim();
+      
+      // Strip count modifiers like "10 videos", "some clips", "a few" — these aren't real search terms
+      // If the entire query is just a count + generic noun, treat as empty (browse homepage)
+      const countModifierPattern = /^(?:(?:the\s+)?(?:top|first|latest|newest|recent|best|popular|random|some|a\s+few|several|\d+)\s+)?(?:videos?|clips?|results?|items?|things?|content|posts?|entries?)$/i;
+      if (countModifierPattern.test(rawQuery)) {
+        rawQuery = ""; // Generic browse — no specific search term
+      } else {
+        // Strip leading count modifiers from actual queries: "10 eevee videos" → "eevee videos"
+        rawQuery = rawQuery.replace(/^(?:(?:the\s+)?(?:top|first|latest|newest|recent|best|popular|random|some|a\s+few|several|\d+)\s+)/i, "").trim();
+      }
+      
+      detectedQuery = rawQuery;
       if (isSiteReference(siteRef) || siteRef.length > 2) {
         detectedSiteName = siteRef;
         detectedSite = resolveSiteUrl(siteRef);
@@ -212,21 +231,31 @@ export function parseIntent(text: string): ParsedIntent {
     // Check for "on SITE" / "on that site" at end
     const endSiteMatch = lower.match(/(?:on|at|from)\s+(?:that\s+)?(?:site|website|page)\s*$/i);
     if (endSiteMatch) {
-      return { type: "site-search", query: detectedQuery, action: detectedAction || undefined, autoPick: detectedAutoPick || undefined };
+      return { type: "site-search", confidence: 0.5, query: detectedQuery, action: detectedAction || undefined, autoPick: detectedAutoPick || undefined };
     }
     // Check for site reference anywhere in the text
-    const siteInText = lower.match(/(?:on|at|from)\s+([a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z]{2,})+)/i)
-      || lower.match(/(?:on|at|from)\s+(\w+(?:video|hub|tube|porn|xxx|rule34|hentai)\w*)/i);
+    const siteInText = lower.match(/(?:on|in|at|from)\s+([a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z]{2,})+)/i)
+      || lower.match(/(?:on|in|at|from)\s+(\w+(?:video|hub|tube|porn|xxx|rule34|hentai)\w*)/i);
     if (siteInText) {
       detectedSiteName = siteInText[1].trim();
       detectedSite = resolveSiteUrl(detectedSiteName);
     }
   }
 
-  // ── Determine final intent type ──
+  // ── Determine final intent type + confidence ──
   if (detectedSite && detectedQuery) {
+    // Confidence factors: explicit search verb, recognized site, query present
+    let conf = 0.5;
+    const hasSearchVerb = SEARCH_WORDS.some(w => lower.includes(w));
+    const hasOnSitePattern = /\b(?:on|in|at|from)\s+/i.test(lower);
+    if (hasSearchVerb) conf += 0.2;        // explicit "look up" / "search"
+    if (hasOnSitePattern) conf += 0.15;    // "on rule34video"
+    if (isSiteReference(detectedSiteName)) conf += 0.15; // recognized site name
+    if (detectedQuery.length > 2) conf += 0.05;          // non-trivial query
+    conf = Math.min(conf, 1.0);
     return {
       type: "site-search",
+      confidence: conf,
       site: detectedSite,
       siteName: detectedSiteName,
       query: detectedQuery,
@@ -237,9 +266,10 @@ export function parseIntent(text: string): ParsedIntent {
 
   if (detectedSite && !detectedQuery) {
     // Just "open rule34video" — open the site
-    return { type: "open-url", site: detectedSite, siteName: detectedSiteName, url: detectedSite };
+    const hasNavVerb = /^\s*(?:open|go\s*to|visit|browse|navigate)/i.test(lower);
+    return { type: "open-url", confidence: hasNavVerb ? 0.9 : 0.6, site: detectedSite, siteName: detectedSiteName, url: detectedSite };
   }
 
   // No site-specific intent detected — let the AI handle it
-  return { type: "none" };
+  return { type: "none", confidence: 0 };
 }

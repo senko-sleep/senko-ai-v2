@@ -404,6 +404,455 @@ function resolveUrl(src, baseOrigin, baseUrl) {
 }
 
 // ============================================================================
+// UNIVERSAL VIDEO EXTRACTION HELPERS (no site-specific rules)
+// ============================================================================
+
+// Universal ad/tracker domain pattern — blocks known ad networks regardless of site
+const AD_DOMAIN_PATTERN = /\b(doubleclick|googlesyndication|googletagmanager|google-analytics|adsystem|adserver|adclick|clicktrack|exoclick|exosrv|juicyads|trafficjunky|trafficstars|popunder|popads|popcash|adsterra|propellerads|adglare|banhq|otcagpqmeoqb|eunow4u|facebook\.net|fbcdn|amazon-adsystem|outbrain|taboola|criteo|rubiconproject|pubmatic|openx|bidswitch|adsrvr|adnxs|moatads|quantserve|scorecardresearch|bluekai|demdex|krxd|serving-sys|smartadserver|smaato|yieldmo|nativo|sharethrough|hilltopads|adcash|clickaine|revcontent|zergnet)\b/i;
+
+// Check if a URL looks like a video resource (by extension or CDN pattern)
+function isVideoUrl(url) {
+  if (/\.(?:mp4|webm|m3u8|mpd|flv|ts|ogg|mov|avi)\b/i.test(url)) return true;
+  // CDN patterns that serve video without file extensions
+  if (/remote_control\.php|boomio-cdn\.com/i.test(url)) return true;
+  if (/[?&]file=.*(?:%2Fvideos%2F|\/videos\/)/i.test(url)) return true;
+  if (/[?&](?:type=video|mime=video)/i.test(url)) return true;
+  return false;
+}
+
+// Check if a network request is a video request (universal detection)
+function isVideoRequest(url, resourceType, headers) {
+  // Browser's own media type detection is the most reliable signal
+  if (resourceType === "media") return true;
+  // Check URL patterns
+  if (isVideoUrl(url)) return true;
+  // Check accept headers
+  if (/video\/|mpegurl|dash/i.test(headers?.accept || "")) return true;
+  return false;
+}
+
+// Check if a response content-type indicates video
+function isVideoResponse(contentType, url) {
+  if (/video\//i.test(contentType)) return true;
+  if (/mpegurl|dash\+xml/i.test(contentType)) return true;
+  // application/octet-stream could be video — accept if URL looks like video
+  if (/octet-stream/i.test(contentType) && isVideoUrl(url)) return true;
+  // Reject octet-stream for fonts
+  if (/octet-stream/i.test(contentType) && /\.(woff2?|ttf|eot|otf)\b/i.test(url)) return false;
+  return false;
+}
+
+// Infer video MIME type from URL
+function inferVideoType(url) {
+  if (/\.mp4/i.test(url)) return "video/mp4";
+  if (/\.webm/i.test(url)) return "video/webm";
+  if (/\.m3u8/i.test(url)) return "application/x-mpegURL";
+  if (/\.mpd/i.test(url)) return "application/dash+xml";
+  if (/\.flv/i.test(url)) return "video/x-flv";
+  if (/\.ogg/i.test(url)) return "video/ogg";
+  if (/\.mov/i.test(url)) return "video/quicktime";
+  if (/\.avi/i.test(url)) return "video/x-msvideo";
+  if (/\.ts\b/i.test(url)) return "video/mp2t";
+  return "";
+}
+
+// Infer video quality from URL
+function inferVideoQuality(url) {
+  const m = url.match(/(\d{3,4})p/);
+  return m ? m[1] + "p" : "";
+}
+
+// Sort videos: mp4 > webm > m3u8 > dash > unknown > iframe, higher quality first
+function sortVideos(videos) {
+  const typeOrder = { "video/mp4": 0, "video/webm": 1, "application/x-mpegURL": 2, "application/dash+xml": 3 };
+  return videos.sort((a, b) => {
+    const ta = typeOrder[a.type] ?? (a.type === "iframe" ? 10 : 5);
+    const tb = typeOrder[b.type] ?? (b.type === "iframe" ? 10 : 5);
+    if (ta !== tb) return ta - tb;
+    return (parseInt(b.quality) || 0) - (parseInt(a.quality) || 0);
+  });
+}
+
+// Set universal age-gate cookies for ANY domain (harmless on non-age-gated sites)
+async function setAgeGateCookies(page, url) {
+  try {
+    const domain = new URL(url).hostname.replace(/^www\./, "");
+    await page.setCookie(
+      { name: "age_verified", value: "1", domain: `.${domain}` },
+      { name: "age-verified", value: "1", domain: `.${domain}` },
+      { name: "over18", value: "1", domain: `.${domain}` },
+      { name: "is_adult", value: "1", domain: `.${domain}` },
+      { name: "disclaimer", value: "1", domain: `.${domain}` },
+      { name: "consent", value: "1", domain: `.${domain}` },
+      { name: "age_check", value: "1", domain: `.${domain}` },
+      { name: "mature_content", value: "1", domain: `.${domain}` },
+      { name: "accessAgeDisclaimerPH", value: "1", domain: `.${domain}` },
+      { name: "accessAgeDisclaimerXV", value: "1", domain: `.${domain}` },
+      { name: "accessPH", value: "1", domain: `.${domain}` },
+    );
+  } catch { }
+}
+
+// Setup universal network interception to catch all video URLs
+function setupVideoInterception(page, networkVideos, seenNetworkUrls) {
+  page.on("request", (request) => {
+    const reqUrl = request.url();
+    const resourceType = request.resourceType();
+
+    // Catch video requests from any source
+    if (isVideoRequest(reqUrl, resourceType, request.headers())) {
+      if (!seenNetworkUrls.has(reqUrl) && !AD_DOMAIN_PATTERN.test(reqUrl)) {
+        seenNetworkUrls.add(reqUrl);
+        networkVideos.push({
+          url: reqUrl,
+          type: inferVideoType(reqUrl) || undefined,
+          quality: inferVideoQuality(reqUrl) || undefined,
+          source: "network",
+        });
+      }
+    }
+
+    // Block ads/trackers to speed up page load
+    const isAd = AD_DOMAIN_PATTERN.test(reqUrl);
+    const isHeavy = resourceType === "font" || resourceType === "stylesheet";
+    if (isAd || isHeavy) {
+      request.abort();
+    } else {
+      request.continue();
+    }
+  });
+
+  page.on("response", async (response) => {
+    try {
+      const respUrl = response.url();
+      const contentType = response.headers()["content-type"] || "";
+      if (isVideoResponse(contentType, respUrl)) {
+        if (!seenNetworkUrls.has(respUrl) && !AD_DOMAIN_PATTERN.test(respUrl)) {
+          seenNetworkUrls.add(respUrl);
+          networkVideos.push({
+            url: respUrl,
+            type: contentType.split(";")[0].trim(),
+            source: "response",
+          });
+        }
+      }
+    } catch { }
+  });
+}
+
+// Universal DOM video extraction — runs inside page.evaluate()
+// Detects ALL video sources without any site-specific logic
+const universalDOMExtract = () => {
+  const results = [];
+  const seen = new Set();
+  const add = (url, extra = {}) => {
+    if (!url || seen.has(url) || url.startsWith("blob:") || url.startsWith("data:")) return;
+    if (/\b(ad[sv]?|tracker|pixel|beacon|exoclick|trafficjunky|juicyads|adglare|popads|adsterra)\b/i.test(url)) return;
+    seen.add(url);
+    results.push({ url, ...extra, source: extra.source || "dom" });
+  };
+
+  // 1. <video> elements + <source> children
+  document.querySelectorAll("video").forEach((v) => {
+    const poster = v.poster || undefined;
+    if (v.src) add(v.src, { poster });
+    if (v.currentSrc && v.currentSrc !== v.src) add(v.currentSrc, { poster });
+    v.querySelectorAll("source").forEach((s) => {
+      if (s.src) add(s.src, { type: s.type || undefined, poster });
+    });
+  });
+
+  // 2. Standalone <source> elements
+  document.querySelectorAll("source").forEach((s) => {
+    if (s.src && /\.(mp4|webm|m3u8|mpd|flv|ogg|mov)/i.test(s.src)) {
+      add(s.src, { type: s.type || undefined });
+    }
+  });
+
+  // 3. Data attributes on ANY element (universal attribute scan)
+  const videoDataAttrs = [
+    "data-src", "data-video-url", "data-video-src", "data-file-url",
+    "data-mp4", "data-hls", "data-stream", "data-video", "data-source",
+    "data-file", "data-url", "data-media", "data-content-url",
+    "data-dash", "data-webm", "data-m3u8", "data-mpd",
+  ];
+  const attrSelector = videoDataAttrs.map((a) => `[${a}]`).join(",");
+  document.querySelectorAll(attrSelector).forEach((el) => {
+    for (const attr of videoDataAttrs) {
+      const val = el.getAttribute(attr);
+      if (val && (/\.(mp4|webm|m3u8|mpd|flv|ogg|mov)/i.test(val) || /video|stream|media|cdn|remote_control/i.test(val))) {
+        add(val);
+      }
+    }
+  });
+
+  // 4. Iframes — any iframe with video-related URL (no hard-coded domains)
+  document.querySelectorAll("iframe").forEach((iframe) => {
+    const src = iframe.src;
+    if (!src) return;
+    if (/\b(embed|player|video|watch|play|stream|media)\b/i.test(src) && !/\b(ad|banner|widget|social|comment|pixel|tracker)\b/i.test(src)) {
+      add(src, { type: "iframe" });
+    }
+  });
+
+  // 5. <embed> and <object> elements
+  document.querySelectorAll("embed[src], object[data]").forEach((el) => {
+    const src = el.getAttribute("src") || el.getAttribute("data");
+    if (src && /\.(mp4|webm|m3u8|swf|flv)/i.test(src)) add(src);
+  });
+  document.querySelectorAll("object param").forEach((p) => {
+    const name = (p.getAttribute("name") || "").toLowerCase();
+    const val = p.getAttribute("value");
+    if (!val) return;
+    if ((name === "src" || name === "movie" || name === "file") && /\.(mp4|webm|m3u8|flv)/i.test(val)) {
+      add(val);
+    }
+    if (name === "flashvars") {
+      try {
+        const params = new URLSearchParams(val);
+        for (const [k, v] of params) {
+          if (/video|file|stream|source|url|quality/i.test(k)) {
+            let clean = v.replace(/^function\/\d+\//, "");
+            if (clean.startsWith("http")) add(clean, { source: "flashvars" });
+          }
+        }
+      } catch {}
+    }
+  });
+
+  // 6. JS Player API detection (all known player frameworks)
+
+  // jwplayer
+  try {
+    if (window.jwplayer) {
+      const instances = document.querySelectorAll("[id]");
+      const tried = new Set();
+      instances.forEach((el) => {
+        try {
+          if (tried.has(el.id)) return;
+          tried.add(el.id);
+          const p = window.jwplayer(el.id);
+          if (p && typeof p.getPlaylistItem === "function") {
+            const item = p.getPlaylistItem();
+            if (item) {
+              if (item.file) add(item.file, { source: "jwplayer" });
+              if (item.sources) item.sources.forEach((s) => { if (s.file) add(s.file, { type: s.type, source: "jwplayer" }); });
+              if (item.allSources) item.allSources.forEach((s) => { if (s.file) add(s.file, { type: s.type, source: "jwplayer" }); });
+            }
+            const playlist = p.getPlaylist?.();
+            if (playlist) playlist.forEach((pi) => {
+              if (pi.file) add(pi.file, { source: "jwplayer" });
+              if (pi.sources) pi.sources.forEach((s) => { if (s.file) add(s.file, { source: "jwplayer" }); });
+            });
+          }
+        } catch {}
+      });
+    }
+  } catch {}
+
+  // videojs
+  try {
+    const vjsPlayers = document.querySelectorAll(".video-js");
+    vjsPlayers.forEach((el) => {
+      const player = el.player || window.videojs?.getPlayer?.(el.id);
+      if (player) {
+        const src = player.currentSrc?.() || player.src?.();
+        if (src) add(src, { source: "videojs" });
+        const techEl = player.tech?.()?.el?.();
+        if (techEl && techEl.src) add(techEl.src, { source: "videojs" });
+      }
+    });
+    if (window.videojs?.getPlayers) {
+      const players = window.videojs.getPlayers();
+      for (const id in players) {
+        const p = players[id];
+        if (p) {
+          const src = p.currentSrc?.() || p.src?.();
+          if (src) add(src, { source: "videojs" });
+        }
+      }
+    }
+  } catch {}
+
+  // flowplayer
+  try {
+    if (window.flowplayer) {
+      document.querySelectorAll(".flowplayer").forEach((el) => {
+        const fp = window.flowplayer(el);
+        if (fp && fp.video) {
+          if (fp.video.src) add(fp.video.src, { source: "flowplayer" });
+          if (fp.video.sources) fp.video.sources.forEach((s) => { if (s.src) add(s.src, { type: s.type, source: "flowplayer" }); });
+        }
+      });
+    }
+  } catch {}
+
+  // Plyr
+  try {
+    document.querySelectorAll(".plyr").forEach((el) => {
+      const plyr = el.__plyr || el.plyr;
+      if (plyr) {
+        const sources = plyr.source?.sources;
+        if (sources) sources.forEach((s) => { if (s.src) add(s.src, { source: "plyr" }); });
+      }
+    });
+  } catch {}
+
+  // MediaElement.js
+  try {
+    document.querySelectorAll(".mejs__container, .mejs-container").forEach((el) => {
+      const player = el.querySelector("video, audio");
+      if (player && player.src) add(player.src, { source: "mediaelement" });
+    });
+  } catch {}
+
+  // Clappr
+  try {
+    if (window.Clappr || window.clappr) {
+      document.querySelectorAll("[data-clappr], .clappr-player").forEach((el) => {
+        try {
+          const cfg = el.getAttribute("data-clappr");
+          if (cfg) { const d = JSON.parse(cfg); if (d.source) add(d.source, { source: "clappr" }); }
+        } catch {}
+      });
+    }
+  } catch {}
+
+  // KVS Player / kt_player (tube sites — e.g. rule34video, many others)
+  try {
+    if (window.flashvars) {
+      const fv = window.flashvars;
+      for (const key of Object.keys(fv)) {
+        if (/video|file|stream|source|quality|url/i.test(key) && typeof fv[key] === "string") {
+          let v = fv[key].replace(/^function\/\d+\//, "");
+          if (v.startsWith("http")) add(v, { source: "flashvars" });
+        }
+      }
+    }
+    // kt_player element data
+    const ktEl = document.querySelector("#kt_player, .kt_player, [id*=kt_player]");
+    if (ktEl) {
+      const df = ktEl.getAttribute("data-flashvars");
+      if (df) {
+        try {
+          const params = new URLSearchParams(df);
+          for (const [k, v] of params) {
+            if (/video|file|stream|source|url|quality/i.test(k)) {
+              let clean = v.replace(/^function\/\d+\//, "");
+              if (clean.startsWith("http")) add(clean, { source: "kt_player" });
+            }
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+
+  // Shaka Player
+  try {
+    document.querySelectorAll("video").forEach((v) => {
+      const p = v.shakaPlayer || v.__shakaPlayer;
+      if (p) {
+        const uri = p.getAssetUri?.() || p.getManifestUri?.();
+        if (uri) add(uri, { source: "shaka" });
+      }
+    });
+  } catch {}
+
+  // hls.js instances
+  try {
+    document.querySelectorAll("video").forEach((v) => {
+      const h = v._hls || v.hls;
+      if (h && h.url) add(h.url, { type: "application/x-mpegURL", source: "hlsjs" });
+    });
+  } catch {}
+
+  // dash.js instances
+  try {
+    document.querySelectorAll("video").forEach((v) => {
+      const p = v._dashjs_player || v.dashPlayer;
+      if (p) {
+        const src = p.getSource?.();
+        if (src) add(src, { type: "application/dash+xml", source: "dashjs" });
+      }
+    });
+  } catch {}
+
+  // 7. Scan inline <script> blocks for video URLs
+  try {
+    document.querySelectorAll("script:not([src])").forEach((script) => {
+      const text = script.textContent || "";
+      if (text.length > 2000000 || text.length < 20) return;
+
+      // Direct video file URLs in strings
+      const urlPatterns = [
+        /["'](https?:\/\/[^"'\s]+\.(?:mp4|webm|m3u8|mpd|flv|ogg|mov)(?:\?[^"'\s]*)?)["']/gi,
+        /["'](https?:\/\/[^"'\s]*(?:cdn|stream|media|video)[^"'\s]*(?:remote_control|get_file)[^"'\s]*)["']/gi,
+        /(?:video_url|videoUrl|video_file|videoFile|file_url|fileUrl|mp4_url|source_url|stream_url|hls_url|dash_url|media_url|content_url|playback_url|video_src|videoSrc)\s*[:=]\s*["'](https?:\/\/[^"'\s]+)["']/gi,
+      ];
+      for (const pattern of urlPatterns) {
+        let match;
+        while ((match = pattern.exec(text)) !== null && results.length < 40) {
+          let candidate = match[1].replace(/^function\/\d+\//, "");
+          if (candidate.startsWith("http") && !/\b(ad|tracker|pixel|beacon)\b/i.test(candidate)) {
+            add(candidate, { source: "script-scan" });
+          }
+        }
+      }
+
+      // flashvars object in script
+      const fvMatch = text.match(/flashvars\s*=\s*({[\s\S]*?})\s*;/);
+      if (fvMatch) {
+        const fvText = fvMatch[1];
+        const urlInFv = /["']?(video_url|video_alt_url\d*|quality_\d+p|video_url_hd)["']?\s*[:=]\s*["']([^"']+)["']/gi;
+        let m;
+        while ((m = urlInFv.exec(fvText)) !== null) {
+          let v = m[2].replace(/^function\/\d+\//, "");
+          if (v.startsWith("http")) add(v, { source: "flashvars-script" });
+        }
+      }
+    });
+  } catch {}
+
+  return results;
+};
+
+// Universal listing page link detection — detect video links on any site without hard-coded patterns
+const universalVideoLinkExtract = () => {
+  const links = [];
+  const seen = new Set();
+  document.querySelectorAll("a[href]").forEach((a) => {
+    const href = a.href;
+    const text = (a.textContent || a.title || a.getAttribute("alt") || "").replace(/\s+/g, " ").trim();
+    if (!href || seen.has(href) || !text) return;
+
+    const u = href.toLowerCase();
+    // Skip navigation, auth, category, and ad links
+    if (/\/account|\/login|\/signup|\/register|\/tags$|\/categories$|\/privacy|\/terms|\/dmca|\/contact|\/about/i.test(u)) return;
+    if (/exoclick|trafficjunky|juicyads|adglare|popads|adsterra/i.test(u)) return;
+    if (u === window.location.href.toLowerCase()) return;
+
+    // Score the link — higher score = more likely to be a video/content link
+    let score = 0;
+    // URL contains video-related path segments
+    if (/\/(video|watch|view_video|clip|embed|play|movie|episode)s?\b/i.test(u)) score += 3;
+    if (/viewkey|watch\?v=|\/v\//i.test(u)) score += 3;
+    // URL has an ID/slug pattern (not just a category)
+    if (/\/[a-z0-9-]{10,}/i.test(u)) score += 1;
+    if (/\d{3,}/.test(u)) score += 1;
+    // Text is a reasonable title (not just "Home", "Next", etc.)
+    if (text.length > 10 && text.length < 300) score += 1;
+    // Has thumbnail nearby (img inside or adjacent)
+    if (a.querySelector("img") || a.closest(".thumb, .video-item, .video-card, [class*=thumb], [class*=video]")) score += 2;
+
+    if (score >= 3) {
+      seen.add(href);
+      links.push({ url: href, title: text.slice(0, 200) || "Video" });
+    }
+  });
+  return links.slice(0, 50);
+};
+
+// ============================================================================
 // IMAGE SEARCH UTILITIES
 // ============================================================================
 
@@ -745,23 +1194,20 @@ function extractVideos(html, origin, finalUrl) {
     }
   }
 
-  // 7. iframes
+  // 7. iframes — universal detection (no hard-coded domain list)
   const iframeRegex = /<iframe[^>]*\bsrc=["']([^"']+)["'][^>]*/gi;
   let iframeMatch;
   while ((iframeMatch = iframeRegex.exec(html)) !== null && videos.length < 20) {
     const src = resolveUrl(iframeMatch[1], origin, finalUrl);
     if (!src) continue;
-    if (/youtube\.com\/embed|youtu\.be|player\.vimeo|dailymotion\.com\/embed|pornhub\.com\/embed|xvideos\.com\/embed|redtube\.com\/embed|xhamster\.com\/embed|rule34video\.com\/embed|streamable\.com|vidyard|wistia|brightcove|jwplatform|bitchute\.com\/embed|rumble\.com\/embed/i.test(src.toLowerCase())) {
+    const lower = src.toLowerCase();
+    // Accept any iframe that looks like a video embed (contains video-related keywords)
+    if (/\b(embed|player|video|watch|play|stream|media)\b/i.test(lower) && !/\b(ad|banner|widget|social|comment|pixel|tracker)\b/i.test(lower)) {
       if (!seenVideos.has(src)) { videos.push({ url: src, type: "iframe" }); seenVideos.add(src); }
     }
   }
 
-  return videos.sort((a, b) => {
-    const order = { "video/mp4": 0, "video/webm": 1, "application/x-mpegURL": 2 };
-    const ta = order[a.type] ?? 5; const tb = order[b.type] ?? 5;
-    if (ta !== tb) return ta - tb;
-    return (parseInt(b.quality) || 0) - (parseInt(a.quality) || 0);
-  });
+  return sortVideos(videos);
 }
 
 // ============================================================================
@@ -983,7 +1429,19 @@ app.get("/scrape", async (req, res) => {
       .replace(/\n{3,}/g, "\n\n")
       .trim();
 
-    const truncated = text.length > 5000 ? text.slice(0, 5000) + "..." : text;
+    // Remove duplicate lines (common with navigation/header text)
+    const lines = text.split("\n");
+    const seenLines = new Set();
+    const dedupedLines = lines.filter(line => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.length < 3) return false;
+      const normalized = trimmed.toLowerCase();
+      if (seenLines.has(normalized)) return false;
+      seenLines.add(normalized);
+      return true;
+    });
+    const dedupedText = dedupedLines.join("\n");
+    const truncated = dedupedText.length > 50000 ? dedupedText.slice(0, 50000) + "..." : dedupedText;
     const videos = extractVideos(html, new URL(url).origin, url);
 
     // Extract images
@@ -1414,68 +1872,14 @@ app.get("/browse", async (req, res) => {
     await page.setUserAgent(UA);
     await page.setViewport({ width: 1920, height: 1080 });
 
-    // Intercept network requests to catch video URLs
+    // Universal network interception — catches ALL video requests regardless of site
     const networkVideos = [];
     const seenNetworkUrls = new Set();
     await page.setRequestInterception(true);
-    page.on("request", (request) => {
-      const reqUrl = request.url();
-      const resourceType = request.resourceType();
-      if (resourceType === "media" || resourceType === "xhr" || resourceType === "fetch" || resourceType === "other") {
-        const lower = reqUrl.toLowerCase();
-        if (/\.(?:mp4|webm|m3u8|mpd|flv|ts)\b/i.test(lower) || /video\/|mpegurl|dash/i.test(request.headers()["accept"] || "")) {
-          if (!seenNetworkUrls.has(reqUrl) && !/\b(ad[sv]?|tracker|pixel|beacon|analytics|exoclick|trafficjunky|juicyads)\b/i.test(lower)) {
-            seenNetworkUrls.add(reqUrl);
-            let type = "";
-            if (/\.mp4/i.test(reqUrl)) type = "video/mp4";
-            else if (/\.webm/i.test(reqUrl)) type = "video/webm";
-            else if (/\.m3u8/i.test(reqUrl)) type = "application/x-mpegURL";
-            else if (/\.mpd/i.test(reqUrl)) type = "application/dash+xml";
-            const qMatch = reqUrl.match(/(\d{3,4})p/);
-            networkVideos.push({ url: reqUrl, type: type || undefined, quality: qMatch ? qMatch[1] + "p" : undefined, source: "network" });
-          }
-        }
-      }
-      // Block ads/trackers/heavy resources to speed up page load
-      const isAd = /exoclick|trafficjunky|juicyads|adglare|popads|popcash|adsterra|propellerads|banhq|otcagpqmeoqb|eunow4u|doubleclick|googlesyndication|googletagmanager|google-analytics|facebook\.net|fbcdn|amazon-adsystem|outbrain|taboola|criteo|rubiconproject|pubmatic|openx|bidswitch|adsrvr|adnxs|moatads|quantserve|scorecardresearch|bluekai|demdex|krxd|serving-sys|smartadserver|smaato|yieldmo|nativo|sharethrough/i.test(reqUrl);
-      // Block heavy resource types (images/fonts/stylesheets) — we only need text, links, and scripts for content extraction
-      const isHeavy = resourceType === "image" || resourceType === "font" || resourceType === "stylesheet";
-      if (isAd || isHeavy) {
-        request.abort();
-      } else {
-        request.continue();
-      }
-    });
+    setupVideoInterception(page, networkVideos, seenNetworkUrls);
 
-    // Also catch video URLs from responses
-    page.on("response", async (response) => {
-      try {
-        const respUrl = response.url();
-        const contentType = response.headers()["content-type"] || "";
-        if (/video\/|mpegurl|dash\+xml|octet-stream/i.test(contentType)) {
-          if (!seenNetworkUrls.has(respUrl) && !/\b(ad[sv]?|tracker|pixel)\b/i.test(respUrl)) {
-            seenNetworkUrls.add(respUrl);
-            networkVideos.push({ url: respUrl, type: contentType.split(";")[0].trim(), source: "response" });
-          }
-        }
-      } catch { }
-    });
-
-    // Set cookies for age-gated sites (Pornhub, XVideos, etc.)
-    const urlObj = new URL(url);
-    const domain = urlObj.hostname.replace(/^www\./, "");
-    if (/pornhub|xvideos|xhamster|redtube|youporn|tube8|spankbang|xnxx|rule34video|rule34world|eporner|tnaflix/i.test(domain)) {
-      await page.setCookie(
-        { name: "accessAgeDisclaimerPH", value: "1", domain: `.${domain}` },
-        { name: "accessAgeDisclaimerXV", value: "1", domain: `.${domain}` },
-        { name: "accessPH", value: "1", domain: `.${domain}` },
-        { name: "age_verified", value: "1", domain: `.${domain}` },
-        { name: "age-verified", value: "1", domain: `.${domain}` },
-        { name: "disclaimer", value: "1", domain: `.${domain}` },
-        { name: "over18", value: "1", domain: `.${domain}` },
-        { name: "is_adult", value: "1", domain: `.${domain}` },
-      );
-    }
+    // Universal age-gate cookies — set for any domain (harmless on non-age-gated sites)
+    await setAgeGateCookies(page, url);
 
     console.log(`[browse] Loading ${url}`);
     // Use shorter timeout — ad-heavy sites (rule34video etc.) never reach networkidle2
@@ -1579,75 +1983,8 @@ app.get("/browse", async (req, res) => {
         result.images.push({ url: src, alt: img.alt || "" });
       });
 
-      // Extract videos from rendered DOM
-      const seenVids = new Set();
-      const addVid = (vUrl, extra = {}) => {
-        if (!vUrl || seenVids.has(vUrl) || vUrl.startsWith("blob:") || vUrl.startsWith("data:")) return;
-        if (/\b(ad[sv]?|tracker|pixel|beacon|exoclick|trafficjunky)\b/i.test(vUrl)) return;
-        seenVids.add(vUrl);
-        result.videos.push({ url: vUrl, ...extra, source: "dom" });
-      };
-
-      document.querySelectorAll("video").forEach((v) => {
-        const poster = v.poster || undefined;
-        if (v.src) addVid(v.src, { poster });
-        if (v.currentSrc) addVid(v.currentSrc, { poster });
-        v.querySelectorAll("source").forEach((s) => {
-          if (s.src) addVid(s.src, { type: s.type || undefined, poster });
-        });
-      });
-
-      // Check data attributes
-      document.querySelectorAll("[data-src],[data-video-url],[data-video-src],[data-file-url],[data-mp4],[data-hls],[data-stream]").forEach((el) => {
-        const attrs = ["data-src", "data-video-url", "data-video-src", "data-file-url", "data-mp4", "data-hls", "data-stream"];
-        for (const attr of attrs) {
-          const val = el.getAttribute(attr);
-          if (val && /\.(mp4|webm|m3u8|mpd|flv)/i.test(val)) addVid(val);
-        }
-      });
-
-      // Check iframes for video embeds
-      document.querySelectorAll("iframe").forEach((iframe) => {
-        const src = iframe.src;
-        if (src && /\b(embed|player|video|watch|play)\b/i.test(src) && !/\b(ad|banner|widget|social|comment)\b/i.test(src)) {
-          addVid(src, { type: "iframe" });
-        }
-      });
-
-      // Check for jwplayer, videojs, flowplayer instances
-      try {
-        if (window.jwplayer) {
-          const p = window.jwplayer();
-          if (p && p.getPlaylistItem) {
-            const item = p.getPlaylistItem();
-            if (item) {
-              if (item.file) addVid(item.file);
-              if (item.sources) item.sources.forEach((s) => { if (s.file) addVid(s.file, { type: s.type }); });
-            }
-          }
-        }
-      } catch { }
-      try {
-        const vjsPlayers = document.querySelectorAll(".video-js");
-        vjsPlayers.forEach((el) => {
-          const player = el.player || window.videojs?.getPlayer(el.id);
-          if (player) {
-            const src = player.currentSrc?.() || player.src?.();
-            if (src) addVid(src);
-          }
-        });
-      } catch { }
-      try {
-        if (window.flowplayer) {
-          document.querySelectorAll(".flowplayer").forEach((el) => {
-            const fp = window.flowplayer(el);
-            if (fp && fp.video) {
-              if (fp.video.src) addVid(fp.video.src);
-              if (fp.video.sources) fp.video.sources.forEach((s) => { if (s.src) addVid(s.src, { type: s.type }); });
-            }
-          });
-        }
-      } catch { }
+      // Extract videos from rendered DOM — uses universal extractor injected below
+      // (video extraction is done via separate page.evaluate call after this one)
 
       // Extract headings
       document.querySelectorAll("h1, h2, h3, h4, h5, h6").forEach((h) => {
@@ -1661,29 +1998,23 @@ app.get("/browse", async (req, res) => {
       return result;
     }, maxContent);
 
+    // Universal DOM video extraction — detects all player frameworks, data attrs, iframes, scripts
+    const domVideos = await page.evaluate(universalDOMExtract);
+
     const title = await page.title();
     await page.close();
 
-    // Merge network-intercepted videos with DOM-extracted videos
+    // Merge network-intercepted videos with DOM-extracted videos (network = highest confidence)
     const allVideos = [];
     const allSeenVids = new Set();
     for (const v of networkVideos) {
       if (!allSeenVids.has(v.url)) { allVideos.push(v); allSeenVids.add(v.url); }
     }
-    for (const v of pageData.videos) {
+    for (const v of domVideos) {
       if (!allSeenVids.has(v.url)) { allVideos.push(v); allSeenVids.add(v.url); }
     }
 
-    // Sort: mp4 > webm > m3u8, higher quality first
-    const typeOrder = { "video/mp4": 0, "video/webm": 1, "application/x-mpegURL": 2, "application/dash+xml": 3 };
-    allVideos.sort((a, b) => {
-      const ta = typeOrder[a.type] ?? (a.type === "iframe" ? 10 : 5);
-      const tb = typeOrder[b.type] ?? (b.type === "iframe" ? 10 : 5);
-      if (ta !== tb) return ta - tb;
-      const qa = parseInt(a.quality) || 0;
-      const qb = parseInt(b.quality) || 0;
-      return qb - qa;
-    });
+    sortVideos(allVideos);
 
     // Build meta
     const meta = {
@@ -1723,68 +2054,14 @@ app.get("/video-extract", async (req, res) => {
     await page.setUserAgent(UA);
     await page.setViewport({ width: 1280, height: 800 });
 
-    // Set cookies for age-gated sites (Pornhub, XVideos, etc.)
-    const urlObj = new URL(url);
-    const domain = urlObj.hostname.replace(/^www\./, "");
-    if (/pornhub|xvideos|xhamster|redtube|youporn|tube8|spankbang|xnxx|rule34video|rule34world|eporner|tnaflix/i.test(domain)) {
-      await page.setCookie(
-        { name: "accessAgeDisclaimerPH", value: "1", domain: `.${domain}` },
-        { name: "accessAgeDisclaimerXV", value: "1", domain: `.${domain}` },
-        { name: "accessPH", value: "1", domain: `.${domain}` },
-        { name: "age_verified", value: "1", domain: `.${domain}` },
-        { name: "age-verified", value: "1", domain: `.${domain}` },
-        { name: "disclaimer", value: "1", domain: `.${domain}` },
-        { name: "over18", value: "1", domain: `.${domain}` },
-        { name: "is_adult", value: "1", domain: `.${domain}` },
-      );
-    }
+    // Universal age-gate cookies — set for any domain
+    await setAgeGateCookies(page, url);
 
-    // Intercept ALL network requests to catch video URLs
+    // Universal network interception — catches ALL video requests regardless of site
     const networkVideos = [];
     const seenNetworkUrls = new Set();
     await page.setRequestInterception(true);
-    page.on("request", (request) => {
-      const reqUrl = request.url();
-      const resourceType = request.resourceType();
-      // Catch media requests
-      if (resourceType === "media" || resourceType === "xhr" || resourceType === "fetch" || resourceType === "other") {
-        const lower = reqUrl.toLowerCase();
-        if (/\.(?:mp4|webm|m3u8|mpd|flv|ts)\b/i.test(lower) || /video\/|mpegurl|dash/i.test(request.headers()["accept"] || "")) {
-          if (!seenNetworkUrls.has(reqUrl) && !/\b(ad[sv]?|tracker|pixel|beacon|analytics)\b/i.test(lower)) {
-            seenNetworkUrls.add(reqUrl);
-            let type = "";
-            if (/\.mp4/i.test(reqUrl)) type = "video/mp4";
-            else if (/\.webm/i.test(reqUrl)) type = "video/webm";
-            else if (/\.m3u8/i.test(reqUrl)) type = "application/x-mpegURL";
-            else if (/\.mpd/i.test(reqUrl)) type = "application/dash+xml";
-            const qMatch = reqUrl.match(/(\d{3,4})p/);
-            networkVideos.push({ url: reqUrl, type: type || undefined, quality: qMatch ? qMatch[1] + "p" : undefined, source: "network" });
-          }
-        }
-      }
-      // Block ads/trackers to speed up page load (but NOT media — we need those for video interception)
-      const isAd = /exoclick|trafficjunky|juicyads|adglare|popads|popcash|adsterra|propellerads|banhq|otcagpqmeoqb|eunow4u|doubleclick|googlesyndication|googletagmanager|google-analytics|facebook\.net|fbcdn|amazon-adsystem|outbrain|taboola|criteo|rubiconproject|pubmatic|openx|bidswitch|adsrvr|adnxs|moatads|quantserve|scorecardresearch|bluekai|demdex|krxd|serving-sys|smartadserver|smaato|yieldmo|nativo|sharethrough/i.test(reqUrl);
-      const isHeavy = resourceType === "font" || resourceType === "stylesheet";
-      if (isAd || isHeavy) {
-        request.abort();
-      } else {
-        request.continue();
-      }
-    });
-
-    // Also catch video URLs from responses
-    page.on("response", async (response) => {
-      try {
-        const respUrl = response.url();
-        const contentType = response.headers()["content-type"] || "";
-        if (/video\/|mpegurl|dash\+xml|octet-stream/i.test(contentType)) {
-          if (!seenNetworkUrls.has(respUrl) && !/\b(ad[sv]?|tracker|pixel)\b/i.test(respUrl)) {
-            seenNetworkUrls.add(respUrl);
-            networkVideos.push({ url: respUrl, type: contentType.split(";")[0].trim(), source: "response" });
-          }
-        }
-      } catch { }
-    });
+    setupVideoInterception(page, networkVideos, seenNetworkUrls);
 
     await page.goto(url, { waitUntil: "networkidle2", timeout: 15000 }).catch(() => {
       console.log(`[video-extract] networkidle2 timed out, continuing`);
@@ -1812,83 +2089,8 @@ app.get("/video-extract", async (req, res) => {
       await new Promise((r) => setTimeout(r, 2000));
     } catch { }
 
-    // Extract video sources from the rendered DOM
-    const domVideos = await page.evaluate(() => {
-      const results = [];
-      const seen = new Set();
-      const add = (url, extra = {}) => {
-        if (!url || seen.has(url) || url.startsWith("blob:") || url.startsWith("data:")) return;
-        if (/\b(ad[sv]?|tracker|pixel|beacon)\b/i.test(url)) return;
-        seen.add(url);
-        results.push({ url, ...extra, source: "dom" });
-      };
-
-      // All <video> elements
-      document.querySelectorAll("video").forEach((v) => {
-        if (v.src) add(v.src, { poster: v.poster || undefined });
-        if (v.currentSrc) add(v.currentSrc, { poster: v.poster || undefined });
-        // <source> children
-        v.querySelectorAll("source").forEach((s) => {
-          if (s.src) add(s.src, { type: s.type || undefined, poster: v.poster || undefined });
-        });
-      });
-
-      // Check for video players that store URLs in data attributes
-      document.querySelectorAll("[data-src],[data-video-url],[data-video-src],[data-file-url],[data-mp4],[data-hls],[data-stream]").forEach((el) => {
-        const attrs = ["data-src", "data-video-url", "data-video-src", "data-file-url", "data-mp4", "data-hls", "data-stream"];
-        for (const attr of attrs) {
-          const val = el.getAttribute(attr);
-          if (val && /\.(mp4|webm|m3u8|mpd|flv)/i.test(val)) add(val);
-        }
-      });
-
-      // Check iframes for video embeds
-      document.querySelectorAll("iframe").forEach((iframe) => {
-        const src = iframe.src;
-        if (src && /\b(embed|player|video|watch|play)\b/i.test(src) && !/\b(ad|banner|widget)\b/i.test(src)) {
-          add(src, { type: "iframe" });
-        }
-      });
-
-      // Check for jwplayer, videojs, flowplayer instances
-      try {
-        if (window.jwplayer) {
-          const p = window.jwplayer();
-          if (p && p.getPlaylistItem) {
-            const item = p.getPlaylistItem();
-            if (item) {
-              if (item.file) add(item.file);
-              if (item.sources) item.sources.forEach((s) => { if (s.file) add(s.file, { type: s.type }); });
-            }
-          }
-        }
-      } catch { }
-      try {
-        const vjsPlayers = document.querySelectorAll(".video-js");
-        vjsPlayers.forEach((el) => {
-          const player = el.player || window.videojs?.getPlayer(el.id);
-          if (player) {
-            const src = player.currentSrc?.() || player.src?.();
-            if (src) add(src);
-            const techEl = player.tech?.()?.el?.();
-            if (techEl && techEl.src) add(techEl.src);
-          }
-        });
-      } catch { }
-      try {
-        if (window.flowplayer) {
-          document.querySelectorAll(".flowplayer").forEach((el) => {
-            const fp = window.flowplayer(el);
-            if (fp && fp.video) {
-              if (fp.video.src) add(fp.video.src);
-              if (fp.video.sources) fp.video.sources.forEach((s) => { if (s.src) add(s.src, { type: s.type }); });
-            }
-          });
-        }
-      } catch { }
-
-      return results;
-    });
+    // Universal DOM video extraction — detects all player frameworks, data attrs, iframes, scripts
+    const domVideos = await page.evaluate(universalDOMExtract);
 
     const title = await page.title();
     await page.close();
@@ -1904,52 +2106,24 @@ app.get("/video-extract", async (req, res) => {
       if (!allSeen.has(v.url)) { allVideos.push(v); allSeen.add(v.url); }
     }
 
-    // Sort: mp4 > webm > m3u8, higher quality first
-    const typeOrder = { "video/mp4": 0, "video/webm": 1, "application/x-mpegURL": 2, "application/dash+xml": 3 };
-    allVideos.sort((a, b) => {
-      const ta = typeOrder[a.type] ?? (a.type === "iframe" ? 10 : 5);
-      const tb = typeOrder[b.type] ?? (b.type === "iframe" ? 10 : 5);
-      if (ta !== tb) return ta - tb;
-      const qa = parseInt(a.quality) || 0;
-      const qb = parseInt(b.quality) || 0;
-      return qb - qa;
-    });
+    sortVideos(allVideos);
 
     console.log(`[video-extract] Found ${allVideos.length} videos on ${url} (${networkVideos.length} network, ${domVideos.length} DOM)`);
     
-    // If no videos found, this might be a listing page - extract video links instead
+    // If no videos found, this might be a listing page — use universal link detection
     if (allVideos.length === 0) {
       console.log(`[video-extract] No videos found, checking for video links (listing page detection)`);
-      
-      // Re-open page to extract links (or we could have done this earlier, but keeping it simple)
       let linkPage;
       try {
         const b = await getBrowser();
         linkPage = await b.newPage();
         await linkPage.setUserAgent(UA);
+        await setAgeGateCookies(linkPage, url);
         await linkPage.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
         await new Promise((r) => setTimeout(r, 2000));
         
-        const videoLinks = await linkPage.evaluate(() => {
-          const links = [];
-          const seen = new Set();
-          document.querySelectorAll("a[href]").forEach((a) => {
-            const href = a.href;
-            const text = (a.textContent || a.title || a.getAttribute("alt") || "").trim();
-            if (!href || seen.has(href)) return;
-            // Check if this looks like a video page link
-            const u = href.toLowerCase();
-            if (/\/(video|watch|view_video|clip)s?\b/i.test(u) || /view_video|viewkey|watch\?v=/i.test(u)) {
-              // Skip nav/ad links
-              if (/\/account|\/login|\/signup|\/register|\/tags$|\/categories$/i.test(u)) return;
-              if (/exoclick|trafficjunky|juicyads|adglare/i.test(u)) return;
-              seen.add(href);
-              links.push({ url: href, title: text.slice(0, 200) || "Video" });
-            }
-          });
-          return links.slice(0, 50);
-        });
-        
+        // Universal listing page detection — no hard-coded URL patterns
+        const videoLinks = await linkPage.evaluate(universalVideoLinkExtract);
         await linkPage.close();
         
         if (videoLinks.length > 0) {
@@ -2015,7 +2189,24 @@ app.get("/video-proxy", async (req, res) => {
   try {
     const parsed = new URL(videoUrl);
     const origin = parsed.origin;
-    const referer = origin + "/";
+    
+    // CDN URLs need the original site as referer, not the CDN itself
+    // boomio-cdn serves rule34video, remote_control.php URLs need the source site referer
+    let referer = origin + "/";
+    if (/boomio-cdn\.com|remote_control\.php/i.test(videoUrl)) {
+      // Extract source site from acctoken or default to rule34video
+      const acctoken = parsed.searchParams.get("acctoken");
+      if (acctoken) {
+        // acctoken contains base64 encoded data with source domain
+        try {
+          const decoded = atob(acctoken.split("|")[0]);
+          const domainMatch = decoded.match(/\b(rule34video|rule34world|xvideos|pornhub|xhamster)\.(com|net|org)\b/i);
+          if (domainMatch) referer = `https://${domainMatch[0]}/`;
+        } catch { }
+      }
+      // Fallback: boomio-cdn is primarily used by rule34video
+      if (referer === origin + "/") referer = "https://rule34video.com/";
+    }
 
     // Build headers that mimic a real browser on the source site
     const proxyHeaders = {
@@ -2034,41 +2225,24 @@ app.get("/video-proxy", async (req, res) => {
       proxyHeaders["Range"] = req.headers.range;
     }
 
-    // Site-specific cookie/header handling
-    const host = parsed.hostname.toLowerCase();
-
-    // XVideos: needs specific cookies and referer
-    if (/xvideos|xnxx/i.test(host)) {
-      proxyHeaders["Cookie"] = "platform=pc; age_verified=1";
-    }
-    // PornHub: needs specific cookies
-    if (/pornhub/i.test(host)) {
-      proxyHeaders["Cookie"] = "platform=pc; age_verified=1; accessAgeDisclaimerPH=1";
-    }
-    // XHamster: needs age verification cookie
-    if (/xhamster/i.test(host)) {
-      proxyHeaders["Cookie"] = "age_check=1";
-    }
-    // Rule34Video: needs age verification
-    if (/rule34video/i.test(host)) {
-      proxyHeaders["Cookie"] = "age_verified=1";
-    }
-    // YouPorn
-    if (/youporn/i.test(host)) {
-      proxyHeaders["Cookie"] = "age_verified=1";
-    }
-    // SpankBang
-    if (/spankbang/i.test(host)) {
-      proxyHeaders["Cookie"] = "country=US; age=1";
-    }
-    // EPorner
-    if (/eporner/i.test(host)) {
-      proxyHeaders["Cookie"] = "age_verified=1";
-    }
-    // TnaFlix
-    if (/tnaflix/i.test(host)) {
-      proxyHeaders["Cookie"] = "age_verified=1";
-    }
+    // Universal age-gate cookies — works for any site (harmless on non-age-gated sites)
+    // Covers all common cookie names used by adult sites
+    proxyHeaders["Cookie"] = [
+      "age_verified=1",
+      "age-verified=1",
+      "over18=1",
+      "is_adult=1",
+      "disclaimer=1",
+      "consent=1",
+      "age_check=1",
+      "mature_content=1",
+      "accessAgeDisclaimerPH=1",
+      "accessAgeDisclaimerXV=1",
+      "accessPH=1",
+      "platform=pc",
+      "country=US",
+      "age=1",
+    ].join("; ");
 
     console.log(`[video-proxy] Proxying: ${videoUrl.slice(0, 120)}...`);
 
