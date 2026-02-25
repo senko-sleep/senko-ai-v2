@@ -15,13 +15,13 @@ const ACTIVITY_ICONS: Record<Activity["type"], React.ElementType> = {
 };
 
 const ACTIVITY_COLORS: Record<Activity["type"], string> = {
-  search: "text-zinc-400",
-  browse: "text-zinc-400",
-  read: "text-zinc-400",
-  extract: "text-zinc-400",
-  write: "text-zinc-400",
-  scrape: "text-zinc-400",
-  think: "text-zinc-400",
+  search: "text-[var(--primary)]",
+  browse: "text-[var(--primary)]",
+  read: "text-[var(--primary)]",
+  extract: "text-[var(--primary)]",
+  write: "text-[var(--primary)]",
+  scrape: "text-[var(--primary)]",
+  think: "text-purple-400",
 };
 
 // Tiny external clock store so we avoid impure Date.now() in render
@@ -46,7 +46,7 @@ function ElapsedTime({ startedAt, completedAt }: { startedAt: number; completedA
   const elapsed = ((completedAt || now) - startedAt) / 1000;
   if (elapsed < 0) return null;
   return (
-    <span className="text-[10px] text-zinc-600 tabular-nums ml-auto shrink-0">
+    <span className="text-[10px] text-[var(--muted-foreground)] tabular-nums ml-auto shrink-0">
       {elapsed.toFixed(1)}s
     </span>
   );
@@ -54,36 +54,37 @@ function ElapsedTime({ startedAt, completedAt }: { startedAt: number; completedA
 
 function ActivityItem({ activity }: { activity: Activity }) {
   const Icon = ACTIVITY_ICONS[activity.type] || Brain;
+  const colorClass = ACTIVITY_COLORS[activity.type] || "text-[var(--muted-foreground)]";
   const isDone = activity.status === "done";
   const isError = activity.status === "error";
   const isActive = activity.status === "active";
 
   return (
     <div
-      className={`flex items-center gap-3 px-4 py-2 text-[13px] transition-all duration-300 ${
+      className={`flex items-center gap-3 px-4 py-2.5 text-[13px] transition-all duration-300 ${
         isDone ? "opacity-50" : "opacity-100"
       }`}
     >
       {/* Animated dots for active state, icon for completed */}
       {isActive ? (
         <div className="flex gap-1 shrink-0">
-          <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-zinc-500" style={{ animationDelay: "0ms" }} />
-          <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-zinc-500" style={{ animationDelay: "150ms" }} />
-          <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-zinc-500" style={{ animationDelay: "300ms" }} />
+          <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-[var(--primary)]" style={{ animationDelay: "0ms" }} />
+          <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-[var(--primary)]" style={{ animationDelay: "150ms" }} />
+          <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-[var(--primary)]" style={{ animationDelay: "300ms" }} />
         </div>
       ) : isDone ? (
-        <Check className="h-3.5 w-3.5 text-zinc-600 shrink-0" />
+        <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
       ) : (
         <AlertCircle className="h-3.5 w-3.5 text-red-400 shrink-0" />
       )}
       {/* Activity type icon */}
-      <Icon className={`h-3.5 w-3.5 shrink-0 ${isDone ? "text-zinc-600" : isError ? "text-red-400" : "text-zinc-400"}`} />
+      <Icon className={`h-3.5 w-3.5 shrink-0 ${isDone ? "text-[var(--muted-foreground)]" : isError ? "text-red-400" : colorClass}`} />
       {/* Label */}
-      <span className={`${isDone ? "text-zinc-600" : isError ? "text-red-400" : "text-zinc-300"}`}>
+      <span className={`${isDone ? "text-[var(--muted-foreground)]" : isError ? "text-red-400" : "text-[var(--foreground)]"}`}>
         {activity.label}
       </span>
       {activity.detail && isDone && (
-        <span className="text-[11px] text-zinc-600 truncate">— {activity.detail}</span>
+        <span className="text-[11px] text-[var(--muted-foreground)] truncate">— {activity.detail}</span>
       )}
       <ElapsedTime startedAt={activity.startedAt} completedAt={activity.completedAt} />
     </div>
@@ -108,10 +109,24 @@ export function ActivityFeed({ activities }: ActivityFeedProps) {
   if (visible.length === 0) return null;
 
   return (
-    <div className="border-b border-white/[0.04]">
-      {visible.map((activity) => (
-        <ActivityItem key={activity.id} activity={activity} />
-      ))}
+    <div className="mx-auto max-w-3xl px-4 sm:px-6 py-2">
+      <div className="flex items-center gap-2 text-[13px]">
+        {visible.map((activity, idx) => (
+          <span key={activity.id} className="flex items-center gap-2 text-[var(--muted-foreground)]">
+            {idx > 0 && <span className="text-[var(--border)]">•</span>}
+            {activity.status === "active" ? (
+              <span className="flex gap-1">
+                <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-[var(--primary)]" style={{ animationDelay: "0ms" }} />
+                <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-[var(--primary)]" style={{ animationDelay: "150ms" }} />
+                <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-[var(--primary)]" style={{ animationDelay: "300ms" }} />
+              </span>
+            ) : (
+              <Check className="h-3 w-3 text-emerald-500" />
+            )}
+            <span>{activity.label}</span>
+          </span>
+        ))}
+      </div>
     </div>
   );
 }

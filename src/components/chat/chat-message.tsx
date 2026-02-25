@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Pencil, Check, Copy, RotateCcw, Globe, AlertTriangle, Grid3X3 } from "lucide-react";
+import { Pencil, Check, Copy, RotateCcw, Globe, AlertTriangle, Grid3X3, Brain, ChevronDown, ChevronRight, Search, FileText, Sparkles, CheckCircle2, ExternalLink, RefreshCw } from "lucide-react";
 import { ReadAloudButton } from "./read-aloud-button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -12,6 +12,293 @@ import { ImageGallery } from "./image-gallery";
 import { VideoEmbed } from "./video-embed";
 import { WebEmbed } from "./web-embed";
 import type { Message } from "@/types/chat";
+
+// ── Rich inline search/activity visualization ──
+function SearchActivityCard({ content }: { content: string }) {
+  const [elapsed, setElapsed] = useState(0);
+  const [typedChars, setTypedChars] = useState(0);
+
+  // Parse the thinking message text to determine phase and query
+  const queryMatch = content.match(/(?:searching|reading.*?for|writing.*?on|browsing)\s+"?([^"]+?)"?\s*\.{3}$/i)
+    || content.match(/searching\s+"([^"]+)"/i)
+    || content.match(/for\s+"([^"]+)"/i)
+    || content.match(/on\s+"([^"]+)"/i);
+  const query = queryMatch ? queryMatch[1] : "";
+
+  const isSearching = /^searching/i.test(content);
+  const isReading = /^reading/i.test(content);
+  const isWriting = /^writing/i.test(content);
+  const isBrowsing = /^browsing/i.test(content);
+
+  // Extract source count from "reading N sources"
+  const sourceCountMatch = content.match(/reading\s+(\d+)\s+sources/i);
+  const sourceCount = sourceCountMatch ? parseInt(sourceCountMatch[1], 10) : 0;
+
+  // Typing animation for query
+  useEffect(() => {
+    if (!query) return;
+    setTypedChars(0);
+    const interval = setInterval(() => {
+      setTypedChars((prev) => {
+        if (prev >= query.length) { clearInterval(interval); return prev; }
+        return prev + 1;
+      });
+    }, 35);
+    return () => clearInterval(interval);
+  }, [query]);
+
+  // Elapsed timer
+  useEffect(() => {
+    const start = Date.now();
+    const interval = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 200);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Build step list
+  const steps: { label: string; icon: React.ReactNode; done: boolean; active: boolean; color: string }[] = [];
+  if (isSearching) {
+    steps.push({ label: `Searching for "${query}"`, icon: <Search className="h-3.5 w-3.5" />, done: false, active: true, color: "text-cyan-400" });
+    steps.push({ label: "Read & analyze sources", icon: <FileText className="h-3.5 w-3.5" />, done: false, active: false, color: "text-zinc-600" });
+    steps.push({ label: "Write research summary", icon: <Sparkles className="h-3.5 w-3.5" />, done: false, active: false, color: "text-zinc-600" });
+  } else if (isReading) {
+    steps.push({ label: `Found results for "${query}"`, icon: <Search className="h-3.5 w-3.5" />, done: true, active: false, color: "text-emerald-400" });
+    steps.push({ label: `Reading ${sourceCount} sources`, icon: <FileText className="h-3.5 w-3.5" />, done: false, active: true, color: "text-amber-400" });
+    steps.push({ label: "Write research summary", icon: <Sparkles className="h-3.5 w-3.5" />, done: false, active: false, color: "text-zinc-600" });
+  } else if (isWriting) {
+    steps.push({ label: `Found results for "${query}"`, icon: <Search className="h-3.5 w-3.5" />, done: true, active: false, color: "text-emerald-400" });
+    steps.push({ label: `Read sources`, icon: <FileText className="h-3.5 w-3.5" />, done: true, active: false, color: "text-emerald-400" });
+    steps.push({ label: "Writing research summary", icon: <Sparkles className="h-3.5 w-3.5" />, done: false, active: true, color: "text-purple-400" });
+  } else if (isBrowsing) {
+    steps.push({ label: content, icon: <Globe className="h-3.5 w-3.5" />, done: false, active: true, color: "text-cyan-400" });
+  } else {
+    steps.push({ label: content, icon: <Brain className="h-3.5 w-3.5" />, done: false, active: true, color: "text-[var(--primary)]" });
+  }
+
+  return (
+    <div className="flex w-full py-4 justify-start animate-fade-in">
+      <div className="w-full max-w-lg rounded-xl border border-[var(--border)] bg-[var(--card)] overflow-hidden shadow-lg shadow-black/10">
+        {/* Browser chrome */}
+        <div className="flex items-center gap-2 px-3.5 py-2 bg-[var(--muted)]/30 border-b border-[var(--border)]">
+          <div className="flex gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full bg-red-500/60" />
+            <span className="h-2.5 w-2.5 rounded-full bg-yellow-500/60" />
+            <span className="h-2.5 w-2.5 rounded-full bg-green-500/60" />
+          </div>
+          {/* Search/URL bar */}
+          <div className="flex-1 flex items-center gap-2 ml-2 px-3 py-1 rounded-lg bg-[var(--background)] border border-[var(--border)]">
+            <Search className="h-3 w-3 text-[var(--muted-foreground)] shrink-0" />
+            <span className="text-[12px] text-[var(--foreground)] font-mono truncate">
+              {query ? query.slice(0, typedChars) : content}
+              {typedChars < query.length && <span className="inline-block w-[1px] h-[14px] bg-[var(--primary)] ml-0.5 animate-pulse" />}
+            </span>
+          </div>
+          <RefreshCw className={cn("h-3 w-3 text-[var(--muted-foreground)]", (isSearching || isReading) && "animate-spin")} style={{ animationDuration: "2s" }} />
+        </div>
+
+        {/* Loading bar */}
+        <div className="h-[2px] bg-[var(--muted)]">
+          <div className="h-full bg-[var(--primary)] animate-loading-bar" style={{ width: "40%" }} />
+        </div>
+
+        {/* Steps list */}
+        <div className="px-4 py-3 space-y-2">
+          {steps.map((step, i) => (
+            <div key={i} className={cn("flex items-center gap-2.5 transition-all", step.active ? "opacity-100" : step.done ? "opacity-70" : "opacity-30")}>
+              {step.done ? (
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+              ) : step.active ? (
+                <div className={cn("shrink-0", step.color)}>
+                  {step.icon}
+                </div>
+              ) : (
+                <div className="h-3.5 w-3.5 rounded-full border border-zinc-600 shrink-0" />
+              )}
+              <span className={cn(
+                "text-[12px] font-medium truncate",
+                step.done ? "text-emerald-400/80" : step.active ? "text-[var(--foreground)]" : "text-[var(--muted-foreground)]"
+              )}>
+                {step.label}
+              </span>
+              {step.active && (
+                <div className="flex gap-0.5 ml-auto shrink-0">
+                  <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-[var(--primary)]" style={{ animationDelay: "0ms" }} />
+                  <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-[var(--primary)]" style={{ animationDelay: "150ms" }} />
+                  <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-[var(--primary)]" style={{ animationDelay: "300ms" }} />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Footer - elapsed time */}
+        <div className="px-4 pb-2.5 flex items-center justify-between">
+          <span className="text-[10px] text-[var(--muted-foreground)]">
+            {elapsed}s elapsed
+          </span>
+          {sourceCount > 0 && (
+            <span className="text-[10px] text-[var(--muted-foreground)] flex items-center gap-1">
+              <ExternalLink className="h-2.5 w-2.5" />
+              {sourceCount} sources
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Completed search card - shows actual results like a real browser ──
+function CompletedSearchCard({ activity }: { activity: { query: string; sourceCount: number; duration: number; phase: string; results?: { title: string; url: string; favicon?: string; snippet?: string }[] } }) {
+  const [expanded, setExpanded] = useState(true);
+
+  const getHostname = (url: string) => {
+    try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return url; }
+  };
+
+  const results = activity.results || [];
+
+  return (
+    <div className="w-full mb-4">
+      {/* Collapsed toggle header */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full max-w-2xl rounded-xl border border-emerald-500/20 bg-emerald-500/[0.03] overflow-hidden hover:bg-emerald-500/[0.06] transition-colors"
+      >
+        <div className="flex items-center gap-3 px-4 py-3">
+          <Search className="h-4 w-4 text-emerald-400 shrink-0" />
+          <div className="flex-1 text-left">
+            <div className="text-[13px] font-medium text-emerald-400">
+              Searched "{activity.query}"
+            </div>
+            <div className="text-[11px] text-[var(--muted-foreground)] mt-0.5">
+              {results.length} results found • {activity.duration}s
+            </div>
+          </div>
+          {expanded ? (
+            <ChevronDown className="h-3.5 w-3.5 text-emerald-400/50 shrink-0" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 text-emerald-400/50 shrink-0" />
+          )}
+        </div>
+      </button>
+
+      {/* Expanded: actual search results like a browser */}
+      {expanded && results.length > 0 && (
+        <div className="mt-2 w-full max-w-2xl rounded-xl border border-[var(--border)] bg-[var(--card)] overflow-hidden shadow-lg shadow-black/10">
+          {/* Browser chrome */}
+          <div className="flex items-center gap-2 px-3.5 py-2 bg-[var(--muted)]/30 border-b border-[var(--border)]">
+            <div className="flex gap-1.5">
+              <span className="h-2.5 w-2.5 rounded-full bg-red-500/60" />
+              <span className="h-2.5 w-2.5 rounded-full bg-yellow-500/60" />
+              <span className="h-2.5 w-2.5 rounded-full bg-green-500/60" />
+            </div>
+            <div className="flex-1 flex items-center gap-2 ml-2 px-3 py-1 rounded-lg bg-[var(--background)] border border-[var(--border)]">
+              <Search className="h-3 w-3 text-[var(--muted-foreground)] shrink-0" />
+              <span className="text-[12px] text-[var(--foreground)] font-mono truncate">
+                {activity.query}
+              </span>
+            </div>
+            <CheckCircle2 className="h-3 w-3 text-emerald-400 shrink-0" />
+          </div>
+
+          {/* Search results list */}
+          <div className="divide-y divide-[var(--border)]">
+            {results.map((r, i) => (
+              <a
+                key={i}
+                href={r.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex gap-3 px-4 py-3 hover:bg-[var(--muted)]/20 transition-colors group"
+              >
+                {/* Favicon */}
+                <div className="mt-0.5 shrink-0">
+                  {r.favicon ? (
+                    <img src={r.favicon} alt="" className="h-4 w-4 rounded-sm" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                  ) : (
+                    <Globe className="h-4 w-4 text-[var(--muted-foreground)]" />
+                  )}
+                </div>
+                {/* Result content */}
+                <div className="min-w-0 flex-1">
+                  <div className="text-[11px] text-[var(--muted-foreground)] truncate">
+                    {getHostname(r.url)}
+                  </div>
+                  <div className="text-[13px] font-medium text-blue-400 group-hover:underline truncate mt-0.5">
+                    {r.title}
+                  </div>
+                  {r.snippet && (
+                    <div className="text-[12px] text-[var(--muted-foreground)] mt-1 line-clamp-2 leading-relaxed">
+                      {r.snippet}
+                    </div>
+                  )}
+                </div>
+                <ExternalLink className="h-3 w-3 text-[var(--muted-foreground)] opacity-0 group-hover:opacity-100 transition-opacity mt-1 shrink-0" />
+              </a>
+            ))}
+          </div>
+
+          {/* Footer */}
+          <div className="px-4 py-2 flex items-center justify-between border-t border-[var(--border)] bg-[var(--muted)]/10">
+            <span className="text-[10px] text-[var(--muted-foreground)]">
+              Completed in {activity.duration}s
+            </span>
+            <span className="text-[10px] text-emerald-400/60 flex items-center gap-1">
+              <CheckCircle2 className="h-2.5 w-2.5" />
+              {results.length} sources read
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ThinkingBlock({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
+  const [expanded, setExpanded] = useState(true);
+  const lines = content.split("\n").filter(Boolean);
+
+  return (
+    <div className="w-full mb-4 rounded-xl border border-purple-500/15 bg-purple-500/[0.03] overflow-hidden">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-2.5 w-full px-4 py-2.5 text-left hover:bg-purple-500/[0.05] transition-colors"
+      >
+        <Brain className="h-4 w-4 text-purple-400 shrink-0" />
+        <span className="text-[13px] font-medium text-purple-400">Reasoning</span>
+        <span className="text-[11px] text-purple-400/50 ml-1">{lines.length} steps</span>
+        {isStreaming && (
+          <div className="flex gap-1 ml-2">
+            <span className="h-1.5 w-1.5 rounded-full bg-purple-400 animate-pulse" />
+            <span className="h-1.5 w-1.5 rounded-full bg-purple-400 animate-pulse" style={{ animationDelay: "150ms" }} />
+            <span className="h-1.5 w-1.5 rounded-full bg-purple-400 animate-pulse" style={{ animationDelay: "300ms" }} />
+          </div>
+        )}
+        <div className="ml-auto">
+          {expanded ? (
+            <ChevronDown className="h-3.5 w-3.5 text-purple-400/50" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 text-purple-400/50" />
+          )}
+        </div>
+      </button>
+      {expanded && (
+        <div className="px-4 pb-3 max-h-[240px] overflow-y-auto scrollbar-thin">
+          <div className="space-y-1 font-mono text-[12px] leading-relaxed text-purple-300/60">
+            {lines.map((line, i) => (
+              <div key={i} className={cn(
+                "py-0.5",
+                i === lines.length - 1 && isStreaming ? "text-purple-300" : ""
+              )}>
+                {line}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface ChatMessageProps {
   message: Message;
@@ -81,31 +368,17 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink, isStrea
   const hasVideos = message.videos && message.videos.length > 0;
   const hasWebEmbeds = message.webEmbeds && message.webEmbeds.length > 0;
   const hasMap = !!message.mapEmbed;
-  const hasAttachments = hasSources || hasImages || hasVideos || hasWebEmbeds || hasMap;
 function hasRichContent(content: string): boolean {
-  // Trigger markdown rendering for structured content including bold/italic
-  return /```|^#{1,6}\s|^\s*[-*]\s\S|^\s*\d+\.\s\S|\|.+\||\*\*[^*]+\*\*|\*[^*]+\*/m.test(content);
+  // Trigger markdown rendering for any structured content
+  return /```|^#{1,6}\s|^\s*[-*]\s\S|^\s*\d+\.\s\S|\|.+\||\*\*[^*]+\*\*|\*[^*]+\*|^>\s|[\u2022\u2023\u25E6]|\/\/\/<|\[.+\]\(.+\)/m.test(content);
 }
 
   const isRich = !isUser && hasRichContent(message.content);
   const isShort = message.content.length < 80 && !message.content.includes("\n");
 
-  // -- Thinking state (animated dots + status text like reference) --
+  // -- Thinking/activity state - rich inline search visualization --
   if (isThinking) {
-    return (
-      <div className="flex w-full py-4 justify-start animate-fade-in">
-        <div className="flex items-center gap-3">
-          <div className="flex gap-1">
-            <span className="thinking-dot h-2 w-2 rounded-full bg-zinc-500" style={{ animationDelay: "0ms" }} />
-            <span className="thinking-dot h-2 w-2 rounded-full bg-zinc-500" style={{ animationDelay: "150ms" }} />
-            <span className="thinking-dot h-2 w-2 rounded-full bg-zinc-500" style={{ animationDelay: "300ms" }} />
-          </div>
-          <span className="text-[14px] text-zinc-400">
-            {message.content || "thinking..."}
-          </span>
-        </div>
-      </div>
-    );
+    return <SearchActivityCard content={message.content || "thinking..."} />;
   }
 
   // -- User message --
@@ -113,7 +386,7 @@ function hasRichContent(content: string): boolean {
     return (
       <div className="flex w-full py-4 justify-end group">
         <div className={cn(
-          "relative w-fit rounded-2xl rounded-br-sm glass-user px-6 py-4 animate-slide-in",
+          "relative w-fit rounded-2xl px-5 py-3.5 bg-[var(--primary)]/10 border border-[var(--primary)]/20 animate-slide-in",
           isShort ? "max-w-[75%]" : "max-w-[85%]"
         )}>
           {isEditing ? (
@@ -136,7 +409,7 @@ function hasRichContent(content: string): boolean {
               </div>
             </div>
           ) : (
-            <p className="whitespace-pre-wrap text-[16px] leading-relaxed text-white">
+            <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-[var(--foreground)]">
               {message.content}
             </p>
           )}
@@ -158,11 +431,11 @@ function hasRichContent(content: string): boolean {
     );
   }
 
-  // -- Assistant message (ChatGPT-style clean layout) --
+  // -- Assistant message - clean, spacious layout --
   const hasError = !!message.error;
 
   return (
-    <div className="flex flex-col w-full py-6 items-start group">
+    <div className="flex flex-col w-full py-3 items-start group">
       {/* Error banner */}
       {hasError && (
         <div className="mb-4 flex items-start gap-3 rounded-xl bg-red-500/[0.08] border border-red-500/[0.12] px-4 py-3 max-w-[95%]">
@@ -174,15 +447,20 @@ function hasRichContent(content: string): boolean {
         </div>
       )}
 
+      {/* Thinking block - collapsible reasoning section */}
+      {message.thinkingBlock && (
+        <ThinkingBlock content={message.thinkingBlock} isStreaming={isStreaming} />
+      )}
+
       {/* Content - clean typography like ChatGPT */}
       {message.content && (
         <div className="w-full animate-fade-in">
           {isRich ? (
-            <div className={cn("text-[15px] leading-[1.8] text-white/95", isStreaming && "typing-cursor")}>
+            <div className={cn("text-[15px] leading-[1.8] text-[var(--foreground)]/95", isStreaming && "typing-cursor")}>
               <MarkdownRenderer content={message.content} />
             </div>
           ) : (
-            <p className={cn("whitespace-pre-wrap text-[15px] leading-[1.75] text-white/95", isStreaming && "typing-cursor")}>
+            <p className={cn("whitespace-pre-wrap text-[15px] leading-[1.75] text-[var(--foreground)]/95", isStreaming && "typing-cursor")}>
               {message.content}
             </p>
           )}
@@ -191,7 +469,7 @@ function hasRichContent(content: string): boolean {
 
       {/* Images - horizontal carousel below content, above sources */}
       {hasImages && (
-        <div className="w-full mt-6">
+        <div className="w-full mt-4">
           <ImageCarousel images={message.images!} />
           <div className="flex items-center justify-between mt-3">
             <span className="text-[12px] text-zinc-500">{message.images!.length} images</span>
@@ -203,6 +481,13 @@ function hasRichContent(content: string): boolean {
               View Gallery
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Completed search visualization - below content and images */}
+      {message.searchActivity && (
+        <div className="mt-3">
+          <CompletedSearchCard activity={message.searchActivity} />
         </div>
       )}
 

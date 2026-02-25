@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { Send, Paperclip, Mic, Brain, MoreHorizontal } from "lucide-react";
+import { Send, Plus, Globe, Grid3X3, Brain, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -61,118 +61,116 @@ export function ChatInput({
   const isThinking = agentMode === "thinking";
 
   return (
-    <div className="border-t border-white/[0.06] bg-[rgba(0,0,0,0.95)] px-3 py-3 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-5 sm:py-4 shrink-0">
-      <div className="glass-panel depth-shadow mx-auto flex max-w-4xl items-end gap-2 rounded-2xl p-2 sm:gap-3 sm:p-3">
-        {/* More options button with thinking toggle */}
-        <div className="relative">
-          <TooltipProvider delayDuration={300}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setShowMenu(!showMenu)}
-                  className={cn(
-                    "mb-0.5 h-10 w-10 shrink-0 rounded-xl p-0 transition-colors",
-                    showMenu ? "bg-white/10 text-zinc-200" : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
-                  )}
-                >
-                  <MoreHorizontal className="h-5 w-5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="top" className="glass-panel-solid text-xs">
-                Options
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-
-          {/* Dropdown menu */}
-          {showMenu && (
-            <div
-              ref={menuRef}
-              className="absolute bottom-full left-0 mb-2 w-48 rounded-xl glass-panel-solid border border-white/[0.08] shadow-xl overflow-hidden animate-scale-in z-50"
-            >
-              <button
-                onClick={() => {
-                  onAgentModeChange?.(isThinking ? "agent" : "thinking");
-                  setShowMenu(false);
-                }}
-                className={cn(
-                  "flex items-center gap-2.5 w-full px-3.5 py-2.5 text-[13px] transition-colors text-left",
-                  isThinking
-                    ? "bg-purple-500/10 text-purple-400"
-                    : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200"
-                )}
-              >
-                <Brain className="h-4 w-4" />
-                <div>
-                  <div className="font-medium">Thinking Mode</div>
-                  <div className="text-[11px] opacity-60">{isThinking ? "On — deep reasoning" : "Off — normal speed"}</div>
-                </div>
-              </button>
-              <button
-                className="flex items-center gap-2.5 w-full px-3.5 py-2.5 text-[13px] text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 transition-colors text-left border-t border-white/[0.06]"
-              >
-                <Paperclip className="h-4 w-4" />
-                <div>
-                  <div className="font-medium">Attach File</div>
-                  <div className="text-[11px] opacity-60">Coming soon</div>
-                </div>
-              </button>
-              <button
-                className="flex items-center gap-2.5 w-full px-3.5 py-2.5 text-[13px] text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 transition-colors text-left border-t border-white/[0.06]"
-              >
-                <Mic className="h-4 w-4" />
-                <div>
-                  <div className="font-medium">Voice Input</div>
-                  <div className="text-[11px] opacity-60">Coming soon</div>
-                </div>
-              </button>
-            </div>
-          )}
-        </div>
-
+    <div className="px-4 py-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-6 shrink-0">
+      <div className="mx-auto max-w-3xl">
+        {/* Input area */}
         <Textarea
           ref={textareaRef}
           value={content}
           onChange={handleInput}
           onKeyDown={handleKeyDown}
           onClick={() => setShowMenu(false)}
-          placeholder={isThinking ? "Ask something to reason about..." : "Message Senko AI..."}
+          placeholder={isThinking ? "Ask something to reason about..." : "Message Senko..."}
           disabled={disabled}
-          className="min-h-[44px] max-h-[200px] flex-1 resize-none border-0 bg-transparent px-3 py-2.5 text-[15px] text-zinc-200 placeholder:text-zinc-500 focus-visible:ring-0 focus-visible:ring-offset-0"
+          className="min-h-[52px] max-h-[200px] w-full resize-none rounded-2xl border border-[var(--border)] bg-[var(--card)] px-4 py-3 text-[15px] text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus-visible:ring-1 focus-visible:ring-[var(--primary)]/50 focus-visible:border-[var(--primary)]/50 focus-visible:ring-offset-0 transition-all"
           rows={1}
         />
 
-        <div className="flex items-end gap-1">
-          {/* Thinking mode indicator */}
-          {isThinking && (
-            <div className="mb-1.5 flex items-center gap-1 rounded-lg bg-purple-500/10 border border-purple-500/20 px-2 py-1">
-              <Brain className="h-3 w-3 text-purple-400" />
-              <span className="text-[10px] text-purple-400 font-medium">Think</span>
-            </div>
-          )}
+        {/* Bottom toolbar */}
+        <div className="flex items-center justify-between mt-3">
+          {/* Left icons */}
+          <div className="flex items-center gap-0.5">
+            <TooltipProvider delayDuration={300}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 w-8 rounded-lg p-0 text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--accent)]"
+                  >
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-xs">Attach</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
 
-          <TooltipProvider delayDuration={300}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  size="sm"
-                  onClick={handleSend}
-                  disabled={!content.trim() || disabled}
-                  className="mb-0.5 h-11 w-11 shrink-0 rounded-xl bg-[var(--senko-accent)] p-0 text-black hover:brightness-90 disabled:opacity-30 sm:h-10 sm:w-10 transition-all"
-                >
-                  <Send className="h-5 w-5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="top" className="glass-panel-solid text-xs">
-                {sendWithEnter ? "Send (Enter)" : "Send"}
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+            <TooltipProvider delayDuration={300}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 w-8 rounded-lg p-0 text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--accent)]"
+                  >
+                    <Globe className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-xs">Browse Web</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+
+            <TooltipProvider delayDuration={300}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      onAgentModeChange?.(isThinking ? "agent" : "thinking");
+                    }}
+                    className={cn(
+                      "h-8 w-8 rounded-lg p-0 transition-colors",
+                      isThinking
+                        ? "bg-purple-500/10 text-purple-400 hover:bg-purple-500/20"
+                        : "text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--accent)]"
+                    )}
+                  >
+                    <Brain className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-xs">
+                  {isThinking ? "Thinking Mode On" : "Enable Thinking"}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </div>
+
+          {/* Right side: Mode toggle + Send */}
+          <div className="flex items-center gap-2">
+            {/* Mode indicator - subtle */}
+            {isThinking && (
+              <span className="text-[11px] text-purple-400 font-medium px-2 py-1 rounded-lg bg-purple-500/10">
+                Thinking mode
+              </span>
+            )}
+
+            {/* Send button */}
+            <Button
+              size="sm"
+              onClick={handleSend}
+              disabled={!content.trim() || disabled}
+              className={cn(
+                "h-9 w-9 rounded-xl p-0 transition-all",
+                content.trim() && !disabled
+                  ? "bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-90"
+                  : "bg-[var(--muted)] text-[var(--muted-foreground)]"
+              )}
+            >
+              {disabled ? (
+                <Square className="h-4 w-4" />
+              ) : (
+                <Send className="h-4 w-4" />
+              )}
+            </Button>
+          </div>
         </div>
+        
+        {/* Subtle footer text */}
+        <p className="text-center text-[11px] text-[var(--muted-foreground)]/60 mt-3">
+          Senko can make mistakes. Verify important information.
+        </p>
       </div>
-
     </div>
   );
 }

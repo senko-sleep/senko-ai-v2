@@ -31,6 +31,21 @@ export interface WebEmbed {
   title?: string;
 }
 
+export interface SearchResult {
+  title: string;
+  url: string;
+  favicon?: string;
+  snippet?: string;
+}
+
+export interface SearchActivity {
+  query: string;
+  sourceCount: number;
+  duration: number;
+  phase: "searching" | "reading" | "writing" | "completed";
+  results?: SearchResult[];
+}
+
 export interface Message {
   id: string;
   role: "user" | "assistant" | "thinking";
@@ -46,6 +61,8 @@ export interface Message {
   isThinking?: boolean;
   error?: string;
   searchQuery?: string;
+  thinkingBlock?: string;
+  searchActivity?: SearchActivity;
 }
 
 export interface SenkoStatus {
@@ -121,4 +138,5 @@ export interface AppSettings {
   fontSize: "small" | "medium" | "large";
   sendWithEnter: boolean;
   voicePreset: string;
+  theme: string;
 }

@@ -9,11 +9,12 @@ import { useBrowserInfo } from "@/hooks/use-browser-info";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useLocation } from "@/hooks/use-location";
 import { useMemory, parseMemoryTags } from "@/hooks/use-memory";
-import type { Message, Conversation, AppSettings, BrowserInfo, LocationInfo, WebSource, SenkoTab } from "@/types/chat";
+import type { Message, Conversation, AppSettings, BrowserInfo, LocationInfo, WebSource, SenkoTab, Activity } from "@/types/chat";
 import { buildLayeredPrompt, messageHasUrl } from "@/lib/prompt-builder";
 import { parseIntent } from "@/lib/intent-parser";
 import { streamChat } from "@/lib/stream-chat";
 import { getYouTubeId, filterPlayableVideos, deduplicateVideos, filterContentLinks, getContextUrl, AD_LINK_PATTERN, isJsHeavySite, isVideoSite } from "@/lib/browse-helpers";
+import { getTheme, applyTheme } from "@/lib/themes";
 import researchPromptText from "@/app/prompts/research.txt";
 
 function generateId(): string {
@@ -51,8 +52,11 @@ function stripInternalTags(content: string): string {
     .replace(/(?:_[a-z][a-z0-9_ ]*\]){1,}\s*$/gi, "")
     // Strip incomplete tag openings left at end during streaming (e.g. "[happy:" with no closing ])
     .replace(/\[_?[a-z][a-z0-9_]*:[^\]]*$/gi, "")
-    .replace(/<think>[\s\S]*?<\/think>/g, "")
-    .replace(/<think>[\s\S]*$/g, "")
+    .replace(/<\s*think\s*>[\s\S]*?<\s*\/\s*think\s*>/gi, "")
+    .replace(/<\s*think\s*>[\s\S]*$/gi, "")
+    .replace(/<\s*think[\s\S]*?<\s*\/\s*think\s*>/gi, "")
+    .replace(/<\s*think[^>]*>[\s\S]*$/gi, "")
+    .replace(/<\s*\/\s*think\s*>/gi, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -66,6 +70,7 @@ const defaultSettings: AppSettings = {
   fontSize: "medium",
   sendWithEnter: true,
   voicePreset: "senko",
+  theme: "midnight",
 };
 
 const STORAGE_KEYS = {
@@ -259,7 +264,21 @@ function sanitizeSourceTitle(title: string, url: string): string {
       clean = url;
     }
   }
+  // Strip encoded junk like xn-- punycode or %20 sequences
+  clean = clean.replace(/%20/g, ' ').replace(/xn--[a-z0-9]+/gi, '').replace(/\s{2,}/g, ' ').trim();
   return clean;
+}
+
+function isValidSourceUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    // Reject garbled URLs with xn-- punycode or %20 in hostname
+    if (u.hostname.includes('xn--') && u.hostname.includes('%')) return false;
+    if (u.hostname.includes('%20')) return false;
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 function getCityFromTimezone(timezone?: string): string {
@@ -337,6 +356,9 @@ export default function Home() {
   const [wasCutOff, setWasCutOff] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [agentMode, setAgentMode] = useState<"agent" | "thinking">("agent");
+  const [currentActivities, setCurrentActivities] = useState<Activity[]>([]);
+  const [thinkingContent, setThinkingContent] = useState<string>("");
+  const [searchQuery, setSearchQuery] = useState<string>("");
   const searchResultsByConv = useRef<Record<string, { url: string; title: string }[]>>({});
   const scrapedContentByConv = useRef<Record<string, { url: string; title: string; content: string }>>({});
   const scrapingInProgress = useRef(false);
@@ -372,6 +394,13 @@ export default function Home() {
     saveToStorage(STORAGE_KEYS.settings, settings);
   }, [settings, hydrated]);
 
+  // Apply theme when settings change
+  useEffect(() => {
+    if (!hydrated) return;
+    const theme = getTheme(settings.theme);
+    applyTheme(theme);
+  }, [settings.theme, hydrated]);
+
   useEffect(() => {
     if (!hydrated) return;
     saveToStorage(STORAGE_KEYS.activeConvId, activeConversationId);
@@ -394,6 +423,38 @@ export default function Home() {
     },
     []
   );
+
+  // Activity tracking helpers for real-time UI feedback
+  const startActivity = useCallback((type: Activity["type"], label: string): string => {
+    const id = generateId();
+    const activity: Activity = {
+      id,
+      type,
+      label,
+      status: "active",
+      startedAt: Date.now(),
+    };
+    setCurrentActivities(prev => [...prev, activity]);
+    return id;
+  }, []);
+
+  const completeActivity = useCallback((id: string, detail?: string) => {
+    setCurrentActivities(prev => prev.map(a => 
+      a.id === id 
+        ? { ...a, status: "done" as const, completedAt: Date.now(), detail }
+        : a
+    ));
+    // Auto-remove completed activities after 3 seconds
+    setTimeout(() => {
+      setCurrentActivities(prev => prev.filter(a => a.id !== id));
+    }, 3000);
+  }, []);
+
+  const clearActivities = useCallback(() => {
+    setCurrentActivities([]);
+    setThinkingContent("");
+    setSearchQuery("");
+  }, []);
 
   const addThinkingMsg = useCallback(
     (convId: string, text: string): string => {
@@ -431,6 +492,36 @@ export default function Home() {
         ...conv,
         messages: conv.messages.filter((m) => m.id !== thinkingId),
       }));
+    },
+    [updateConversation]
+  );
+
+  const updateThinkingMsg = useCallback(
+    (convId: string, thinkingId: string, newText: string) => {
+      // If still waiting for the initial delay, cancel it and insert immediately with new text
+      const timer = thinkingTimersRef.current.get(thinkingId);
+      if (timer) {
+        clearTimeout(timer);
+        thinkingTimersRef.current.delete(thinkingId);
+        updateConversation(convId, (conv) => ({
+          ...conv,
+          messages: [...conv.messages, {
+            id: thinkingId,
+            role: "assistant" as const,
+            content: newText,
+            timestamp: new Date(),
+            isThinking: true,
+          }],
+        }));
+      } else {
+        // Already visible — just update the content
+        updateConversation(convId, (conv) => ({
+          ...conv,
+          messages: conv.messages.map((m) =>
+            m.id === thinkingId ? { ...m, content: newText } : m
+          ),
+        }));
+      }
     },
     [updateConversation]
   );
@@ -1762,8 +1853,13 @@ export default function Home() {
 
   const fetchSearchResults = useCallback(
     async (convId: string, messageId: string, query: string) => {
-      console.log(`%c[fetchSearch] 🔎 Starting deep research for "${query}"`, "color: #88ccff; font-weight: bold");
+      console.log(`%c[fetchSearch] Starting deep research for "${query}"`, "color: #88ccff; font-weight: bold");
+      // Single thinking message that persists through all phases — updated in-place
       const thinkId = addThinkingMsg(convId, `searching "${query}"...`);
+      
+      // Start activity tracking for UI feedback
+      setSearchQuery(query);
+      const searchActivityId = startActivity("search", `Searching: ${query}`);
 
       try {
         // === LOCATION ENRICHMENT: Inject city for "near me"/"my area" queries ===
@@ -1806,7 +1902,11 @@ export default function Home() {
           }
         }
 
-        removeThinkingMsg(convId, thinkId);
+        // Update thinking message to show Phase 2 (reading sources)
+        updateThinkingMsg(convId, thinkId, `reading ${searchData.results?.length || 0} sources for "${query}"...`);
+        
+        // Complete the search activity
+        completeActivity(searchActivityId, `Found ${searchData.results?.length || 0} results`);
 
         // Build sources directly from search results (single search, no duplicate call)
         let sources: WebSource[] = [];
@@ -1819,13 +1919,15 @@ export default function Home() {
           const seenUrls = new Set(newResults.map((r: { url: string }) => r.url));
           const mergedResults = [...newResults, ...existingResults.filter((r: { url: string }) => !seenUrls.has(r.url))];
           searchResultsByConv.current[convId] = mergedResults.slice(0, 50);
-          sources = searchData.results.map(
-            (r: { title: string; url: string; snippet: string }) => {
-              let favicon = "";
-              try { favicon = `https://www.google.com/s2/favicons?domain=${new URL(r.url).hostname}&sz=16`; } catch { /* bad URL */ }
-              return { url: r.url, title: sanitizeSourceTitle(r.title, r.url), snippet: decodeHtmlEntities(r.snippet || ""), favicon };
-            }
-          );
+          sources = searchData.results
+            .filter((r: { url: string }) => isValidSourceUrl(r.url))
+            .map(
+              (r: { title: string; url: string; snippet: string }) => {
+                let favicon = "";
+                try { favicon = `https://www.google.com/s2/favicons?domain=${new URL(r.url).hostname}&sz=16`; } catch { /* bad URL */ }
+                return { url: r.url, title: sanitizeSourceTitle(r.title, r.url), snippet: decodeHtmlEntities(r.snippet || ""), favicon };
+              }
+            );
         }
 
         // Build images from dedicated image search (only populated for image queries)
@@ -1852,25 +1954,25 @@ export default function Home() {
             searchImages = allImages;
             // Fall through to deep research path (don't return early)
           } else {
-            // Pure image query — show images with canned message and return
+            // Pure image query — update the existing message with images
             const cleanTopic = query.replace(/\b(images?|pics?|pictures?|photos?|gifs?|animated|of|show me|send me|get me|give me|wanna see|want to see|let me see|i want|look\s*up|find|get|wallpapers?|r34|rule\s*34|nsfw|hentai|xxx|lewd|explicit)\b/gi, "").trim();
-            const commentId = generateId();
+            // Clean up thinking message and activity before returning
+            removeThinkingMsg(convId, thinkId);
+            completeActivity(searchActivityId, `Found ${allImages.length} images`);
+            setSearchQuery("");
             updateConversation(convId, (conv) => ({
               ...conv,
-              messages: [
-                ...conv.messages,
-                {
-                  id: commentId,
-                  role: "assistant" as const,
+              messages: conv.messages.map((m) =>
+                m.id === messageId ? {
+                  ...m,
                   content: allImages.length > 0
                     ? `Here are ${allImages.length} ${cleanTopic} images I found for you~ \u{FF1D}w\u{FF1D}`
                     : `Hmm I couldn't find many images for "${cleanTopic}" ;w; Maybe try a different search term?`,
-                  timestamp: new Date(),
                   sources: sources.length > 0 ? sources.slice(0, 8) : undefined,
                   images: allImages.length > 0 ? allImages : undefined,
                   searchQuery: query,
-                },
-              ],
+                } : m
+              ),
             }));
             setIsStreaming(false);
             return;
@@ -1879,7 +1981,7 @@ export default function Home() {
 
         // Phase 2: Deep research - scrape top results for actual content
         const allResults = (searchData.results || []).slice(0, 8);
-        const thinkId2 = addThinkingMsg(convId, `reading ${allResults.length} sources for "${query}"...`);
+        // Thinking msg already updated to "reading N sources..." above
         const topUrls = allResults.map((r: { url: string }) => r.url);
 
         // Scrape all 8 in parallel (fast — single round trip)
@@ -1894,7 +1996,6 @@ export default function Home() {
             }
           })
         );
-        removeThinkingMsg(convId, thinkId2);
 
         // Collect additional images from ALL scraped pages
         const additionalImages: { url: string; alt?: string }[] = [];
@@ -1932,33 +2033,33 @@ export default function Home() {
           title: scrapedTitleMap.get(s.url) || s.title,
         }));
 
-        const commentId = generateId();
+        // Reuse the existing messageId — update it with sources/images instead of creating a new message
+        const commentId = messageId;
         updateConversation(convId, (conv) => ({
           ...conv,
-          messages: [
-            ...conv.messages,
-            {
-              id: commentId,
-              role: "assistant" as const,
+          messages: conv.messages.map((m) =>
+            m.id === commentId ? {
+              ...m,
               content: "",
-              timestamp: new Date(),
               sources: synthesisSources.length > 0 ? synthesisSources : undefined,
               images: hasImages ? allResearchImages : undefined,
-            },
-          ],
+            } : m
+          ),
         }));
 
         const sourceCount = scrapedPages.filter((p) => p.content).length;
-        // Lean user message — instructions live in the synthesis system prompt
+        // Context prompt: provide sources but let AI use knowledge when sources are irrelevant
         const contextPrompt = hasScrapedContent
           ? `The user asked: "${query}"
-Answer their SPECIFIC question using ONLY the facts below. If the answer isn't in the sources, say so — do NOT guess.${hasImages ? " (images are already shown in the UI — do NOT describe them)" : ""}
+
+Answer their question. I've gathered source content below — use it if it's relevant to the question. If the sources are about a different topic or don't contain the answer, ignore them and answer from your own knowledge instead.${hasImages ? " (images are already shown in the UI — do NOT describe them)" : ""}
 
 Source content:
 
 ${scrapedContext}`
           : `The user asked: "${query}"
-Answer their SPECIFIC question using ONLY the snippets below. If the answer isn't here, say so — do NOT guess.${hasImages ? " (images are already shown in the UI — do NOT describe them)" : ""}
+
+Answer their question. Here are search snippets — use them if relevant, otherwise answer from your own knowledge.${hasImages ? " (images are already shown in the UI — do NOT describe them)" : ""}
 
 Search snippets:
 
@@ -1988,8 +2089,9 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
         abortRef.current = new AbortController();
         console.log(`%c[fetchSearch] 🔄 Setting isStreaming=true for research synthesis`, "color: #88ccff; font-weight: bold");
         setIsStreaming(true);
-        // Show a "writing" thinking message so user knows to wait
-        const synthThinkId = addThinkingMsg(convId, `writing up my research on "${query}"...`);
+        // Update the same thinking message to show Phase 3 (writing)
+        updateThinkingMsg(convId, thinkId, `writing up my research on "${query}"...`);
+        const searchStartTime = Date.now();
         let firstChunkReceived = false;
         let synthContent = ""; // Accumulate content outside React state
         streamChat(
@@ -1999,7 +2101,7 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
             // Remove thinking message on first real chunk
             if (!firstChunkReceived) {
               firstChunkReceived = true;
-              removeThinkingMsg(convId, synthThinkId);
+              removeThinkingMsg(convId, thinkId);
             }
             synthContent += chunk;
             const displayContent = stripInternalTags(synthContent);
@@ -2012,7 +2114,7 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
           },
           () => {
             // Clean up thinking message if it wasn't already removed
-            if (!firstChunkReceived) removeThinkingMsg(convId, synthThinkId);
+            if (!firstChunkReceived) removeThinkingMsg(convId, thinkId);
             console.log(`%c[fetchSearch] ✅ Research synthesis done, isStreaming=false`, "color: #00ff88; font-weight: bold");
             // Sanitize any leaked image URLs from the final content
             // Parse AI output: extract [Source N] citations into UI pills, clean the text
@@ -2021,28 +2123,52 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
               messages: conv.messages.map((m) => {
                 if (m.id !== commentId) return m;
                 let content = m.content;
-                // Strip any leaked <think> blocks client-side (closed and unclosed)
-                content = content.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/<think>[\s\S]*$/g, "").trim();
+                // Check if AI wants to ignore sources (irrelevant results)
+                const shouldIgnoreSources = /\[IGNORE_SOURCES\]/i.test(content);
+                // Strip [IGNORE_SOURCES] tag and <think> blocks
+                content = content.replace(/\[IGNORE_SOURCES\]/gi, "").replace(/<\s*think\s*>[\s\S]*?<\s*\/\s*think\s*>/gi, "").replace(/<\s*think[^>]*>[\s\S]*$/gi, "").replace(/<\s*\/\s*think\s*>/gi, "").trim();
                 // If AI returned empty content (e.g. only <think> blocks), use fallback
                 if (!content || content.length < 10) {
                   console.warn(`%c[fetchSearch] ⚠️ AI returned empty/minimal content, using fallback`, "color: #ffaa00; font-weight: bold");
                   content = buildFallbackSummary();
                 }
                 const { cleanText, extractedSources } = parseAIOutput(content);
-                // Merge extracted sources with existing ones (dedup by URL)
+                // Merge extracted sources with existing ones (dedup by URL) - UNLESS AI said to ignore them
                 const existingSources = m.sources || [];
-                const seenSourceUrls = new Set(existingSources.map((s) => s.url));
-                const mergedSources = [...existingSources];
-                for (const s of extractedSources) {
-                  if (!seenSourceUrls.has(s.url)) {
-                    mergedSources.push(s);
-                    seenSourceUrls.add(s.url);
+                console.log(`%c[fetchSearch] 📋 Source processing:`, "color: #88ccff", { existingCount: existingSources.length, extractedCount: extractedSources.length, shouldIgnore: shouldIgnoreSources });
+                let finalSources: typeof existingSources | undefined;
+                if (shouldIgnoreSources) {
+                  console.log(`%c[fetchSearch] 🚫 AI flagged sources as irrelevant, hiding from UI`, "color: #ff8800; font-weight: bold");
+                  finalSources = undefined; // Don't show any sources
+                } else {
+                  const seenSourceUrls = new Set(existingSources.map((s) => s.url));
+                  const mergedSources = [...existingSources];
+                  for (const s of extractedSources) {
+                    if (!seenSourceUrls.has(s.url)) {
+                      mergedSources.push(s);
+                      seenSourceUrls.add(s.url);
+                    }
                   }
+                  finalSources = mergedSources.length > 0 ? mergedSources : undefined;
+                  console.log(`%c[fetchSearch] ✅ Final sources:`, "color: #00ff88", { count: finalSources?.length || 0 });
                 }
+                const searchDuration = Math.floor((Date.now() - searchStartTime) / 1000);
                 return {
                   ...m,
                   content: cleanText,
-                  sources: mergedSources.length > 0 ? mergedSources : m.sources,
+                  sources: finalSources,
+                  searchActivity: {
+                    query,
+                    sourceCount: allResults.length,
+                    duration: searchDuration,
+                    phase: "completed" as const,
+                    results: sources.slice(0, 8).map((s) => ({
+                      title: s.title,
+                      url: s.url,
+                      favicon: s.favicon,
+                      snippet: s.snippet,
+                    })),
+                  },
                 };
               }),
             }));
@@ -2051,7 +2177,7 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
           },
           (err) => {
             // Clean up thinking message
-            if (!firstChunkReceived) removeThinkingMsg(convId, synthThinkId);
+            if (!firstChunkReceived) removeThinkingMsg(convId, thinkId);
             console.error(`%c[fetchSearch] ❌ Research synthesis error, using fallback`, "color: #ff4444; font-weight: bold", err);
             // On error, generate fallback content from scraped data
             const fallback = buildFallbackSummary();
@@ -2067,13 +2193,15 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
           abortRef.current.signal
         );
       } catch (e) {
-        console.error(`%c[fetchSearch] 💥 Exception, isStreaming=false`, "color: #ff0000; font-weight: bold", e);
+        console.error(`%c[fetchSearch] Exception, isStreaming=false`, "color: #ff0000; font-weight: bold", e);
         removeThinkingMsg(convId, thinkId);
+        completeActivity(searchActivityId, "Error");
+        setSearchQuery("");
         setIsStreaming(false);
         abortRef.current = null;
       }
     },
-    [updateConversation, addThinkingMsg, removeThinkingMsg, browserInfo, location]
+    [updateConversation, addThinkingMsg, removeThinkingMsg, updateThinkingMsg, browserInfo, location, startActivity, completeActivity]
   );
 
   const fetchSourcesForMessage = useCallback(
@@ -2106,11 +2234,15 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
   );
 
   const sendToAI = useCallback(
-    (convId: string, allMessages: Message[]) => {
-      console.log(`%c[sendToAI] 🚀 Starting`, "color: #ff88ff; font-weight: bold", {
+    (convId: string, allMessages: Message[], mode?: "agent" | "thinking") => {
+      console.log(`%c[sendToAI] Starting`, "color: #ff88ff; font-weight: bold", {
         convId: convId.slice(0, 8),
         messageCount: allMessages.length,
       });
+      
+      // Start generation activity for UI feedback
+      const genActivityId = startActivity("write", "Generating response");
+      
       setIsStreaming(true);
       setWasCutOff(false);
 
@@ -2188,11 +2320,43 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
 
       // Context-aware prompt: include browser/action layers only when needed
       const activeConv = conversations.find((c) => c.id === convId);
-      const systemPrompt = buildSystemPrompt(browserInfo, location, getMemoryContext(), {
+      let systemPrompt = buildSystemPrompt(browserInfo, location, getMemoryContext(), {
         hasTabs: browseIntent && (activeConv?.tabs?.length || 0) > 0,
         hasUrlInMessage: browseIntent && messageHasUrl(lastUserContent),
         tabs: browseIntent ? activeConv?.tabs : undefined,
       });
+
+      // Thinking mode: instruct the model to reason step-by-step
+      const useThinking = mode === "thinking";
+      if (useThinking) {
+        systemPrompt += `\n\nTHINKING MODE ACTIVE — MANDATORY DEEP REASONING:
+You MUST start your response with a <think>...</think> block containing DETAILED step-by-step reasoning (minimum 5-10 lines). This is shown to the user as a "Reasoning" panel.
+
+Inside <think>, you must:
+1. Restate what the user is asking
+2. Break down the question into sub-questions
+3. Consider multiple angles/perspectives
+4. Evaluate what you know vs what you'd need to search for
+5. Plan your response structure
+6. Note any caveats, nuances, or interesting connections
+7. Draw your conclusion
+
+Write each step on its OWN LINE. Be analytical, thorough, and show real intellectual work. Do NOT write a single paragraph — use multiple distinct reasoning steps.
+
+After </think>, write your FULL response. Make your response THOROUGH and DETAILED — the user enabled thinking mode because they want depth, not a surface-level answer.
+
+Example:
+<think>
+The user wants to know about Eevee from Pokemon.
+Let me break this down — what makes Eevee notable?
+First, Eevee is unique because of its evolution mechanic — it can evolve into 8 different forms.
+Each evolution (Eeveelution) corresponds to a different type: Water, Electric, Fire, Psychic, Dark, Grass, Ice, Fairy.
+The evolution methods vary — stones, friendship, location, time of day.
+Eevee has been a fan favorite since Gen 1, and got its own game (Let's Go Eevee).
+In competitive Pokemon, some Eeveelutions are quite viable — Umbreon for stalling, Sylveon for special attack.
+I should cover: evolutions, competitive viability, cultural impact, and why fans love it.
+</think>`;
+      }
 
       abortRef.current = new AbortController();
 
@@ -2204,6 +2368,9 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
           totalContent += chunk;
           // Strip tags from the full accumulated content for display (never show raw tags)
           const displayContent = stripInternalTags(totalContent);
+          // Extract <think> block content for inline display
+          const thinkMatch = totalContent.match(/<\s*think\s*>([\s\S]*?)(?:<\s*\/\s*think\s*>|$)/i);
+          const thinkingBlock = thinkMatch ? thinkMatch[1].trim() : undefined;
           setConversations((prev) =>
             prev.map((c) => {
               if (c.id !== convId) return c;
@@ -2213,7 +2380,7 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
                   ...c,
                   messages: c.messages.map((m) =>
                     m.id === assistantId
-                      ? { ...m, content: displayContent }
+                      ? { ...m, content: displayContent, thinkingBlock }
                       : m
                   ),
                 };
@@ -2223,7 +2390,7 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
                 ...c,
                 messages: [
                   ...c.messages,
-                  { ...assistantMessage, content: displayContent },
+                  { ...assistantMessage, content: displayContent, thinkingBlock },
                 ],
                 updatedAt: new Date(),
               };
@@ -2260,13 +2427,16 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
                 text: statusFromAI.text,
                 color: iconColorMap[statusFromAI.icon] || "#a78bfa",
               } : c.status;
+              // Extract final thinking block for persistence
+              const finalThinkMatch = totalContent.match(/<\s*think\s*>([\s\S]*?)<\s*\/\s*think\s*>/i);
+              const finalThinkingBlock = finalThinkMatch ? finalThinkMatch[1].trim() : undefined;
               const exists = c.messages.some((m) => m.id === assistantId);
               if (exists) {
                 return {
                   ...c,
                   status: newStatus,
                   messages: c.messages.map((m) =>
-                    m.id === assistantId ? { ...m, content: cleanedTotal } : m
+                    m.id === assistantId ? { ...m, content: cleanedTotal, thinkingBlock: finalThinkingBlock } : m
                   ),
                 };
               }
@@ -2275,7 +2445,7 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
                 status: newStatus,
                 messages: [
                   ...c.messages,
-                  { ...assistantMessage, content: cleanedTotal },
+                  { ...assistantMessage, content: cleanedTotal, thinkingBlock: finalThinkingBlock },
                 ],
                 updatedAt: new Date(),
               };
@@ -2283,6 +2453,11 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
           );
           setIsStreaming(false);
           abortRef.current = null;
+          
+          // Complete the generation activity
+          completeActivity(genActivityId);
+          clearActivities();
+          
           processActions(convId, assistantId, totalContent);
 
           // ── REFUSAL DETECTOR ──
@@ -2591,11 +2766,13 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
           );
           setIsStreaming(false);
           abortRef.current = null;
+          completeActivity(genActivityId, "Error");
+          clearActivities();
         },
         abortRef.current.signal
       );
     },
-    [browserInfo, location, updateConversation, processActions, fetchSourcesForMessage]
+    [browserInfo, location, updateConversation, processActions, fetchSourcesForMessage, startActivity, completeActivity, clearActivities]
   );
 
   const generateTitle = useCallback(async (convId: string, firstMessage: string) => {
@@ -3729,10 +3906,58 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
         }
       }
 
+      // ── PRE-AI INTERCEPTOR: Auto-search for clear research intent ──
+      // The AI model unreliably emits [ACTION:SEARCH] tags. Detect clear search intent
+      // client-side and trigger fetchSearchResults directly to guarantee real search happens.
+      {
+        const lower = content.toLowerCase().trim();
+        const wordCount = lower.split(/\s+/).length;
+        // Skip very short (1-2 words) or very long (conversational) messages
+        if (wordCount >= 3 && wordCount <= 20) {
+          // Skip if it's about the AI itself
+          const aboutSelf = /\b(yourself|your name|who are you|what are you|about you|tell me about yourself)\b/i.test(lower);
+          // Skip if it's a nav/action command (open X, go to X) - already handled above
+          const isNavCommand = /^\s*(?:open|go\s*to|visit|browse|launch|start|run|embed)\b/i.test(lower);
+          // Skip casual chat / game / roleplay
+          const isCasual = /^\s*(?:haha|lol|lmao|ok|okay|yes|no|nah|yeah|yep|nope|thanks|ty|thx|hi|hey|hello|bye|goodnight|gn|gm|good morning)\b/i.test(lower)
+            || /^\s*\*/.test(lower) // roleplay actions
+            || /^\s*(?:i'm|im|i am)\s+(?:bored|tired|eepy|hungry|sad|happy|fine|good|bad)\b/i.test(lower);
+          // Match clear search/research intent
+          const searchIntent = /\b(?:look\s*up|search\s*(?:for)?|tell\s+me\s+about|what\s+(?:is|are)\s+\w|who\s+(?:is|are)\s+\w|explain\s+\w|how\s+(?:does|do|to)\s+\w|why\s+(?:is|are|does|do)\s+\w|find\s+(?:me\s+)?(?:info|information|details|facts)\s+(?:about|on))\b/i.test(lower);
+
+          if (searchIntent && !aboutSelf && !isNavCommand && !isCasual) {
+            // Extract the query - strip command words
+            let searchQ = content
+              .replace(/^\s*(?:can you |please |could you |hey |yo |senko )*/i, "")
+              .replace(/^\s*(?:look\s*up|search\s*(?:for)?|tell\s+me\s+about|explain(?:\s+to\s+me)?|find\s+(?:me\s+)?(?:info|information|details|facts)\s+(?:about|on))\s*/i, "")
+              .replace(/[?!.]+$/, "")
+              .trim();
+            if (!searchQ || searchQ.length < 2) searchQ = content.replace(/[?!.]+$/, "").trim();
+
+            console.log(`%c[AUTO-SEARCH] Detected search intent, triggering fetchSearchResults`, "color: #00ff88; font-weight: bold", { original: content, query: searchQ });
+
+            const searchMsgId = generateId();
+            updateConversation(activeConversationId, (c) => ({
+              ...c,
+              messages: [...c.messages, {
+                id: searchMsgId,
+                role: "assistant" as const,
+                content: "",
+                timestamp: new Date(),
+                searchQuery: searchQ,
+              }],
+            }));
+            setIsStreaming(true);
+            fetchSearchResults(activeConversationId, searchMsgId, searchQ);
+            return;
+          }
+        }
+      }
+
       // Pass updatedMessages directly — don't read from state (React batching race)
-      sendToAI(activeConversationId, updatedMessages);
+      sendToAI(activeConversationId, updatedMessages, agentMode);
     },
-    [activeConversationId, isStreaming, updateConversation, sendToAI, generateTitle, conversations, addThinkingMsg, removeThinkingMsg, fetchSearchResults]
+    [activeConversationId, isStreaming, updateConversation, sendToAI, generateTitle, conversations, addThinkingMsg, removeThinkingMsg, fetchSearchResults, agentMode]
   );
 
   const handleEditMessage = useCallback(
@@ -3894,12 +4119,11 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
   };
 
   return (
-    <div className="relative flex h-screen h-screen-safe w-screen overflow-hidden bg-black">
-      {/* Background gradient effects */}
-      <div className="pointer-events-none absolute inset-0">
-        <div className="absolute -left-40 -top-40 h-[500px] w-[500px] rounded-full bg-[var(--senko-accent)]/[0.04] blur-[150px]" />
-        <div className="absolute -bottom-40 -right-40 h-[500px] w-[500px] rounded-full bg-[#ffb347]/[0.03] blur-[150px]" />
-        <div className="absolute left-1/2 top-1/3 h-80 w-80 -translate-x-1/2 rounded-full bg-[var(--senko-accent)]/[0.02] blur-[120px]" />
+    <div className="relative flex h-screen h-screen-safe w-screen overflow-hidden bg-[var(--background)]">
+      {/* Subtle ambient gradient */}
+      <div className="pointer-events-none absolute inset-0 opacity-50">
+        <div className="absolute -left-20 top-0 h-[600px] w-[600px] rounded-full bg-[var(--primary)]/[0.03] blur-[180px]" />
+        <div className="absolute -right-20 bottom-0 h-[500px] w-[500px] rounded-full bg-[var(--primary)]/[0.02] blur-[150px]" />
       </div>
 
       {/* Mobile Sidebar Drawer */}
@@ -3911,7 +4135,6 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
           onSelectConversation={setActiveConversationId}
           onNewConversation={handleNewConversation}
           onDeleteConversation={handleDeleteConversation}
-          onPinConversation={handlePinConversation}
           onSettingsChange={setSettings}
           isMobile
           isOpen={sidebarOpen}
@@ -3919,10 +4142,10 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
         />
       )}
 
-      {/* Main Layout */}
+      {/* Main Layout - unified flow */}
       <div className={cn(
-        "relative z-10 flex h-full w-full flex-col",
-        isMobile ? "p-0" : "flex-row gap-3 p-3"
+        "relative z-10 flex h-full w-full",
+        isMobile ? "flex-col" : "flex-row"
       )}>
         {/* Desktop Sidebar */}
         {!isMobile && (
@@ -3933,37 +4156,33 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
             onSelectConversation={setActiveConversationId}
             onNewConversation={handleNewConversation}
             onDeleteConversation={handleDeleteConversation}
-            onPinConversation={handlePinConversation}
             onSettingsChange={setSettings}
           />
         )}
 
-        {/* Mobile Header */}
+        {/* Mobile Header - minimal */}
         {isMobile && (
-          <div className="flex items-center justify-between border-b border-white/[0.06] bg-[#050505] px-4 py-3 shrink-0">
+          <div className="flex items-center justify-between px-4 py-3 shrink-0">
             <button
               onClick={() => setSidebarOpen(true)}
-              className="flex h-10 w-10 items-center justify-center rounded-xl text-zinc-400 hover:bg-white/5 hover:text-zinc-200 active:bg-white/10 transition-colors"
+              className="flex h-10 w-10 items-center justify-center rounded-xl text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)] transition-colors"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
             </button>
-            <span className="text-[15px] font-bold text-zinc-300">
-              {activeConversation?.title || "Senko AI"}
+            <span className="text-[15px] font-medium text-[var(--foreground)]">
+              {activeConversation?.title || "Senko"}
             </span>
             <button
               onClick={handleNewConversation}
-              className="flex h-10 w-10 items-center justify-center rounded-xl text-[var(--senko-accent)] hover:bg-[var(--senko-accent)]/10 active:bg-[var(--senko-accent)]/20 transition-colors"
+              className="flex h-10 w-10 items-center justify-center rounded-xl text-[var(--primary)] hover:bg-[var(--accent)] transition-colors"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
             </button>
           </div>
         )}
 
-        {/* Chat Area */}
-        <div className={cn(
-          "flex-1 overflow-hidden",
-          isMobile ? "bg-black" : "glass-panel-solid depth-shadow-lg rounded-2xl"
-        )}>
+        {/* Chat Area - full bleed, no boxing */}
+        <div className="flex-1 overflow-hidden">
           {activeConversation ? (
             <ChatArea
               messages={activeConversation.messages}
@@ -3980,6 +4199,7 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
               status={activeConversation.status}
               agentMode={agentMode}
               onAgentModeChange={setAgentMode}
+              activities={currentActivities}
             />
           ) : (
             <div className="flex h-full items-center justify-center">

@@ -18,6 +18,8 @@ import {
   Type,
   CornerDownLeft,
   Volume2,
+  Palette,
+  Check,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
@@ -28,6 +30,7 @@ import { useLocation } from "@/hooks/use-location";
 import { usePermissions } from "@/hooks/use-permissions";
 import { audioManager } from "@/lib/audio-manager";
 import { VOICE_PRESETS } from "@/lib/voice-synth";
+import { themes } from "@/lib/themes";
 import type { AppSettings } from "@/types/chat";
 
 interface SettingsPanelProps {
@@ -330,6 +333,51 @@ export function SettingsPanel({
                 ))}
               </div>
             </div>
+          </div>
+        </section>
+
+        <Separator className="bg-white/[0.06]" />
+
+        {/* Theme Settings */}
+        <section>
+          <h3 className="mb-2.5 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
+            <Palette className="h-4 w-4" />
+            Theme
+          </h3>
+          <div className="space-y-1.5">
+            {themes.map((theme) => (
+              <button
+                key={theme.id}
+                onClick={() => updateSetting("theme", theme.id)}
+                className={`w-full flex items-center gap-3 rounded-xl p-2.5 border transition-all ${
+                  settings.theme === theme.id
+                    ? "border-[var(--primary)] bg-[var(--primary)]/5"
+                    : "border-transparent hover:bg-[var(--accent)]"
+                }`}
+              >
+                {/* Color swatches */}
+                <div className="flex gap-0.5 shrink-0">
+                  <div
+                    className="h-6 w-6 rounded-l-lg border border-black/10"
+                    style={{ backgroundColor: theme.colors.background }}
+                  />
+                  <div
+                    className="h-6 w-3 border-y border-black/10"
+                    style={{ backgroundColor: theme.colors.primary }}
+                  />
+                  <div
+                    className="h-6 w-6 rounded-r-lg border border-black/10"
+                    style={{ backgroundColor: theme.colors.foreground }}
+                  />
+                </div>
+                <span className="text-[13px] font-medium text-[var(--foreground)]">
+                  {theme.name}
+                </span>
+                {settings.theme === theme.id && (
+                  <Check className="h-4 w-4 ml-auto text-[var(--primary)]" />
+                )}
+              </button>
+            ))}
           </div>
         </section>
 

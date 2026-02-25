@@ -28,14 +28,14 @@ function CodeBlock({
   };
 
   return (
-    <div className="group/code relative my-3 overflow-hidden rounded-xl border border-white/[0.07]">
-      <div className="flex items-center justify-between bg-white/[0.03] px-4 py-2">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+    <div className="group/code relative my-3 overflow-hidden rounded-xl border border-[var(--border)]">
+      <div className="flex items-center justify-between bg-[var(--muted)] px-4 py-2">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
           {lang || "code"}
         </span>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] text-zinc-500 transition-colors hover:bg-white/5 hover:text-zinc-300"
+          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
         >
           {copied ? (
             <>
@@ -50,8 +50,8 @@ function CodeBlock({
           )}
         </button>
       </div>
-      <pre className="scrollbar-thin overflow-x-auto bg-[rgba(0,0,0,0.3)] p-4">
-        <code className="text-[14px] leading-relaxed text-[#e0e0e0]">{code}</code>
+      <pre className="scrollbar-thin overflow-x-auto bg-[var(--card)] p-4">
+        <code className="text-[14px] leading-relaxed text-[var(--foreground)]">{code}</code>
       </pre>
     </div>
   );
@@ -60,24 +60,38 @@ function CodeBlock({
 function preprocessMarkdown(text: string): string {
   let result = text;
 
-  // 1. Headers: insert \n\n before ## headers that aren't at line start
-  //    e.g. "...text## Header" -> "...text\n\n## Header"
+  // Safety net: strip any <think> blocks that leaked through upstream stripping
+  result = result.replace(/<\s*think\s*>[\s\S]*?<\s*\/\s*think\s*>/gi, '');
+  result = result.replace(/<\s*think[^>]*>[\s\S]*$/gi, '');
+  result = result.replace(/<\s*\/\s*think\s*>/gi, '');
+
+  // Strip stray kaomoji/emoticon fragments that break markdown (e.g. "///< text")
+  result = result.replace(/\/\/\/<\s*/g, '');
+  result = result.replace(/;w;/g, '');
+
+  // Convert unicode bullet points to markdown list items
+  result = result.replace(/^\s*[\u2022\u2023\u25E6\u2043\u2219]\s*/gm, '- ');
+
+  // 1. Fix orphaned numbered list items inline
+  result = result.replace(/([^\n])(\s*\d+\. )/g, '$1\n\n$2');
+
+  // 2. Fix orphaned bullet points inline
+  result = result.replace(/([^\n*\-])(\s*[\-\*] )/g, '$1\n\n$2');
+
+  // 3. Headers: insert \n\n before ## headers not at line start
   result = result.replace(/([^\n])(#{1,6} )/g, '$1\n\n$2');
 
-  // 2. Headers running into text: detect where header ends by finding
-  //    a lowercase letter followed immediately by uppercase (camelCase boundary)
-  //    e.g. "## Latest NewsThe world" -> "## Latest News\n\nThe world"
+  // 4. Headers running into text: detect camelCase boundary
   result = result.replace(/(#{1,6} .+?)([a-z])([A-Z])/g, '$1$2\n\n$3');
 
-  // 3. Unordered list items: insert \n\n before "* " that aren't at line start
-  //    Skip if previous char is * (part of ** bold)
-  result = result.replace(/([^\n])(\* )/g, (match, before, listMarker) => {
-    if (before === '*') return match;
-    return before + '\n\n' + listMarker;
-  });
+  // 5. Clean up multiple consecutive newlines
+  result = result.replace(/\n{3,}/g, '\n\n');
 
-  // 4. Ordered list items: insert \n\n before "1. " etc that aren't at line start
-  result = result.replace(/([^\n])(\d+\. )/g, '$1\n\n$2');
+  // 6. Fix numbered lists that got split with extra blank lines
+  result = result.replace(/(\d+\..+?)\n{2,}(\d+\.)/g, '$1\n$2');
+
+  // 7. Fix blockquote markers that appear mid-line
+  result = result.replace(/([^\n])\s*>\s+/g, '$1\n\n> ');
 
   return result;
 }
@@ -93,7 +107,7 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
           if (isInline) {
             return (
               <code
-                className="rounded-md bg-white/[0.06] px-2 py-0.5 text-[14px] text-zinc-300 font-mono"
+                className="rounded-md bg-[var(--muted)] px-2 py-0.5 text-[14px] text-[var(--foreground)] font-mono"
                 {...props}
               >
                 {children}
@@ -106,51 +120,51 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
           return <>{children}</>;
         },
         p({ children }) {
-          return <p className="mb-5 last:mb-0 leading-[1.8] text-white/90 text-[15px]">{children}</p>;
+          return <p className="mb-4 last:mb-0 leading-[1.75] text-[var(--foreground)]/90 text-[15px]">{children}</p>;
         },
         ul({ children }) {
-          return <ul className="mb-5 ml-5 list-disc space-y-2 marker:text-zinc-600">{children}</ul>;
+          return <ul className="mb-4 ml-5 list-disc space-y-1.5 marker:text-[var(--muted-foreground)]">{children}</ul>;
         },
         ol({ children }) {
           return (
-            <ol className="mb-5 ml-5 list-decimal space-y-2 marker:text-zinc-600">{children}</ol>
+            <ol className="mb-4 ml-5 list-decimal space-y-1.5 marker:text-[var(--muted-foreground)] marker:font-medium">{children}</ol>
           );
         },
         li({ children }) {
-          return <li className="leading-[1.75] text-white/90 text-[15px]">{children}</li>;
+          return <li className="leading-[1.7] text-[var(--foreground)]/90 text-[15px] pl-1">{children}</li>;
         },
         h1({ children }) {
           return (
-            <h1 className="mb-5 mt-8 text-[20px] font-semibold text-white first:mt-0">
+            <h1 className="mb-4 mt-6 text-[20px] font-semibold text-[var(--foreground)] first:mt-0">
               {children}
             </h1>
           );
         },
         h2({ children }) {
           return (
-            <h2 className="mb-4 mt-7 text-[17px] font-semibold text-white first:mt-0">
+            <h2 className="mb-3 mt-5 text-[17px] font-semibold text-[var(--foreground)] first:mt-0">
               {children}
             </h2>
           );
         },
         h3({ children }) {
           return (
-            <h3 className="mb-3 mt-6 text-[15px] font-semibold text-zinc-100 first:mt-0">
+            <h3 className="mb-2 mt-4 text-[15px] font-semibold text-[var(--foreground)]/90 first:mt-0">
               {children}
             </h3>
           );
         },
         strong({ children }) {
           return (
-            <strong className="font-semibold text-white">{children}</strong>
+            <strong className="font-semibold text-[var(--foreground)]">{children}</strong>
           );
         },
         em({ children }) {
-          return <em className="italic text-zinc-200">{children}</em>;
+          return <em className="italic text-[var(--foreground)]/80">{children}</em>;
         },
         blockquote({ children }) {
           return (
-            <blockquote className="my-3 border-l-3 border-zinc-600 pl-4 text-zinc-300 bg-white/[0.02] rounded-r-xl py-2 pr-3">
+            <blockquote className="my-3 border-l-3 border-[var(--muted-foreground)] pl-4 text-[var(--muted-foreground)] bg-[var(--muted)] rounded-r-xl py-2 pr-3">
               {children}
             </blockquote>
           );
@@ -173,37 +187,37 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
           return null;
         },
         hr() {
-          return <hr className="my-4 border-white/[0.08]" />;
+          return <hr className="my-4 border-[var(--border)]" />;
         },
         table({ children }) {
           return (
-            <div className="my-3 overflow-x-auto rounded-xl border border-white/[0.07]">
+            <div className="my-3 overflow-x-auto rounded-xl border border-[var(--border)]">
               <table className="w-full text-[14px]">{children}</table>
             </div>
           );
         },
         thead({ children }) {
           return (
-            <thead className="border-b border-white/[0.07] bg-white/[0.03]">
+            <thead className="border-b border-[var(--border)] bg-[var(--muted)]">
               {children}
             </thead>
           );
         },
         th({ children }) {
           return (
-            <th className="px-4 py-2 text-left text-[13px] font-semibold text-zinc-400">
+            <th className="px-4 py-2 text-left text-[13px] font-semibold text-[var(--muted-foreground)]">
               {children}
             </th>
           );
         },
         td({ children }) {
           return (
-            <td className="px-4 py-2 text-white/90">{children}</td>
+            <td className="px-4 py-2 text-[var(--foreground)]/90">{children}</td>
           );
         },
         tr({ children }) {
           return (
-            <tr className="border-b border-white/[0.04] last:border-0">
+            <tr className="border-b border-[var(--border)]/50 last:border-0">
               {children}
             </tr>
           );
