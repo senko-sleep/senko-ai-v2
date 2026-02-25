@@ -210,15 +210,19 @@ export function parseIntent(text: string): ParsedIntent {
     }
 
     // ── Implicit site + query: "rule34video eevee" (site name followed by query) ──
-    if (!detectedSite && !detectedQuery && words.length >= 2) {
-      // Check if first word(s) look like a site
-      for (let i = 1; i <= Math.min(words.length - 1, 4); i++) {
-        const potentialSite = words.slice(0, i).join(" ");
-        if (isSiteReference(potentialSite)) {
-          detectedSiteName = potentialSite;
-          detectedSite = resolveSiteUrl(potentialSite);
-          detectedQuery = words.slice(i).join(" ");
-          break;
+    if (!detectedSite && !detectedQuery && words.length >= 2 && words.length <= 8) {
+      // Check if first word(s) look like a site — skip if preceded by articles ("the discord" is conversational)
+      const firstWord = words[0];
+      const startsWithArticle = /^(the|a|an|my|his|her|our|their|this|that|some)$/i.test(firstWord);
+      if (!startsWithArticle) {
+        for (let i = 1; i <= Math.min(words.length - 1, 3); i++) {
+          const potentialSite = words.slice(0, i).join(" ");
+          if (isSiteReference(potentialSite)) {
+            detectedSiteName = potentialSite;
+            detectedSite = resolveSiteUrl(potentialSite);
+            detectedQuery = words.slice(i).join(" ");
+            break;
+          }
         }
       }
     }
@@ -257,6 +261,11 @@ export function parseIntent(text: string): ParsedIntent {
 
   // ── Determine final intent type + confidence ──
   if (detectedSite && detectedQuery) {
+    // Reject if the "query" is very long — that's a conversation, not a search
+    const queryWordCount = detectedQuery.split(/\s+/).length;
+    if (queryWordCount > 10) {
+      return { type: "none", confidence: 0 };
+    }
     // Confidence factors: explicit search verb, recognized site, query present
     let conf = 0.5;
     const hasSearchVerb = SEARCH_WORDS.some(w => lower.includes(w));
@@ -265,7 +274,10 @@ export function parseIntent(text: string): ParsedIntent {
     if (hasOnSitePattern) conf += 0.15;    // "on rule34video"
     if (isSiteReference(detectedSiteName)) conf += 0.15; // recognized site name
     if (detectedQuery.length > 2) conf += 0.05;          // non-trivial query
-    conf = Math.min(conf, 1.0);
+    // Penalize: long messages without search verbs are likely conversational
+    const totalWordCount = lower.split(/\s+/).length;
+    if (!hasSearchVerb && totalWordCount > 15) conf -= 0.3;
+    conf = Math.max(0, Math.min(conf, 1.0));
     return {
       type: "site-search",
       confidence: conf,

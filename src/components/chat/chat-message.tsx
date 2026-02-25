@@ -149,7 +149,7 @@ function SearchActivityCard({ content }: { content: string }) {
 
 // ── Completed search card - shows actual results like a real browser ──
 function CompletedSearchCard({ activity }: { activity: { query: string; sourceCount: number; duration: number; phase: string; results?: { title: string; url: string; favicon?: string; snippet?: string }[] } }) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
 
   const getHostname = (url: string) => {
     try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return url; }

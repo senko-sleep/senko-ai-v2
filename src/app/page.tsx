@@ -2116,10 +2116,23 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
             // Clean up thinking message if it wasn't already removed
             if (!firstChunkReceived) removeThinkingMsg(convId, thinkId);
             console.log(`%c[fetchSearch] ✅ Research synthesis done, isStreaming=false`, "color: #00ff88; font-weight: bold");
+            // Extract and apply status tag from synthesis response
+            const statusFromSynth = parseStatusTag(synthContent);
+            const synthIconColorMap: Record<string, string> = {
+              happy: "#34d399", sad: "#94a3b8", angry: "#ef4444", excited: "#f97316",
+              sleepy: "#a78bfa", hungry: "#fbbf24", flustered: "#fb7185", scared: "#8b5cf6",
+              chill: "#00d4ff", thinking: "#60a5fa", love: "#f472b6", gaming: "#34d399",
+              music: "#f472b6", sparkle: "#00d4ff", fire: "#f97316", crying: "#94a3b8", shocked: "#fbbf24",
+            };
             // Sanitize any leaked image URLs from the final content
             // Parse AI output: extract [Source N] citations into UI pills, clean the text
             updateConversation(convId, (conv) => ({
               ...conv,
+              status: statusFromSynth ? {
+                icon: statusFromSynth.icon,
+                text: statusFromSynth.text,
+                color: synthIconColorMap[statusFromSynth.icon] || "#a78bfa",
+              } : conv.status,
               messages: conv.messages.map((m) => {
                 if (m.id !== commentId) return m;
                 let content = m.content;
@@ -3926,10 +3939,12 @@ I should cover: evolutions, competitive viability, cultural impact, and why fans
           const searchIntent = /\b(?:look\s*up|search\s*(?:for)?|tell\s+me\s+about|what\s+(?:is|are)\s+\w|who\s+(?:is|are)\s+\w|explain\s+\w|how\s+(?:does|do|to)\s+\w|why\s+(?:is|are|does|do)\s+\w|find\s+(?:me\s+)?(?:info|information|details|facts)\s+(?:about|on))\b/i.test(lower);
 
           if (searchIntent && !aboutSelf && !isNavCommand && !isCasual) {
-            // Extract the query - strip command words
+            // Extract the query - strip command words and conversational suffixes
             let searchQ = content
-              .replace(/^\s*(?:can you |please |could you |hey |yo |senko )*/i, "")
+              .replace(/^\s*(?:can you |please |could you |hey |yo |senko |lets? )*/i, "")
               .replace(/^\s*(?:look\s*up|search\s*(?:for)?|tell\s+me\s+about|explain(?:\s+to\s+me)?|find\s+(?:me\s+)?(?:info|information|details|facts)\s+(?:about|on))\s*/i, "")
+              // Truncate at conversational stop phrases ("eevee instead i wanna..." → "eevee")
+              .replace(/\s+(?:instead|because|cause|cuz|since|so\s+(?:i|we|that)|i\s+(?:wanna|want|need|gotta|just|don't|dont)|we\s+(?:can|should)|but\s+|though\s+|tho\s+|anyway|actually|also|btw|lol|lmao|haha|rn|rly|ngl|tbh|fr)\b.*/i, "")
               .replace(/[?!.]+$/, "")
               .trim();
             if (!searchQ || searchQ.length < 2) searchQ = content.replace(/[?!.]+$/, "").trim();
