@@ -197,6 +197,26 @@ export async function GET(req: NextRequest) {
     return Response.json({ error: "query required" }, { status: 400 });
   }
 
+  // ── Proxy to Render search-api first (Vercel serverless IPs get blocked by search engines) ──
+  const searchApiUrl = process.env.SEARCH_API_URL;
+  if (searchApiUrl) {
+    try {
+      const proxyRes = await fetch(`${searchApiUrl}/search?q=${encodeURIComponent(query)}`, {
+        signal: AbortSignal.timeout(15000),
+      });
+      if (proxyRes.ok) {
+        const data = await proxyRes.json();
+        if (data.results && data.results.length > 0) {
+          console.log(`[search] Proxy returned ${data.results.length} results for "${query}"`);
+          return Response.json(data);
+        }
+      }
+    } catch (e) {
+      console.log(`[search] Proxy failed, falling back to direct scraping:`, e instanceof Error ? e.message : e);
+    }
+  }
+
+  // ── Direct scraping fallback (works locally, may be blocked on Vercel) ──
   console.log(`[search] Searching for: "${query}"`);
   const start = Date.now();
   const attempts: { engine: string; success: boolean; count: number; ms: number }[] = [];

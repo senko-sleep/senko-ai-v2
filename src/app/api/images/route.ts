@@ -290,6 +290,26 @@ export async function GET(req: NextRequest) {
     return Response.json({ error: "q required", images: [] }, { status: 400 });
   }
 
+  // ── Proxy to Render search-api first ──
+  const searchApiUrl = process.env.SEARCH_API_URL;
+  if (searchApiUrl) {
+    try {
+      const proxyRes = await fetch(`${searchApiUrl}/images?q=${encodeURIComponent(query)}&page=${page}`, {
+        signal: AbortSignal.timeout(20000),
+      });
+      if (proxyRes.ok) {
+        const data = await proxyRes.json();
+        if (data.images && data.images.length > 0) {
+          console.log(`[images] Proxy returned ${data.images.length} images for "${query}"`);
+          return Response.json(data);
+        }
+      }
+    } catch (e) {
+      console.log(`[images] Proxy failed, falling back to direct scraping:`, e instanceof Error ? e.message : e);
+    }
+  }
+
+  // ── Direct scraping fallback ──
   console.log(`[images] Deep search for: "${query}" (page ${page})`);
   const start = Date.now();
 

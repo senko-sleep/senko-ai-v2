@@ -50,6 +50,23 @@ export async function GET(req: NextRequest) {
     return Response.json({ error: "url parameter required" }, { status: 400 });
   }
 
+  // ── Proxy to Render search-api first ──
+  const searchApiUrl = process.env.SEARCH_API_URL;
+  if (searchApiUrl) {
+    try {
+      const proxyRes = await fetch(`${searchApiUrl}/url?url=${encodeURIComponent(url)}&maxContent=${maxContent}`, {
+        signal: AbortSignal.timeout(25000),
+      });
+      if (proxyRes.ok) {
+        const data = await proxyRes.json();
+        if (data.content || data.title || data.links) {
+          return Response.json(data);
+        }
+      }
+    } catch { /* fall through to direct scraping */ }
+  }
+
+  // ── Direct scraping fallback ──
   try {
     const res = await fetch(url, {
       headers: { "User-Agent": UA, "Accept": "text/html,application/xhtml+xml,*/*;q=0.8", "Accept-Language": "en-US,en;q=0.9" },

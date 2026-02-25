@@ -76,6 +76,23 @@ export async function GET(req: NextRequest) {
     return Response.json({ error: "url required" }, { status: 400 });
   }
 
+  // ── Proxy to Render search-api first ──
+  const searchApiUrl = process.env.SEARCH_API_URL;
+  if (searchApiUrl) {
+    try {
+      const proxyRes = await fetch(`${searchApiUrl}/scrape?url=${encodeURIComponent(url)}`, {
+        signal: AbortSignal.timeout(20000),
+      });
+      if (proxyRes.ok) {
+        const data = await proxyRes.json();
+        if (data.content || data.title) {
+          return Response.json(data);
+        }
+      }
+    } catch { /* fall through to direct scraping */ }
+  }
+
+  // ── Direct scraping fallback ──
   try {
     const res = await fetch(url, {
       headers: {
