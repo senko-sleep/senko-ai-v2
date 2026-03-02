@@ -24,12 +24,75 @@ const ORDINALS: Record<string, number> = {
   sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10, last: -1,
 };
 
+// ── Known sites map: canonical name → real URL ──
+const KNOWN_SITES: Record<string, string> = {
+  "rule34video": "https://rule34video.com",
+  "rule 34 video": "https://rule34video.com",
+  "rule34": "https://rule34.xxx",
+  "rule 34": "https://rule34.xxx",
+  "rule34xxx": "https://rule34.xxx",
+  "pornhub": "https://www.pornhub.com",
+  "porn hub": "https://www.pornhub.com",
+  "xvideos": "https://www.xvideos.com",
+  "x videos": "https://www.xvideos.com",
+  "xhamster": "https://xhamster.com",
+  "x hamster": "https://xhamster.com",
+  "redtube": "https://www.redtube.com",
+  "red tube": "https://www.redtube.com",
+  "xnxx": "https://www.xnxx.com",
+  "spankbang": "https://spankbang.com",
+  "nhentai": "https://nhentai.net",
+  "e621": "https://e621.net",
+  "gelbooru": "https://gelbooru.com",
+  "danbooru": "https://danbooru.donmai.us",
+  "youtube": "https://www.youtube.com",
+  "you tube": "https://www.youtube.com",
+  "reddit": "https://www.reddit.com",
+  "twitter": "https://x.com",
+  "x": "https://x.com",
+  "twitch": "https://www.twitch.tv",
+  "tiktok": "https://www.tiktok.com",
+  "tik tok": "https://www.tiktok.com",
+  "instagram": "https://www.instagram.com",
+  "facebook": "https://www.facebook.com",
+  "discord": "https://discord.com",
+  "spotify": "https://open.spotify.com",
+  "google": "https://www.google.com",
+  "amazon": "https://www.amazon.com",
+};
+
 // ── Site URL resolution ──
 function resolveSiteUrl(name: string): string {
-  let clean = name.replace(/\s+/g, "").toLowerCase();
-  if (!clean.includes(".")) clean += ".com";
-  if (!clean.startsWith("http")) clean = "https://" + clean;
-  return clean;
+  const lower = name.toLowerCase().trim();
+  
+  // 1. Check known sites map first (exact match)
+  if (KNOWN_SITES[lower]) return KNOWN_SITES[lower];
+  
+  // 2. Check known sites with spaces stripped
+  const noSpaces = lower.replace(/\s+/g, "");
+  if (KNOWN_SITES[noSpaces]) return KNOWN_SITES[noSpaces];
+  
+  // 3. Check if any known site key is a prefix of the input
+  //    "rule34video" matches "rule34video" but NOT "rule34videolistingalloptionson"
+  for (const [key, url] of Object.entries(KNOWN_SITES)) {
+    if (noSpaces === key.replace(/\s+/g, "")) return url;
+  }
+  
+  // 4. If it already has a domain extension (.com, .net, etc), use it directly
+  if (/\.[a-z]{2,}$/i.test(lower)) {
+    let clean = lower.replace(/\s+/g, "");
+    if (!clean.startsWith("http")) clean = "https://" + clean;
+    return clean;
+  }
+  
+  // 5. For unknown names without extensions — only resolve if short (max 20 chars without spaces)
+  //    This prevents garbage like "rule34videolistingalloptionson" from becoming a URL
+  if (noSpaces.length <= 20) {
+    return "https://" + noSpaces + ".com";
+  }
+  
+  // Too long to be a real site name — return empty to signal failure
+  return "";
 }
 
 // ── Clause parser: split text on "and" / "then" / commas into semantic chunks ──
@@ -66,13 +129,28 @@ function extractOrdinal(text: string): number {
 
 // ── Detect if a word/phrase is a site reference ──
 function isSiteReference(phrase: string): boolean {
-  const lower = phrase.toLowerCase();
+  const lower = phrase.toLowerCase().trim();
+  const noSpaces = lower.replace(/\s+/g, "");
+  
+  // Reject phrases that are too long — real site names are short
+  if (noSpaces.length > 25) return false;
+  
+  // Check known sites map
+  if (KNOWN_SITES[lower] || KNOWN_SITES[noSpaces]) return true;
+  for (const key of Object.keys(KNOWN_SITES)) {
+    if (noSpaces === key.replace(/\s+/g, "")) return true;
+  }
+  
   // Has a domain extension
   if (/\.[a-z]{2,}$/i.test(lower)) return true;
-  // Contains known site-like suffixes
-  if (/(?:video|hub|tube|porn|xxx|rule34|hentai|reddit|twitter|twitch|tiktok|youtube|instagram|facebook|discord|spotify)\b/i.test(lower)) return true;
-  // Is a known short name
-  if (/^(?:xvideos|pornhub|xhamster|redtube|xnxx|reddit|youtube|twitch|google)\b/i.test(lower)) return true;
+  
+  // Is a known short name (must be the WHOLE phrase, not just contained)
+  if (/^(?:xvideos|pornhub|xhamster|redtube|xnxx|reddit|youtube|twitch|google|rule34video|rule34|nhentai|e621|gelbooru|danbooru|spankbang|tiktok|instagram|facebook|discord|spotify|amazon|twitter)$/i.test(noSpaces)) return true;
+  
+  // Short phrase (1-2 words) containing a site-like suffix
+  const wordCount = lower.split(/\s+/).length;
+  if (wordCount <= 3 && /(?:video|hub|tube|porn|xxx|rule34|hentai)$/i.test(noSpaces)) return true;
+  
   return false;
 }
 
@@ -163,8 +241,11 @@ export function parseIntent(text: string): ParsedIntent {
         // Truncate at stop words, then strip "and/then" continuations
         const potentialSite = extractSiteFromPhrase(target.replace(/\s*(?:and|then)\s+.*$/i, "").trim());
         if (potentialSite && isSiteReference(potentialSite)) {
-          detectedSiteName = potentialSite;
-          detectedSite = resolveSiteUrl(potentialSite);
+          const resolved = resolveSiteUrl(potentialSite);
+          if (resolved) {
+            detectedSiteName = potentialSite;
+            detectedSite = resolved;
+          }
         }
       }
     }
@@ -195,8 +276,11 @@ export function parseIntent(text: string): ParsedIntent {
       
       detectedQuery = rawQuery;
       if (siteRef && isSiteReference(siteRef)) {
-        detectedSiteName = siteRef;
-        detectedSite = resolveSiteUrl(siteRef);
+        const resolved = resolveSiteUrl(siteRef);
+        if (resolved) {
+          detectedSiteName = siteRef;
+          detectedSite = resolved;
+        }
       }
     }
 
@@ -218,9 +302,12 @@ export function parseIntent(text: string): ParsedIntent {
         for (let i = 1; i <= Math.min(words.length - 1, 3); i++) {
           const potentialSite = words.slice(0, i).join(" ");
           if (isSiteReference(potentialSite)) {
-            detectedSiteName = potentialSite;
-            detectedSite = resolveSiteUrl(potentialSite);
-            detectedQuery = words.slice(i).join(" ");
+            const resolved = resolveSiteUrl(potentialSite);
+            if (resolved) {
+              detectedSiteName = potentialSite;
+              detectedSite = resolved;
+              detectedQuery = words.slice(i).join(" ");
+            }
             break;
           }
         }
@@ -254,8 +341,12 @@ export function parseIntent(text: string): ParsedIntent {
     const siteInText = lower.match(/(?:on|in|at|from)\s+([a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z]{2,})+)/i)
       || lower.match(/(?:on|in|at|from)\s+(\w+(?:video|hub|tube|porn|xxx|rule34|hentai)\w*)/i);
     if (siteInText) {
-      detectedSiteName = siteInText[1].trim();
-      detectedSite = resolveSiteUrl(detectedSiteName);
+      const siteCandidate = siteInText[1].trim();
+      const resolved = resolveSiteUrl(siteCandidate);
+      if (resolved) {
+        detectedSiteName = siteCandidate;
+        detectedSite = resolved;
+      }
     }
   }
 
