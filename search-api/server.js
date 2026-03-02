@@ -916,8 +916,8 @@ const universalVideoLinkExtract = () => {
     if (!href || seen.has(href) || !text) return;
 
     const u = href.toLowerCase();
-    // Skip navigation, auth, category, and ad links
-    if (/\/account|\/login|\/signup|\/register|\/tags$|\/categories$|\/privacy|\/terms|\/dmca|\/contact|\/about/i.test(u)) return;
+    // Skip navigation, auth, taxonomy (tags/categories/models), and ad links
+    if (/\/account|\/login|\/signup|\/register|\/tags\/|\/tags$|\/categories\/|\/categories$|\/models\/|\/models$|\/privacy|\/terms|\/dmca|\/contact|\/about/i.test(u)) return;
     if (/exoclick|trafficjunky|juicyads|adglare|popads|adsterra|adtng|afcpatrk|aftrk|nutaku\.net|adxpansion|clickadu|admaven|tubecorporate|twinrdsrv|plugrush|trafficforce|hilltopads|adcash|outbrain|taboola|criteo/i.test(u)) return;
     if (u === window.location.href.toLowerCase()) return;
 
