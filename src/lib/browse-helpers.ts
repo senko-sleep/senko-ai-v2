@@ -14,6 +14,8 @@ export function isJsHeavySite(url: string): boolean {
   if (/\/(video|watch|embed|player|play|stream|clip|episode|movie|hentai|anime)s?[\d\/?#]/i.test(url)) return true;
   // Known SPA/dynamic platforms (social media, streaming)
   if (/\b(twitch|tiktok|instagram|twitter|x\.com|facebook|reddit|discord)\b/i.test(url)) return true;
+  // Sites that render search results via JavaScript (static HTML only has tag clouds/sidebars)
+  if (/\b(rule34video)\b/i.test(url)) return true;
   return false;
 }
 
