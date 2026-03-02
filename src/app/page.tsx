@@ -1617,7 +1617,10 @@ export default function Home() {
                   if (lu.origin.toLowerCase() !== pageOrigin.toLowerCase()) return false;
                   if (lu.pathname === "/" || lu.pathname === "") return false;
                 } catch { return false; }
+                // Exclude navigation/tag pages unless they're explicitly video paths
                 if (/\b(login|sign|register|tags|categories|members|privacy|terms|dmca|contact|about|faq|help|home|search)\b/i.test(u) && !/\/(video|watch|view_video|clip|post|thread|article)s?\b/i.test(u)) return false;
+                // Explicitly exclude /tags/ paths (tag cloud links on rule34video, etc.)
+                if (/\/tags?\//i.test(u)) return false;
                 // Content link: has a meaningful path (video, watch, post, etc.) or decent link text
                 if (/\/(video|watch|view_video|clip|post|thread|article|gallery|image)s?\b/i.test(u)) return true;
                 if (/view_video|viewkey|watch\?v=/i.test(u)) return true;
