@@ -2,26 +2,40 @@ import { describe, it, expect } from "vitest";
 import { parseIntent, isKnownSite } from "@/lib/intent-parser";
 
 // ══════════════════════════════════════════════════════════════
-// COMPLEXITY GATE — long/complex messages pass to AI
+// COMPLEXITY GATE — long messages with known sites still intercept
 // ══════════════════════════════════════════════════════════════
 describe("Complexity gate", () => {
-  it("rejects long winding instructions (>15 words)", () => {
+  it("long message WITH known site → extracts site-search (not none)", () => {
     const result = parseIntent(
       "look up eevee porn on rule34 video listing ALL options on that page on google click first link and look for eevee"
     );
-    expect(result.type).toBe("none");
+    expect(result.type).toBe("site-search");
+    expect(result.site).toBe("https://rule34video.com");
+    expect(result.query).toContain("eevee");
+    expect(result.query).toContain("porn");
   });
 
-  it("rejects multi-step detailed instructions", () => {
+  it("long message WITH rule34video → extracts site + query", () => {
     const result = parseIntent(
       "go to rule34video and search for eevee then list all the options and click on the first one and play it"
     );
-    expect(result.type).toBe("none");
+    expect(result.type).toBe("site-search");
+    expect(result.site).toBe("https://rule34video.com");
+    expect(result.query).toContain("eevee");
   });
 
-  it("rejects conversational paragraphs", () => {
+  it("long message WITH pornhub → extracts site + query", () => {
     const result = parseIntent(
       "hey can you go to pornhub and find me some good videos about cats doing funny things and then bookmark them all please"
+    );
+    expect(result.type).toBe("site-search");
+    expect(result.site).toBe("https://www.pornhub.com");
+    expect(result.query).toContain("cats");
+  });
+
+  it("long message WITHOUT known site → returns none (AI handles)", () => {
+    const result = parseIntent(
+      "hey can you tell me about the history of ancient rome and all the different emperors and what they did during their reign"
     );
     expect(result.type).toBe("none");
   });
@@ -272,10 +286,12 @@ describe("None — pass to AI", () => {
     expect(result.type).toBe("none");
   });
 
-  it("the ORIGINAL failing input — should be none", () => {
+  it("the ORIGINAL failing input — now intercepted with known site", () => {
     const result = parseIntent(
       "look up eevee porn on rule34 video listing ALL options on that page on google"
     );
-    expect(result.type).toBe("none");
+    expect(result.type).toBe("site-search");
+    expect(result.site).toBe("https://rule34video.com");
+    expect(result.query).toContain("eevee");
   });
 });

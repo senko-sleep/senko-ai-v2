@@ -77,12 +77,22 @@ function fuzzyMatchSite(input: string): { name: string; url: string } | null {
   // Exact match first
   if (KNOWN_SITES[clean]) return { name: clean, url: KNOWN_SITES[clean] };
   // Fuzzy: find closest known site within edit distance threshold
+  // Extra guard: input length must be similar to key length (within 50%) to prevent
+  // common words like "the", "did" from matching short keys like "x"
   let bestKey = "";
   let bestDist = Infinity;
   for (const key of Object.keys(KNOWN_SITES)) {
+    // Very short keys (≤2 chars like "x") must be exact match only
+    if (key.length <= 2) continue;
+    // Length similarity check: input must be within 50% of key length
+    const lenRatio = clean.length / key.length;
+    if (lenRatio < 0.5 || lenRatio > 2.0) continue;
     const dist = levenshtein(clean, key);
-    // Threshold: max 2 edits for short names (≤6 chars), max 3 for longer ones
-    const maxDist = key.length <= 6 ? 2 : 3;
+    // Threshold: tighter to prevent false positives like "youtell" → "youtube"
+    // Max 1 edit for short names (≤5), max 2 for medium (≤10), max 3 for long (>10)
+    // AND edit distance must be < 30% of key length
+    const maxDist = key.length <= 5 ? 1 : key.length <= 10 ? 2 : 3;
+    if (dist > key.length * 0.3) continue; // e.g. 3/7 = 43% for youtube → too high
     if (dist < bestDist && dist <= maxDist) {
       bestDist = dist;
       bestKey = key;
@@ -159,6 +169,26 @@ function extractOrdinal(text: string): number {
   return 0;
 }
 
+// ── Scan text for any mention of a known site (exact or fuzzy) ──
+// Used by the complexity gate to intercept site-specific requests even in long messages
+// Returns the matched site info + the raw text that matched, or null
+function findKnownSiteInText(text: string): { name: string; url: string; rawMatch: string } | null {
+  const words = text.split(/\s+/);
+  // Try sliding windows of 1-3 consecutive words
+  for (let winSize = 3; winSize >= 1; winSize--) {
+    for (let i = 0; i <= words.length - winSize; i++) {
+      const candidate = words.slice(i, i + winSize).join(" ");
+      const candidateNoSpaces = words.slice(i, i + winSize).join("");
+      // Try both with and without spaces
+      const fuzzy = fuzzyMatchSite(candidate) || fuzzyMatchSite(candidateNoSpaces);
+      if (fuzzy) {
+        return { name: fuzzy.name, url: fuzzy.url, rawMatch: candidate };
+      }
+    }
+  }
+  return null;
+}
+
 // ══════════════════════════════════════════════════════════════════
 // MAIN PARSER
 //
@@ -173,6 +203,7 @@ function extractOrdinal(text: string): number {
 //   4. Section nav ("go to the yuri section")
 //   5. Simple site+query ("look up eevee on rule34video", "rule34video eevee")
 //   6. Simple site open ("open pornhub", "go to youtube")
+//   7. Long messages that mention a KNOWN site → extract site+query
 //
 // Everything else → type: "none" → AI handles it
 // ══════════════════════════════════════════════════════════════════
@@ -180,10 +211,40 @@ export function parseIntent(text: string): ParsedIntent {
   const lower = text.toLowerCase().trim();
   const wordCount = lower.split(/\s+/).length;
 
-  // ═══ COMPLEXITY GATE: if message is long/complex, let the AI handle it ═══
-  // Long winding instructions, multi-step requests, detailed descriptions
-  // are ALWAYS better handled by the AI than by regex
-  if (wordCount > 15) {
+  // ═══ COMPLEXITY GATE ═══
+  // Messages >10 words are too complex for simple regex patterns.
+  // But if a known site is mentioned, we MUST intercept — the AI will
+  // sanitize/refuse NSFW queries. So scan for known sites first.
+  if (wordCount > 10) {
+    // Scan for a known site name anywhere in the text
+    const knownSiteMatch = findKnownSiteInText(lower);
+    if (knownSiteMatch) {
+      // Extract the search query: everything that looks like a search term
+      // Strip the site name and common filler words to get the real query
+      const queryCandidate = lower
+        .replace(new RegExp(knownSiteMatch.rawMatch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), ' ')
+        .replace(/\b(look\s*up|search\s*(?:for)?|find|on|in|at|from|go\s*to|open|visit|browse|and|then|click|first|link|listing|all|options|that|page|google|the|for|show|me|play|watch|list|every|each|with|get|give)\b/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (queryCandidate.length >= 2) {
+        return {
+          type: "site-search",
+          confidence: 0.85,
+          site: knownSiteMatch.url,
+          siteName: knownSiteMatch.name,
+          query: queryCandidate,
+        };
+      }
+      // No query extracted — just open the site
+      return {
+        type: "open-url",
+        confidence: 0.85,
+        site: knownSiteMatch.url,
+        siteName: knownSiteMatch.name,
+        url: knownSiteMatch.url,
+      };
+    }
+    // No known site mentioned — let AI handle the complex message
     return { type: "none", confidence: 0 };
   }
 
