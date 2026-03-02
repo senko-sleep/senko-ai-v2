@@ -15,7 +15,7 @@ import { buildLayeredPrompt, messageHasUrl } from "@/lib/prompt-builder";
 import { extractStatusFromContent, inferStatusFromContent } from "@/lib/status-utils";
 import { parseIntent, isKnownSite, validateSiteUrl } from "@/lib/intent-parser";
 import { streamChat } from "@/lib/stream-chat";
-import { getYouTubeId, filterPlayableVideos, deduplicateVideos, filterContentLinks, getContextUrl, AD_LINK_PATTERN, isJsHeavySite, isVideoPageUrl } from "@/lib/browse-helpers";
+import { getYouTubeId, filterPlayableVideos, deduplicateVideos, filterContentLinks, getContextUrl, AD_LINK_PATTERN, isJsHeavySite, isVideoPageUrl, buildSiteSearchUrl } from "@/lib/browse-helpers";
 import { getTheme, applyTheme } from "@/lib/themes";
 import researchPromptText from "@/app/prompts/research.txt";
 
@@ -1235,6 +1235,22 @@ export default function Home() {
               }
             }
           }
+          // ── SITE-SPECIFIC SEARCH INTERCEPTION ──
+          // If the AI used "site:domain.com" in its search query, convert to a direct BROWSE
+          // of that site's search page instead of running the Google research pipeline.
+          // This makes the system actually load the site and list real results.
+          const siteMatch = searchQuery.match(/\bsite:(\S+)/i);
+          if (siteMatch) {
+            const siteDomain = siteMatch[1].replace(/^www\./, "").toLowerCase();
+            const queryWithoutSite = searchQuery.replace(/\s*site:\S+/i, "").trim();
+            const siteUrl = `https://${siteDomain.includes(".") ? siteDomain : siteDomain + ".com"}`;
+            const browseUrl = buildSiteSearchUrl(siteUrl, queryWithoutSite);
+            console.log(`%c[SEARCH→BROWSE] 🔄 Intercepted site: query — browsing ${browseUrl} instead of research pipeline`, "color: #00ffcc; font-weight: bold; font-size: 12px", { site: siteDomain, query: queryWithoutSite });
+            // Re-route to BROWSE action — processActions will handle it via the READ_URL/BROWSE path
+            actions.push({ type: "BROWSE", value: browseUrl });
+            continue; // Skip fetchSearchResults for this action
+          }
+
           console.log(`%c[SEARCH] 🔎 Starting web search`, "color: #ffcc00; font-weight: bold; font-size: 12px", { query: searchQuery });
           fetchSearchResults(convId, messageId, searchQuery);
         }
@@ -2936,29 +2952,6 @@ I should cover: evolutions, competitive viability, cultural impact, and why fans
         }
 
         console.log(`%c[NLP] 🔍 Site search: "${searchQuery}" on ${siteUrl}`, "color: #00ffcc; font-weight: bold");
-        // Site-aware search URL construction — different sites need different formats
-        // Matches the patterns documented in browser.txt
-        const buildSiteSearchUrl = (site: string, query: string): string => {
-          const host = site.replace(/^https?:\/\//, "").replace(/\/+$/, "").toLowerCase();
-          if (host.includes("rule34video"))   return `${site}/search/?q=${encodeURIComponent(query)}`;
-          if (host.includes("pornhub"))       return `${site}/video/search?search=${encodeURIComponent(query)}`;
-          if (host.includes("xvideos"))       return `${site}/?k=${encodeURIComponent(query)}`;
-          if (host.includes("xhamster"))      return `${site}/search/${encodeURIComponent(query)}`;
-          if (host.includes("spankbang"))     return `${site}/s/${encodeURIComponent(query)}/`;
-          if (host.includes("xnxx"))          return `${site}/search/${encodeURIComponent(query)}`;
-          if (host.includes("redtube"))       return `${site}/?search=${encodeURIComponent(query)}`;
-          if (host.includes("youtube"))       return `${site}/results?search_query=${encodeURIComponent(query)}`;
-          if (host.includes("reddit"))        return `${site}/search/?q=${encodeURIComponent(query)}`;
-          if (host.includes("x.com") || host.includes("twitter")) return `${site}/search?q=${encodeURIComponent(query)}`;
-          if (host.includes("amazon"))        return `${site}/s?k=${encodeURIComponent(query)}`;
-          if (host.includes("nhentai"))       return `${site}/search/?q=${encodeURIComponent(query)}`;
-          if (host.includes("rule34.xxx"))    return `${site}/index.php?page=post&s=list&tags=${encodeURIComponent(query)}`;
-          if (host.includes("e621"))          return `${site}/posts?tags=${encodeURIComponent(query)}`;
-          if (host.includes("gelbooru"))      return `${site}/index.php?page=post&s=list&tags=${encodeURIComponent(query)}`;
-          if (host.includes("danbooru"))      return `${site}/posts?tags=${encodeURIComponent(query)}`;
-          // Fallback: try query-param first (works on most sites), path-based as last resort
-          return `${site}/search?q=${encodeURIComponent(query)}`;
-        };
         const searchUrl = buildSiteSearchUrl(siteUrl, searchQuery);
         const nlpInterceptId = generateId();
         console.log(`%c[NLP] 📝 Creating initial message with ID: ${nlpInterceptId}`, "color: #ffaa00");

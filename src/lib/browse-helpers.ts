@@ -3,7 +3,7 @@
  * Used by processActions, handleSendMessage interceptors, and fetchSearchResults
  */
 
-import type { Message, Conversation } from "@/types/chat";
+import type { Conversation } from "@/types/chat";
 
 // ── Ad/tracker URL pattern (used everywhere) ──
 export const AD_LINK_PATTERN = /\b(doubleclick|googlesyndication|googleadservices|adsystem|adserver|adclick|clicktrack|tracker|pagead|pubads|syndication|taboola|outbrain|mgid|exoclick|exosrv|juicyads|trafficjunky|trafficstars|popunder|popads|clickadu|adsterra|propellerads|popcash|hilltopads|adcash|clickaine|revcontent|zergnet|disqus\.com|facebook\.com\/tr|analytics|pixel|beacon|imp\?|\/ad\/|\/ads\/|\/adx\/|banner|sponsor|spankurbate|rule34comic|adglare|adtng|afcpatrk|aftrk|nutaku\.net|adxpansion|admaven|tubecorporate|twinrdsrv|plugrush|trafficforce)\b/i;
@@ -164,6 +164,28 @@ export function resolveUrl(url: string, baseUrl: string): string {
     } catch { return url; }
   }
   return url;
+}
+
+// ── Build site-specific search URL (different sites need different formats) ──
+export function buildSiteSearchUrl(site: string, query: string): string {
+  const host = site.replace(/^https?:\/\//, "").replace(/\/+$/, "").toLowerCase();
+  if (host.includes("rule34video"))   return `${site}/search/?q=${encodeURIComponent(query)}`;
+  if (host.includes("pornhub"))       return `${site}/video/search?search=${encodeURIComponent(query)}`;
+  if (host.includes("xvideos"))       return `${site}/?k=${encodeURIComponent(query)}`;
+  if (host.includes("xhamster"))      return `${site}/search/${encodeURIComponent(query)}`;
+  if (host.includes("spankbang"))     return `${site}/s/${encodeURIComponent(query)}/`;
+  if (host.includes("xnxx"))          return `${site}/search/${encodeURIComponent(query)}`;
+  if (host.includes("redtube"))       return `${site}/?search=${encodeURIComponent(query)}`;
+  if (host.includes("youtube"))       return `${site}/results?search_query=${encodeURIComponent(query)}`;
+  if (host.includes("reddit"))        return `${site}/search/?q=${encodeURIComponent(query)}`;
+  if (host.includes("x.com") || host.includes("twitter")) return `${site}/search?q=${encodeURIComponent(query)}`;
+  if (host.includes("amazon"))        return `${site}/s?k=${encodeURIComponent(query)}`;
+  if (host.includes("nhentai"))       return `${site}/search/?q=${encodeURIComponent(query)}`;
+  if (host.includes("rule34.xxx"))    return `${site}/index.php?page=post&s=list&tags=${encodeURIComponent(query)}`;
+  if (host.includes("e621"))          return `${site}/posts?tags=${encodeURIComponent(query)}`;
+  if (host.includes("gelbooru"))      return `${site}/index.php?page=post&s=list&tags=${encodeURIComponent(query)}`;
+  if (host.includes("danbooru"))      return `${site}/posts?tags=${encodeURIComponent(query)}`;
+  return `${site}/search?q=${encodeURIComponent(query)}`;
 }
 
 // ── Extract YouTube video ID from URL ──
