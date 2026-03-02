@@ -220,19 +220,23 @@ export function parseIntent(text: string): ParsedIntent {
     const knownSiteMatch = findKnownSiteInText(lower);
     if (knownSiteMatch) {
       // Extract the search query: everything that looks like a search term
-      // Strip the site name and common filler words to get the real query
+      // Strip the site name and ALL instruction/filler words to get the real query
       const queryCandidate = lower
         .replace(new RegExp(knownSiteMatch.rawMatch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), ' ')
-        .replace(/\b(look\s*up|search\s*(?:for)?|find|on|in|at|from|go\s*to|open|visit|browse|and|then|click|first|link|listing|all|options|that|page|google|the|for|show|me|play|watch|list|every|each|with|get|give)\b/gi, ' ')
+        .replace(/\b(look\s*up|look|search\s*(?:for)?|search|find|on|in|at|from|go\s*to|go|open|visit|browse|and|then|click|first|second|third|fourth|fifth|last|link|listing|all|options|that|this|page|google|bing|the|a|an|for|show|me|play|watch|list|every|each|with|get|give|tell|want|wanna|can|you|please|also|too|now|just|some|any|more|most|best|top|new|latest|see|view|check|out|up|to|of|it|its|is|are|was|were|be|been|being|have|has|had|do|does|did|will|would|should|could|may|might)\b/gi, ' ')
         .replace(/\s+/g, ' ')
         .trim();
-      if (queryCandidate.length >= 2) {
+      // Deduplicate words: "eevee porn eevee" → "eevee porn"
+      const words = queryCandidate.split(/\s+/);
+      const uniqueWords = [...new Set(words)];
+      const dedupedQuery = uniqueWords.join(' ');
+      if (dedupedQuery.length >= 2) {
         return {
           type: "site-search",
           confidence: 0.85,
           site: knownSiteMatch.url,
           siteName: knownSiteMatch.name,
-          query: queryCandidate,
+          query: dedupedQuery,
         };
       }
       // No query extracted — just open the site
