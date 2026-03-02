@@ -15,7 +15,6 @@ export interface ParsedIntent {
 }
 
 // ── Verb categories ──
-const SEARCH_WORDS = ["look", "search", "find", "lookup"];
 const RESULT_NOUNS = ["video", "result", "one", "link", "clip", "item", "option", "entry"];
 
 // ── Ordinal map ──
@@ -24,21 +23,19 @@ const ORDINALS: Record<string, number> = {
   sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10, last: -1,
 };
 
-// ── Known sites map: canonical name → real URL (used for instant resolution + search URL patterns) ──
+// ══════════════════════════════════════════════════════════════════
+// KNOWN SITES — used for instant resolution, fuzzy matching, and
+// search URL pattern construction. NOT a gatekeeper — unknown sites
+// get validated via HEAD request by the caller.
+// ══════════════════════════════════════════════════════════════════
 const KNOWN_SITES: Record<string, string> = {
   "rule34video": "https://rule34video.com",
-  "rule 34 video": "https://rule34video.com",
   "rule34": "https://rule34.xxx",
-  "rule 34": "https://rule34.xxx",
   "rule34xxx": "https://rule34.xxx",
   "pornhub": "https://www.pornhub.com",
-  "porn hub": "https://www.pornhub.com",
   "xvideos": "https://www.xvideos.com",
-  "x videos": "https://www.xvideos.com",
   "xhamster": "https://xhamster.com",
-  "x hamster": "https://xhamster.com",
   "redtube": "https://www.redtube.com",
-  "red tube": "https://www.redtube.com",
   "xnxx": "https://www.xnxx.com",
   "spankbang": "https://spankbang.com",
   "nhentai": "https://nhentai.net",
@@ -46,13 +43,10 @@ const KNOWN_SITES: Record<string, string> = {
   "gelbooru": "https://gelbooru.com",
   "danbooru": "https://danbooru.donmai.us",
   "youtube": "https://www.youtube.com",
-  "you tube": "https://www.youtube.com",
   "reddit": "https://www.reddit.com",
   "twitter": "https://x.com",
-  "x": "https://x.com",
   "twitch": "https://www.twitch.tv",
   "tiktok": "https://www.tiktok.com",
-  "tik tok": "https://www.tiktok.com",
   "instagram": "https://www.instagram.com",
   "facebook": "https://www.facebook.com",
   "discord": "https://discord.com",
@@ -61,15 +55,46 @@ const KNOWN_SITES: Record<string, string> = {
   "amazon": "https://www.amazon.com",
 };
 
-// ── Check if a site name resolves to a known site (no validation needed) ──
-export function isKnownSite(name: string): boolean {
-  const lower = name.toLowerCase().trim();
-  const noSpaces = lower.replace(/\s+/g, "");
-  if (KNOWN_SITES[lower] || KNOWN_SITES[noSpaces]) return true;
-  for (const key of Object.keys(KNOWN_SITES)) {
-    if (noSpaces === key.replace(/\s+/g, "")) return true;
+// ── Levenshtein distance for fuzzy matching ──
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
   }
-  return false;
+  return dp[m][n];
+}
+
+// ── Fuzzy site resolution: tolerates misspellings like "pornhib", "rul34video", "rule 34 vidoe" ──
+function fuzzyMatchSite(input: string): { name: string; url: string } | null {
+  const clean = input.toLowerCase().trim().replace(/\s+/g, "");
+  // Exact match first
+  if (KNOWN_SITES[clean]) return { name: clean, url: KNOWN_SITES[clean] };
+  // Fuzzy: find closest known site within edit distance threshold
+  let bestKey = "";
+  let bestDist = Infinity;
+  for (const key of Object.keys(KNOWN_SITES)) {
+    const dist = levenshtein(clean, key);
+    // Threshold: max 2 edits for short names (≤6 chars), max 3 for longer ones
+    const maxDist = key.length <= 6 ? 2 : 3;
+    if (dist < bestDist && dist <= maxDist) {
+      bestDist = dist;
+      bestKey = key;
+    }
+  }
+  if (bestKey) return { name: bestKey, url: KNOWN_SITES[bestKey] };
+  return null;
+}
+
+// ── Check if a site name resolves to a known site (exact or fuzzy) ──
+export function isKnownSite(name: string): boolean {
+  return fuzzyMatchSite(name) !== null;
 }
 
 // ── Validate a candidate URL is real (async HEAD request) ──
@@ -84,51 +109,36 @@ export async function validateSiteUrl(candidateUrl: string): Promise<{ valid: bo
   }
 }
 
-// ── Site URL resolution — freely constructs candidate URLs ──
-// For known sites: returns the exact canonical URL (trusted, no validation needed)
-// For unknown sites: constructs a candidate URL that MUST be validated before use
+// ── Site URL resolution ──
+// Known sites (exact/fuzzy): returns canonical URL (trusted)
+// Has domain extension: uses it directly
+// Unknown short name: constructs candidate URL (caller MUST validate)
 function resolveSiteUrl(name: string): string {
+  // 1. Fuzzy match against known sites
+  const fuzzy = fuzzyMatchSite(name);
+  if (fuzzy) return fuzzy.url;
+
   const lower = name.toLowerCase().trim();
-  
-  // 1. Check known sites map first (exact match)
-  if (KNOWN_SITES[lower]) return KNOWN_SITES[lower];
-  
-  // 2. Check known sites with spaces stripped
   const noSpaces = lower.replace(/\s+/g, "");
-  if (KNOWN_SITES[noSpaces]) return KNOWN_SITES[noSpaces];
-  
-  // 3. Check known site keys with spaces stripped
-  for (const [key, url] of Object.entries(KNOWN_SITES)) {
-    if (noSpaces === key.replace(/\s+/g, "")) return url;
-  }
-  
-  // 4. If it already has a domain extension (.com, .net, etc), use it directly
+
+  // 2. Has a domain extension already (.com, .net, etc)
   if (/\.[a-z]{2,}$/i.test(lower)) {
-    let clean = lower.replace(/\s+/g, "");
+    let clean = noSpaces;
     if (!clean.startsWith("http")) clean = "https://" + clean;
     return clean;
   }
-  
-  // 5. Freely construct a candidate URL for unknown sites
-  //    Short names (≤25 chars) get .com appended — caller MUST validate before using
+
+  // 3. Unknown name — construct candidate if it looks like a valid site name
+  //    Must be alphanumeric only, ≤25 chars
   if (noSpaces.length <= 25 && /^[a-z0-9]+$/i.test(noSpaces)) {
     return "https://" + noSpaces + ".com";
   }
-  
-  // Too long or has weird characters — not a site name
-  return "";
-}
 
-// ── Clause parser: split text on "and" / "then" / commas into semantic chunks ──
-// Always use deterministic manual split — compromise clause splitting is unreliable
-// for multi-action sentences like "go to X and look up Y and list Z"
-function splitClauses(text: string): string[] {
-  return text.split(/\s+(?:and|then|,)\s+/).map(s => s.trim()).filter(Boolean);
+  return "";
 }
 
 // ── Extract ordinal/number from text ──
 function extractOrdinal(text: string): number {
-  // compromise ordinal detection
   try {
     const doc = nlp(text);
     const ordinals = doc.match("#Ordinal").out("array") as string[];
@@ -139,105 +149,77 @@ function extractOrdinal(text: string): number {
       if (numMatch) return parseInt(numMatch[1]);
     }
   } catch { /* fall back */ }
-  // Regex: ordinals with suffix (1st, 2nd, 3rd, 5th)
   const ordMatch = text.match(/(?:(\d+)(?:st|nd|rd|th)|(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last))/i);
   if (ordMatch) {
     if (ordMatch[1]) return parseInt(ordMatch[1]);
     if (ordMatch[2]) return ORDINALS[ordMatch[2].toLowerCase()] || 0;
   }
-  // Plain number in pick context: "option 5", "number 3", "#7", "play 5", or bare number
   const plainNum = text.match(/(?:option|number|#|no\.?)\s*(\d+)/i) || text.match(/(?:play|open|watch|click|pick|select|choose|get|show)\s+(\d+)\b/i) || text.match(/^\s*(\d+)\s*$/);
   if (plainNum) return parseInt(plainNum[1]);
   return 0;
 }
 
-// ── Detect if a word/phrase looks like a site reference ──
-// This is permissive — it detects CANDIDATES, caller validates unknown ones
-function isSiteReference(phrase: string): boolean {
-  const lower = phrase.toLowerCase().trim();
-  const noSpaces = lower.replace(/\s+/g, "");
-  
-  // Reject phrases that are too long — real site names are short
-  if (noSpaces.length > 25) return false;
-  // Reject if it has non-alphanumeric chars (except dots/hyphens for domains)
-  if (!/^[a-z0-9.\-\s]+$/i.test(lower)) return false;
-  
-  // Known sites — instant yes
-  if (isKnownSite(lower)) return true;
-  
-  // Has a domain extension (.com, .net, .org, etc.)
-  if (/\.[a-z]{2,}$/i.test(lower)) return true;
-  
-  // Short phrase (1-3 words) that looks like a site name
-  const wordCount = lower.split(/\s+/).length;
-  if (wordCount <= 3 && noSpaces.length <= 25) {
-    // Contains a site-like suffix
-    if (/(?:video|hub|tube|porn|xxx|rule34|hentai|chan|booru|wiki|forum|manga|anime)$/i.test(noSpaces)) return true;
-    // Single word that's short enough to be a domain name
-    if (wordCount === 1 && noSpaces.length >= 3 && noSpaces.length <= 20) return true;
-  }
-  
-  return false;
-}
-
-// ── Extract just the site name from a phrase, stopping at common stop words ──
-function extractSiteFromPhrase(raw: string): string {
-  // Stop at common sentence continuation words AND action/instruction words that aren't part of a site name
-  const stopPattern = /\b(so|because|to|for|where|while|when|since|if|but|or|as|that|which|who|with|about|into|like|just|also|too|please|cause|cuz|bc|cos|we|you|i|they|he|she|it|my|your|our|the|a|an|can|could|would|should|let|lets|ill|gonna|wanna|gotta|listing|showing|displaying|all|every|each|click|open|play|watch|show|list|get|give|find|look|search|make|put|send|tell|pick|select|choose|on|from|at)\b/i;
-  const match = raw.match(stopPattern);
-  if (match && match.index !== undefined && match.index > 0) {
-    raw = raw.substring(0, match.index).trim();
-  }
-  return raw;
-}
-
-// ── Detect explicit URL in text ──
-function extractUrl(text: string): string | null {
-  const match = text.match(/(https?:\/\/[^\s]+)/i);
-  return match ? match[1] : null;
-}
-
-// ── Main parser ──
+// ══════════════════════════════════════════════════════════════════
+// MAIN PARSER
+//
+// Philosophy: only intercept SIMPLE, CLEAR patterns. Complex or
+// long multi-step instructions always pass to the AI — it's far
+// better at understanding natural language than regex.
+//
+// The NLP interceptor fires for:
+//   1. Explicit URLs
+//   2. Pagination ("next page", "page 3")
+//   3. Result picks ("play the 3rd video", "option 5")
+//   4. Section nav ("go to the yuri section")
+//   5. Simple site+query ("look up eevee on rule34video", "rule34video eevee")
+//   6. Simple site open ("open pornhub", "go to youtube")
+//
+// Everything else → type: "none" → AI handles it
+// ══════════════════════════════════════════════════════════════════
 export function parseIntent(text: string): ParsedIntent {
   const lower = text.toLowerCase().trim();
+  const wordCount = lower.split(/\s+/).length;
 
-  // ── 1. Explicit URL detection ──
-  const explicitUrl = extractUrl(text);
-  if (explicitUrl) {
-    // "what videos are on https://..." → page-content
-    if (/what(?:'s|\s+are|\s+is)?.*(?:videos?|content|on\s+(?:this|that)\s+page)/i.test(lower)) {
-      return { type: "page-content", confidence: 0.95, url: explicitUrl };
-    }
-    // "open/go to https://..." → open-url
-    if (/^\s*(?:open|go\s*to|visit|browse|navigate)/i.test(lower)) {
-      return { type: "open-url", confidence: 0.95, url: explicitUrl };
-    }
-    // URL with other intent — treat as open-url but lower confidence (no explicit verb)
-    return { type: "open-url", confidence: 0.7, url: explicitUrl };
+  // ═══ COMPLEXITY GATE: if message is long/complex, let the AI handle it ═══
+  // Long winding instructions, multi-step requests, detailed descriptions
+  // are ALWAYS better handled by the AI than by regex
+  if (wordCount > 15) {
+    return { type: "none", confidence: 0 };
   }
 
-  // ── 2. Pagination detection ──
+  // ── 1. Explicit URL detection ──
+  const urlMatch = text.match(/(https?:\/\/[^\s]+)/i);
+  if (urlMatch) {
+    const url = urlMatch[1];
+    if (/what(?:'s|\s+are|\s+is)?.*(?:videos?|content|on\s+(?:this|that)\s+page)/i.test(lower)) {
+      return { type: "page-content", confidence: 0.95, url };
+    }
+    if (/^\s*(?:open|go\s*to|visit|browse|navigate)/i.test(lower)) {
+      return { type: "open-url", confidence: 0.95, url };
+    }
+    return { type: "open-url", confidence: 0.7, url };
+  }
+
+  // ── 2. Pagination ──
   if (/^\s*(?:next\s+page|page\s+\d+|more\s+(?:results|videos?))\s*$/i.test(lower)) {
     const pageMatch = lower.match(/page\s+(\d+)/);
     return { type: "pagination", confidence: 0.9, pageNum: pageMatch ? parseInt(pageMatch[1]) : 0 };
   }
 
-  // ── 3. Result pick detection: "play the 3rd video", "play option 5", "option 5", "5" ──
+  // ── 3. Result pick: "play the 3rd video", "option 5", bare "5" ──
   const ordinal = extractOrdinal(lower);
   if (ordinal !== 0) {
     const hasResultNoun = RESULT_NOUNS.some(n => lower.includes(n));
     const hasPickVerb = /^(?:play|open|watch|click|pick|select|choose|get|show)\s+/i.test(lower);
     const isOptionRef = /\b(?:option|number|#|no\.?)\s*\d+/i.test(lower);
     const isBareNumber = /^\s*\d+\s*$/.test(lower);
-    // Pick if: (verb + noun), (verb + number), (option/number ref), or bare number
     if ((hasPickVerb && hasResultNoun) || (hasPickVerb && ordinal > 0) || isOptionRef || isBareNumber) {
-      // Confidence: verb+noun = high, bare number = low (could be game answer)
-      const pickConfidence = (hasPickVerb && hasResultNoun) ? 0.95
+      const pickConf = (hasPickVerb && hasResultNoun) ? 0.95
         : (hasPickVerb && ordinal > 0) ? 0.85
         : isOptionRef ? 0.9
-        : isBareNumber ? 0.4  // bare numbers are ambiguous — might be game answers
+        : isBareNumber ? 0.4
         : 0.6;
-      return { type: "pick-result", confidence: pickConfidence, autoPick: ordinal };
+      return { type: "pick-result", confidence: pickConf, autoPick: ordinal };
     }
   }
 
@@ -247,171 +229,106 @@ export function parseIntent(text: string): ParsedIntent {
     return { type: "section-nav", confidence: 0.9, section: sectionMatch[1].trim() };
   }
 
-  // ── 5. Site-search detection (the main adaptive parser) ──
-  const clauses = splitClauses(lower);
+  // ══════════════════════════════════════════════════════════
+  // 5. SITE + QUERY DETECTION
+  //
+  // Only handles simple, clear patterns:
+  //   A. "look up QUERY on SITE"  / "search QUERY on SITE"
+  //   B. "go to SITE and look up QUERY"
+  //   C. "SITE QUERY"  (e.g. "rule34video eevee")
+  //   D. "open SITE" / "go to SITE"
+  //
+  // The site name is resolved via fuzzy matching (handles
+  // misspellings) + unknown site validation via HEAD request.
+  // ══════════════════════════════════════════════════════════
 
-  let detectedSite = "";
-  let detectedSiteName = "";
-  let detectedQuery = "";
-  let detectedAction = "";
-  let detectedAutoPick = 0;
-
-  for (const clause of clauses) {
-    const words = clause.split(/\s+/);
-    // ── Navigation clause: "go to X", "visit X", "open X", "browse X" ──
-    const navMatch = clause.match(/^(?:go\s*to|visit|browse|open|navigate\s*to|head\s*to|check\s*out)\s+(.+)/i);
-    if (navMatch) {
-      const target = navMatch[1].trim();
-      // If the target looks like a site (not a section/action), extract it
-      if (isSiteReference(target) || (!SEARCH_WORDS.some(w => target.startsWith(w)) && target.length > 1)) {
-        // Truncate at stop words, then strip "and/then" continuations
-        const potentialSite = extractSiteFromPhrase(target.replace(/\s*(?:and|then)\s+.*$/i, "").trim());
-        if (potentialSite && isSiteReference(potentialSite)) {
-          const resolved = resolveSiteUrl(potentialSite);
-          if (resolved) {
-            detectedSiteName = potentialSite;
-            detectedSite = resolved;
-          }
-        }
-      }
+  // Pattern A: "look up QUERY on/in/at SITE"
+  const patternA = lower.match(/^(?:look\s*up|search\s*(?:for)?|find)\s+(.+?)\s+(?:on|in|at|from)\s+(\S+)\s*$/i);
+  if (patternA) {
+    const query = patternA[1].trim();
+    const siteRaw = patternA[2].trim();
+    const resolved = resolveSiteUrl(siteRaw);
+    if (resolved && query.split(/\s+/).length <= 8) {
+      return { type: "site-search", confidence: 0.9, site: resolved, siteName: siteRaw, query };
     }
+  }
 
-    // ── Search clause: "look up X", "search for X", "find X" ──
-    const searchMatch = clause.match(/^(?:look\s*up|search\s*(?:for)?|find)\s+(.+)/i);
-    if (searchMatch) {
-      detectedQuery = searchMatch[1].trim();
-    }
-
-    // ── "X on/in SITE" pattern: "look up eevee on rule34video", "look up eevee in rule34video" ──
-    const onSiteMatch = clause.match(/^(?:look\s*up|search\s*(?:for)?|find)\s+(.+?)\s+(?:on|in|at|from)\s+(.+)/i);
-    if (onSiteMatch) {
-      let rawQuery = onSiteMatch[1].trim();
-      const rawSiteRef = onSiteMatch[2].trim();
-      // Truncate at stop words: "rule34video so we can watch a video" → "rule34video"
-      const siteRef = extractSiteFromPhrase(rawSiteRef);
-      
-      // Strip count modifiers like "10 videos", "some clips", "a few" — these aren't real search terms
-      // If the entire query is just a count + generic noun, treat as empty (browse homepage)
-      const countModifierPattern = /^(?:(?:the\s+)?(?:top|first|latest|newest|recent|best|popular|random|some|a\s+few|several|\d+)\s+)?(?:videos?|clips?|results?|items?|things?|content|posts?|entries?)$/i;
-      if (countModifierPattern.test(rawQuery)) {
-        rawQuery = ""; // Generic browse — no specific search term
-      } else {
-        // Strip leading count modifiers from actual queries: "10 eevee videos" → "eevee videos"
-        rawQuery = rawQuery.replace(/^(?:(?:the\s+)?(?:top|first|latest|newest|recent|best|popular|random|some|a\s+few|several|\d+)\s+)/i, "").trim();
-      }
-      
-      detectedQuery = rawQuery;
-      if (siteRef && isSiteReference(siteRef)) {
-        const resolved = resolveSiteUrl(siteRef);
-        if (resolved) {
-          detectedSiteName = siteRef;
-          detectedSite = resolved;
-        }
-      }
-    }
-
-    // ── Action clause: "list top 10", "play the first video", "click the 3rd one" ──
-    const actionMatch = clause.match(/^(play|click|watch|list|show|give|tell|display|get|send|pick|select|choose)\b\s*(.*)/i);
-    if (actionMatch) {
-      detectedAction = actionMatch[1].toLowerCase();
-      const rest = actionMatch[2];
-      const ord = extractOrdinal(rest);
-      if (ord !== 0) detectedAutoPick = ord;
-    }
-
-    // ── Implicit site + query: "rule34video eevee" (site name followed by query) ──
-    if (!detectedSite && !detectedQuery && words.length >= 2 && words.length <= 8) {
-      // Check if first word(s) look like a site — skip if preceded by articles ("the discord" is conversational)
-      const firstWord = words[0];
-      const startsWithArticle = /^(the|a|an|my|his|her|our|their|this|that|some)$/i.test(firstWord);
-      if (!startsWithArticle) {
-        for (let i = 1; i <= Math.min(words.length - 1, 3); i++) {
-          const potentialSite = words.slice(0, i).join(" ");
-          if (isSiteReference(potentialSite)) {
-            const resolved = resolveSiteUrl(potentialSite);
-            if (resolved) {
-              detectedSiteName = potentialSite;
-              detectedSite = resolved;
-              detectedQuery = words.slice(i).join(" ");
-            }
-            break;
-          }
-        }
-      }
-    }
-
-    // ── Check for ordinals in any clause ──
-    if (!detectedAutoPick) {
-      const ord = extractOrdinal(clause);
-      if (ord !== 0 && RESULT_NOUNS.some(n => clause.includes(n))) {
-        detectedAutoPick = ord;
+  // Pattern A2: "look up QUERY on SITE SITE" (multi-word site: "rule 34 video")
+  const patternA2 = lower.match(/^(?:look\s*up|search\s*(?:for)?|find)\s+(.+?)\s+(?:on|in|at|from)\s+(.{2,})\s*$/i);
+  if (patternA2) {
+    const query = patternA2[1].trim();
+    const siteRaw = patternA2[2].trim();
+    // Only try if the "site" part is short (≤4 words) — anything longer is instructions
+    if (siteRaw.split(/\s+/).length <= 4) {
+      const fuzzy = fuzzyMatchSite(siteRaw);
+      if (fuzzy && query.split(/\s+/).length <= 8) {
+        return { type: "site-search", confidence: 0.9, site: fuzzy.url, siteName: fuzzy.name, query };
       }
     }
   }
 
-  // ── Safety net: full-text scan for combined nav+search patterns the clause loop missed ──
-  // Catches cases where clause splitting didn't separate "go to SITE and look up QUERY" properly
-  if (detectedSite && !detectedQuery) {
-    const embeddedSearch = lower.match(/(?:look\s*up|search\s*(?:for)?|find)\s+(.+?)(?:\s+and\s+(?:click|play|open|watch|pick|select|choose|list|show|give|tell|display|get|send|put).*)?$/i);
-    if (embeddedSearch) {
-      detectedQuery = embeddedSearch[1].trim();
+  // Pattern B: "go to/open SITE and look up/search QUERY"
+  const patternB = lower.match(/^(?:go\s*to|open|visit|browse)\s+(\S+)\s+(?:and|then)\s+(?:look\s*up|search\s*(?:for)?|find)\s+(.+)\s*$/i);
+  if (patternB) {
+    const siteRaw = patternB[1].trim();
+    const query = patternB[2].trim();
+    const resolved = resolveSiteUrl(siteRaw);
+    if (resolved && query.split(/\s+/).length <= 8) {
+      return { type: "site-search", confidence: 0.9, site: resolved, siteName: siteRaw, query };
     }
   }
-  if (!detectedSite && detectedQuery) {
-    // Check for "on SITE" / "on that site" at end
-    const endSiteMatch = lower.match(/(?:on|at|from)\s+(?:that\s+)?(?:site|website|page)\s*$/i);
-    if (endSiteMatch) {
-      return { type: "site-search", confidence: 0.5, query: detectedQuery, action: detectedAction || undefined, autoPick: detectedAutoPick || undefined };
+
+  // Pattern C: "SITE QUERY" — implicit (e.g. "rule34video eevee", "pornhub milf")
+  // Only if total ≤8 words and first 1-2 words fuzzy-match a known site
+  if (wordCount >= 2 && wordCount <= 8) {
+    const words = lower.split(/\s+/);
+    // Try first 1-3 words as site name
+    for (let i = 1; i <= Math.min(3, words.length - 1); i++) {
+      const candidateSite = words.slice(0, i).join("");
+      const fuzzy = fuzzyMatchSite(candidateSite);
+      if (fuzzy) {
+        const query = words.slice(i).join(" ");
+        return { type: "site-search", confidence: 0.8, site: fuzzy.url, siteName: fuzzy.name, query };
+      }
     }
-    // Check for site reference anywhere in the text
-    const siteInText = lower.match(/(?:on|in|at|from)\s+([a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z]{2,})+)/i)
-      || lower.match(/(?:on|in|at|from)\s+(\w+(?:video|hub|tube|porn|xxx|rule34|hentai)\w*)/i);
-    if (siteInText) {
-      const siteCandidate = siteInText[1].trim();
-      const resolved = resolveSiteUrl(siteCandidate);
+    // Also try with spaces preserved (e.g. "rule 34 video" as 3 words)
+    for (let i = 2; i <= Math.min(3, words.length - 1); i++) {
+      const candidateSite = words.slice(0, i).join(" ");
+      const fuzzy = fuzzyMatchSite(candidateSite);
+      if (fuzzy) {
+        const query = words.slice(i).join(" ");
+        return { type: "site-search", confidence: 0.8, site: fuzzy.url, siteName: fuzzy.name, query };
+      }
+    }
+  }
+
+  // Pattern D: "open/go to SITE" (no query — just navigate)
+  const patternD = lower.match(/^(?:open|go\s*to|visit|browse|navigate\s*to|head\s*to|check\s*out)\s+(\S+)\s*$/i);
+  if (patternD) {
+    const siteRaw = patternD[1].trim();
+    const resolved = resolveSiteUrl(siteRaw);
+    if (resolved) {
+      return { type: "open-url", confidence: 0.9, site: resolved, siteName: siteRaw, url: resolved };
+    }
+  }
+
+  // Pattern D2: multi-word site open ("open rule 34 video", "go to porn hub")
+  const patternD2 = lower.match(/^(?:open|go\s*to|visit|browse)\s+(.{2,})\s*$/i);
+  if (patternD2) {
+    const siteRaw = patternD2[1].trim();
+    if (siteRaw.split(/\s+/).length <= 4) {
+      const fuzzy = fuzzyMatchSite(siteRaw);
+      if (fuzzy) {
+        return { type: "open-url", confidence: 0.9, site: fuzzy.url, siteName: fuzzy.name, url: fuzzy.url };
+      }
+      // Unknown site — construct candidate, let caller validate
+      const resolved = resolveSiteUrl(siteRaw);
       if (resolved) {
-        detectedSiteName = siteCandidate;
-        detectedSite = resolved;
+        return { type: "open-url", confidence: 0.6, site: resolved, siteName: siteRaw, url: resolved };
       }
     }
   }
 
-  // ── Determine final intent type + confidence ──
-  if (detectedSite && detectedQuery) {
-    // Reject if the "query" is very long — that's a conversation, not a search
-    const queryWordCount = detectedQuery.split(/\s+/).length;
-    if (queryWordCount > 10) {
-      return { type: "none", confidence: 0 };
-    }
-    // Confidence factors: explicit search verb, recognized site, query present
-    let conf = 0.5;
-    const hasSearchVerb = SEARCH_WORDS.some(w => lower.includes(w));
-    const hasOnSitePattern = /\b(?:on|in|at|from)\s+/i.test(lower);
-    if (hasSearchVerb) conf += 0.2;        // explicit "look up" / "search"
-    if (hasOnSitePattern) conf += 0.15;    // "on rule34video"
-    if (isSiteReference(detectedSiteName)) conf += 0.15; // recognized site name
-    if (detectedQuery.length > 2) conf += 0.05;          // non-trivial query
-    // Penalize: long messages without search verbs are likely conversational
-    const totalWordCount = lower.split(/\s+/).length;
-    if (!hasSearchVerb && totalWordCount > 15) conf -= 0.3;
-    conf = Math.max(0, Math.min(conf, 1.0));
-    return {
-      type: "site-search",
-      confidence: conf,
-      site: detectedSite,
-      siteName: detectedSiteName,
-      query: detectedQuery,
-      action: detectedAction || undefined,
-      autoPick: detectedAutoPick || undefined,
-    };
-  }
-
-  if (detectedSite && !detectedQuery) {
-    // Just "open rule34video" — open the site
-    const hasNavVerb = /^\s*(?:open|go\s*to|visit|browse|navigate)/i.test(lower);
-    return { type: "open-url", confidence: hasNavVerb ? 0.9 : 0.6, site: detectedSite, siteName: detectedSiteName, url: detectedSite };
-  }
-
-  // No site-specific intent detected — let the AI handle it
+  // Nothing matched clearly — let the AI handle it
   return { type: "none", confidence: 0 };
 }
