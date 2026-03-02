@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { config } from "@/lib/config";
+import { validateOrReject } from "@/lib/url-validator";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -10,6 +11,10 @@ export async function GET(req: NextRequest) {
   if (!url) {
     return Response.json({ error: "url parameter required" }, { status: 400 });
   }
+
+  // SSRF protection
+  const ssrfBlock = validateOrReject(url);
+  if (ssrfBlock) return ssrfBlock;
 
   const baseUrl = config.searchApiUrl;
   if (!baseUrl) {

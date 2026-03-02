@@ -151,7 +151,7 @@ export function ChatInput({
               onClick={handleSend}
               disabled={!content.trim() || disabled}
               className={cn(
-                "h-9 w-9 rounded-xl p-0 transition-all",
+                "h-9 w-9 rounded-xl p-0 send-btn",
                 content.trim() && !disabled
                   ? "bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-90"
                   : "bg-[var(--muted)] text-[var(--muted-foreground)]"

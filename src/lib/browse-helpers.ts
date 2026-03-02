@@ -6,13 +6,25 @@
 import type { Message, Conversation } from "@/types/chat";
 
 // ── Ad/tracker URL pattern (used everywhere) ──
-export const AD_LINK_PATTERN = /\b(doubleclick|googlesyndication|googleadservices|adsystem|adserver|adclick|clicktrack|tracker|pagead|pubads|syndication|taboola|outbrain|mgid|exoclick|exosrv|juicyads|trafficjunky|trafficstars|popunder|popads|clickadu|adsterra|propellerads|popcash|hilltopads|adcash|clickaine|revcontent|zergnet|disqus\.com|facebook\.com\/tr|analytics|pixel|beacon|imp\?|\/ad\/|\/ads\/|\/adx\/|banner|sponsor|spankurbate|rule34comic|adglare)\b/i;
+export const AD_LINK_PATTERN = /\b(doubleclick|googlesyndication|googleadservices|adsystem|adserver|adclick|clicktrack|tracker|pagead|pubads|syndication|taboola|outbrain|mgid|exoclick|exosrv|juicyads|trafficjunky|trafficstars|popunder|popads|clickadu|adsterra|propellerads|popcash|hilltopads|adcash|clickaine|revcontent|zergnet|disqus\.com|facebook\.com\/tr|analytics|pixel|beacon|imp\?|\/ad\/|\/ads\/|\/adx\/|banner|sponsor|spankurbate|rule34comic|adglare|adtng|afcpatrk|aftrk|nutaku\.net|adxpansion|admaven|tubecorporate|twinrdsrv|plugrush|trafficforce)\b/i;
 
-// ── JS-heavy sites that need Puppeteer browsing ──
-export const JS_HEAVY_SITES = /\b(xvideos|pornhub|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|hentaihaven|hanime|iwara|rule34video|dailymotion|vimeo|bitchute|rumble|streamable|twitch|tiktok|instagram|twitter|x\.com|facebook|reddit)\b/i;
+// ── JS-heavy site detection (generic — any site with dynamic/video content) ──
+export function isJsHeavySite(url: string): boolean {
+  // Any URL with video/watch/embed/player/stream path keywords likely needs Puppeteer
+  if (/\/(video|watch|embed|player|play|stream|clip|episode|movie|hentai|anime)s?[\d\/?#]/i.test(url)) return true;
+  // Known SPA/dynamic platforms (social media, streaming)
+  if (/\b(twitch|tiktok|instagram|twitter|x\.com|facebook|reddit|discord)\b/i.test(url)) return true;
+  return false;
+}
 
-// ── Video site URL pattern ──
-export const VIDEO_SITE_PATTERN = /\b(rule34video|pornhub|xvideos|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|hentaihaven|hanime|iwara|dailymotion|vimeo|bitchute|rumble)\b/i;
+// ── Video page URL detection (generic — any URL that looks like a video page) ──
+export function isVideoPageUrl(url: string): boolean {
+  // URL path contains video-related keywords
+  if (/\/(video|watch|embed|player|play|stream|clip|episode|movie|hentai|anime|view_video)s?[\d\/?#]/i.test(url)) return true;
+  // Query params that indicate video pages
+  if (/[?&](v|video|viewkey|watch|clip|id)=/i.test(url)) return true;
+  return false;
+}
 
 // ── Filter video-specific links from a page's link list ──
 export function filterVideoLinks(links: { url: string; text: string }[], skipUrl?: string): { url: string; text: string }[] {
@@ -118,7 +130,7 @@ export function filterPlayableVideos(videos: { url: string; type?: string }[]): 
     // Skip get_file URLs (KVS sites — need browser cookies)
     if (/\/get_file\//i.test(u)) return false;
     // Skip known ad domains
-    if (/\b(banhq|otcagpqmeoqb|eunow4u)\b/i.test(u)) return false;
+    if (/\b(banhq|otcagpqmeoqb|eunow4u|adtng|afcpatrk|aftrk|nutaku|adxpansion|admaven|tubecorporate|twinrdsrv|plugrush|trafficforce)\b/i.test(u)) return false;
     // Skip screenshot/thumbnail URLs that look like videos (e.g., preview.mp4.jpg)
     if (/\.(mp4|webm|m3u8|mpd|ogg|mov)\.(jpg|jpeg|png|gif|webp)\b/i.test(u)) return false;
     if (/videos_screenshots|preview_|thumbnail/i.test(u)) return false;
@@ -168,12 +180,4 @@ export function getYouTubeId(url: string): string | null {
   return null;
 }
 
-// ── Check if a URL is a JS-heavy site needing Puppeteer ──
-export function isJsHeavySite(url: string): boolean {
-  return JS_HEAVY_SITES.test(url);
-}
 
-// ── Check if a URL is a video site ──
-export function isVideoSite(url: string): boolean {
-  return VIDEO_SITE_PATTERN.test(url);
-}

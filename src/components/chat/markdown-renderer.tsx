@@ -65,33 +65,51 @@ function preprocessMarkdown(text: string): string {
   result = result.replace(/<\s*think[^>]*>[\s\S]*$/gi, '');
   result = result.replace(/<\s*\/\s*think\s*>/gi, '');
 
+  // ── Protect code spans from preprocessing ──
+  // Extract fenced code blocks and inline code so regexes below don't mangle them
+  const codeSlots: string[] = [];
+  const PLACEHOLDER = '\x00CODE';
+
+  // Fenced code blocks (``` ... ```)
+  result = result.replace(/```[\s\S]*?```/g, (m) => {
+    codeSlots.push(m);
+    return `${PLACEHOLDER}${codeSlots.length - 1}\x00`;
+  });
+
+  // Inline code (`...`) — non-greedy, single backtick pairs
+  result = result.replace(/`[^`\n]+`/g, (m) => {
+    codeSlots.push(m);
+    return `${PLACEHOLDER}${codeSlots.length - 1}\x00`;
+  });
+
   // Strip stray kaomoji/emoticon fragments that break markdown (e.g. "///< text")
   result = result.replace(/\/\/\/<\s*/g, '');
   result = result.replace(/;w;/g, '');
 
+  // Convert tabs to 4 spaces — tab indentation confuses markdown parsers
+  result = result.replace(/\t/g, '    ');
+
   // Convert unicode bullet points to markdown list items
   result = result.replace(/^\s*[\u2022\u2023\u25E6\u2043\u2219]\s*/gm, '- ');
 
-  // 1. Fix orphaned numbered list items inline
-  result = result.replace(/([^\n])(\s*\d+\. )/g, '$1\n\n$2');
+  // Bold "headers": **text** alone on a line needs a blank line after it
+  // so it doesn't run into the next paragraph
+  result = result.replace(/^(\*\*[^*\n]+\*\*)\n(?!\n)/gm, '$1\n\n');
 
-  // 2. Fix orphaned bullet points inline
-  result = result.replace(/([^\n*\-])(\s*[\-\*] )/g, '$1\n\n$2');
+  // 1. Ensure blank line before ## headers that aren't at document start
+  result = result.replace(/([^\n])\n(#{1,6} )/g, '$1\n\n$2');
 
-  // 3. Headers: insert \n\n before ## headers not at line start
+  // 2. Headers running into text on same line (no newline at all)
   result = result.replace(/([^\n])(#{1,6} )/g, '$1\n\n$2');
 
-  // 4. Headers running into text: detect camelCase boundary
-  result = result.replace(/(#{1,6} .+?)([a-z])([A-Z])/g, '$1$2\n\n$3');
-
-  // 5. Clean up multiple consecutive newlines
+  // 3. Clean up excessive consecutive newlines
   result = result.replace(/\n{3,}/g, '\n\n');
 
-  // 6. Fix numbered lists that got split with extra blank lines
-  result = result.replace(/(\d+\..+?)\n{2,}(\d+\.)/g, '$1\n$2');
+  // 4. Fix blockquote markers that appear mid-line (not at line start)
+  result = result.replace(/^([^\n>]+)>[^\S\n]+/gm, '$1\n\n> ');
 
-  // 7. Fix blockquote markers that appear mid-line
-  result = result.replace(/([^\n])\s*>\s+/g, '$1\n\n> ');
+  // ── Restore code spans ──
+  result = result.replace(/\x00CODE(\d+)\x00/g, (_, idx) => codeSlots[parseInt(idx, 10)]);
 
   return result;
 }
@@ -123,15 +141,15 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
           return <p className="mb-4 last:mb-0 leading-[1.75] text-[var(--foreground)]/90 text-[15px]">{children}</p>;
         },
         ul({ children }) {
-          return <ul className="mb-4 ml-5 list-disc space-y-1.5 marker:text-[var(--muted-foreground)]">{children}</ul>;
+          return <ul className="mb-4 ml-5 list-disc space-y-1 marker:text-[var(--muted-foreground)] [li_>&]:mt-1 [li_>&]:mb-0">{children}</ul>;
         },
         ol({ children }) {
           return (
-            <ol className="mb-4 ml-5 list-decimal space-y-1.5 marker:text-[var(--muted-foreground)] marker:font-medium">{children}</ol>
+            <ol className="mb-4 ml-5 list-decimal space-y-1 marker:text-[var(--muted-foreground)] marker:font-medium [li_>&]:mt-1 [li_>&]:mb-0">{children}</ol>
           );
         },
         li({ children }) {
-          return <li className="leading-[1.7] text-[var(--foreground)]/90 text-[15px] pl-1">{children}</li>;
+          return <li className="leading-[1.7] text-[var(--foreground)]/90 text-[15px] pl-1 [&>ul]:mb-1 [&>ol]:mb-1 [&>ul]:mt-1 [&>ol]:mt-1">{children}</li>;
         },
         h1({ children }) {
           return (

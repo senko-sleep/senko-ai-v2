@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { validateOrReject } from "@/lib/url-validator";
 
 export const runtime = "nodejs";
 
@@ -182,6 +183,10 @@ export async function GET(req: NextRequest) {
   if (!url) {
     return new Response("url required", { status: 400 });
   }
+
+  // SSRF protection: block private IPs, cloud metadata, non-http schemes
+  const ssrfBlock = validateOrReject(url);
+  if (ssrfBlock) return ssrfBlock;
 
   // If extra query params exist (from form submissions), append them to the target URL.
   // e.g. /api/proxy?url=https://site.com/search&key=eevee&apply=Search

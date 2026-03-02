@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { validateOrReject } from "@/lib/url-validator";
 
 export const runtime = "nodejs";
 
@@ -75,6 +76,9 @@ export async function GET(req: NextRequest) {
   if (!url) {
     return Response.json({ error: "url required" }, { status: 400 });
   }
+
+  const ssrfBlock = validateOrReject(url);
+  if (ssrfBlock) return ssrfBlock;
 
   // ── Proxy to Render search-api first ──
   const searchApiUrl = process.env.SEARCH_API_URL;

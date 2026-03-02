@@ -1,5 +1,7 @@
 const express = require("express");
-const puppeteer = require("puppeteer");
+const puppeteer = require("puppeteer-extra");
+const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+puppeteer.use(StealthPlugin());
 
 const app = express();
 const PORT = process.env.PORT || 3010;
@@ -408,7 +410,7 @@ function resolveUrl(src, baseOrigin, baseUrl) {
 // ============================================================================
 
 // Universal ad/tracker domain pattern — blocks known ad networks regardless of site
-const AD_DOMAIN_PATTERN = /\b(doubleclick|googlesyndication|googletagmanager|google-analytics|adsystem|adserver|adclick|clicktrack|exoclick|exosrv|juicyads|trafficjunky|trafficstars|popunder|popads|popcash|adsterra|propellerads|adglare|banhq|otcagpqmeoqb|eunow4u|facebook\.net|fbcdn|amazon-adsystem|outbrain|taboola|criteo|rubiconproject|pubmatic|openx|bidswitch|adsrvr|adnxs|moatads|quantserve|scorecardresearch|bluekai|demdex|krxd|serving-sys|smartadserver|smaato|yieldmo|nativo|sharethrough|hilltopads|adcash|clickaine|revcontent|zergnet)\b/i;
+const AD_DOMAIN_PATTERN = /\b(doubleclick|googlesyndication|googletagmanager|google-analytics|adsystem|adserver|adclick|clicktrack|exoclick|exosrv|juicyads|trafficjunky|trafficstars|popunder|popads|popcash|adsterra|propellerads|adglare|banhq|otcagpqmeoqb|eunow4u|facebook\.net|fbcdn|amazon-adsystem|outbrain|taboola|criteo|rubiconproject|pubmatic|openx|bidswitch|adsrvr|adnxs|moatads|quantserve|scorecardresearch|bluekai|demdex|krxd|serving-sys|smartadserver|smaato|yieldmo|nativo|sharethrough|hilltopads|adcash|clickaine|revcontent|zergnet|adtng|afcpatrk|aftrk1|aftrk\d*|nutaku\.net|adxpansion|ero-advertising|tsyndicate|clickadu|ad-maven|admaven|a-ads|coinzilla|mellowads|trafficforce|plugrush|tubecorporate|twinrdsrv|tsyndicate|blankmp4s\.pages\.dev)\b/i;
 
 // Check if a URL looks like a video resource (by extension or CDN pattern)
 function isVideoUrl(url) {
@@ -493,6 +495,63 @@ async function setAgeGateCookies(page, url) {
   } catch { }
 }
 
+// Inject JavaScript hooks BEFORE page navigation to track blob URL sources
+// Sites using MediaSource Extensions (PornHub, etc.) create blob: URLs from m3u8/mpd streams
+// This captures the actual stream/video URLs that feed into the blob
+async function injectBlobTracking(page) {
+  await page.evaluateOnNewDocument(() => {
+    window.__capturedStreamUrls = [];
+
+    // Hook XMLHttpRequest to capture m3u8/mpd/video fetches
+    const origXHROpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(method, url) {
+      try {
+        const urlStr = typeof url === 'string' ? url : String(url);
+        const lower = urlStr.toLowerCase();
+        if (/\.m3u8|\.mpd|\.mp4|\.webm|\/manifest|\/master\.|mpegurl|\/hls\/|\/dash\//i.test(lower)) {
+          const fullUrl = urlStr.startsWith('http') ? urlStr : new URL(urlStr, location.origin).href;
+          if (!window.__capturedStreamUrls.some(e => e.url === fullUrl)) {
+            window.__capturedStreamUrls.push({
+              url: fullUrl,
+              source: 'xhr',
+              type: /\.m3u8|mpegurl|\/hls\//i.test(lower) ? 'application/x-mpegURL' :
+                    /\.mpd|dash/i.test(lower) ? 'application/dash+xml' :
+                    /\.mp4/i.test(lower) ? 'video/mp4' :
+                    /\.webm/i.test(lower) ? 'video/webm' : ''
+            });
+          }
+        }
+      } catch(e) {}
+      return origXHROpen.apply(this, arguments);
+    };
+
+    // Hook fetch to capture m3u8/mpd/video fetches
+    const origFetch = window.fetch;
+    window.fetch = function(input) {
+      try {
+        const urlStr = typeof input === 'string' ? input : (input instanceof Request ? input.url : '');
+        if (urlStr) {
+          const lower = urlStr.toLowerCase();
+          if (/\.m3u8|\.mpd|\.mp4|\.webm|\/manifest|\/master\.|mpegurl|\/hls\/|\/dash\//i.test(lower)) {
+            const fullUrl = urlStr.startsWith('http') ? urlStr : new URL(urlStr, location.origin).href;
+            if (!window.__capturedStreamUrls.some(e => e.url === fullUrl)) {
+              window.__capturedStreamUrls.push({
+                url: fullUrl,
+                source: 'fetch',
+                type: /\.m3u8|mpegurl|\/hls\//i.test(lower) ? 'application/x-mpegURL' :
+                      /\.mpd|dash/i.test(lower) ? 'application/dash+xml' :
+                      /\.mp4/i.test(lower) ? 'video/mp4' :
+                      /\.webm/i.test(lower) ? 'video/webm' : ''
+              });
+            }
+          }
+        }
+      } catch(e) {}
+      return origFetch.apply(this, arguments);
+    };
+  });
+}
+
 // Setup universal network interception to catch all video URLs
 function setupVideoInterception(page, networkVideos, seenNetworkUrls) {
   page.on("request", (request) => {
@@ -512,9 +571,10 @@ function setupVideoInterception(page, networkVideos, seenNetworkUrls) {
       }
     }
 
-    // Block ads/trackers to speed up page load
-    const isAd = AD_DOMAIN_PATTERN.test(reqUrl);
-    const isHeavy = resourceType === "font" || resourceType === "stylesheet";
+    // Block ads/trackers to speed up page load — but allow Google IMA SDK
+    // (video players depend on IMA to complete pre-roll ad flow before playing actual video)
+    const isAd = AD_DOMAIN_PATTERN.test(reqUrl) && !/imasdk\.googleapis|2mdn\.net|s0\.2mdn/i.test(reqUrl);
+    const isHeavy = resourceType === "font";
     if (isAd || isHeavy) {
       request.abort();
     } else {
@@ -547,10 +607,19 @@ const universalDOMExtract = () => {
   const seen = new Set();
   const add = (url, extra = {}) => {
     if (!url || seen.has(url) || url.startsWith("blob:") || url.startsWith("data:")) return;
-    if (/\b(ad[sv]?|tracker|pixel|beacon|exoclick|trafficjunky|juicyads|adglare|popads|adsterra)\b/i.test(url)) return;
+    if (/\b(ad[sv]?|tracker|pixel|beacon|exoclick|trafficjunky|juicyads|adglare|popads|adsterra|adtng|afcpatrk|aftrk|nutaku\.net|adxpansion|clickadu|admaven|tubecorporate|twinrdsrv|plugrush|trafficforce)\b/i.test(url)) return;
     seen.add(url);
     results.push({ url, ...extra, source: extra.source || "dom" });
   };
+
+  // 0. Captured stream URLs from blob tracking hooks (injected before page load)
+  // Sites using MediaSource (blob: URLs) have their real m3u8/mp4 URLs captured here
+  try {
+    const captured = window.__capturedStreamUrls || [];
+    for (const entry of captured) {
+      if (entry.url) add(entry.url, { type: entry.type || '', source: entry.source || 'blob-tracking' });
+    }
+  } catch(e) {}
 
   // 1. <video> elements + <source> children
   document.querySelectorAll("video").forEach((v) => {
@@ -788,6 +857,8 @@ const universalDOMExtract = () => {
         /["'](https?:\/\/[^"'\s]+\.(?:mp4|webm|m3u8|mpd|flv|ogg|mov)(?:\?[^"'\s]*)?)["']/gi,
         /["'](https?:\/\/[^"'\s]*(?:cdn|stream|media|video)[^"'\s]*(?:remote_control|get_file)[^"'\s]*)["']/gi,
         /(?:video_url|videoUrl|video_file|videoFile|file_url|fileUrl|mp4_url|source_url|stream_url|hls_url|dash_url|media_url|content_url|playback_url|video_src|videoSrc)\s*[:=]\s*["'](https?:\/\/[^"'\s]+)["']/gi,
+        // quality_720p: "https://..." patterns (PornHub, etc.)
+        /["']?quality_\d+p["']?\s*[:=]\s*["'](https?:\/\/[^"'\s]+)["']/gi,
       ];
       for (const pattern of urlPatterns) {
         let match;
@@ -800,7 +871,7 @@ const universalDOMExtract = () => {
       }
 
       // flashvars object in script
-      const fvMatch = text.match(/flashvars\s*=\s*({[\s\S]*?})\s*;/);
+      const fvMatch = text.match(/flashvars\w*\s*=\s*({[\s\S]*?})\s*;/);
       if (fvMatch) {
         const fvText = fvMatch[1];
         const urlInFv = /["']?(video_url|video_alt_url\d*|quality_\d+p|video_url_hd)["']?\s*[:=]\s*["']([^"']+)["']/gi;
@@ -809,6 +880,25 @@ const universalDOMExtract = () => {
           let v = m[2].replace(/^function\/\d+\//, "");
           if (v.startsWith("http")) add(v, { source: "flashvars-script" });
         }
+      }
+
+      // mediaDefinitions array (PornHub and similar players)
+      const mdMatch = text.match(/mediaDefinitions\s*[:=]\s*(\[[\s\S]*?\])\s*[,;})\n]/);
+      if (mdMatch) {
+        try {
+          const mdText = mdMatch[1];
+          // Extract videoUrl/url values from the array
+          const mdUrlRegex = /["'](?:videoUrl|url)["']\s*:\s*["'](https?:\/\/[^"'\s]+)["']/gi;
+          let m;
+          while ((m = mdUrlRegex.exec(mdText)) !== null && results.length < 40) {
+            add(m[1], { source: 'mediaDefinitions' });
+          }
+          // Also extract quality-labeled URLs
+          const qualRegex = /["'](?:quality|format|label)["']\s*:\s*["'](\d+p?)["'][\s\S]*?["'](?:videoUrl|url)["']\s*:\s*["'](https?:\/\/[^"'\s]+)["']/gi;
+          while ((m = qualRegex.exec(mdText)) !== null && results.length < 40) {
+            add(m[2], { quality: m[1], source: 'mediaDefinitions' });
+          }
+        } catch {}
       }
     });
   } catch {}
@@ -828,7 +918,7 @@ const universalVideoLinkExtract = () => {
     const u = href.toLowerCase();
     // Skip navigation, auth, category, and ad links
     if (/\/account|\/login|\/signup|\/register|\/tags$|\/categories$|\/privacy|\/terms|\/dmca|\/contact|\/about/i.test(u)) return;
-    if (/exoclick|trafficjunky|juicyads|adglare|popads|adsterra/i.test(u)) return;
+    if (/exoclick|trafficjunky|juicyads|adglare|popads|adsterra|adtng|afcpatrk|aftrk|nutaku\.net|adxpansion|clickadu|admaven|tubecorporate|twinrdsrv|plugrush|trafficforce|hilltopads|adcash|outbrain|taboola|criteo/i.test(u)) return;
     if (u === window.location.href.toLowerCase()) return;
 
     // Score the link — higher score = more likely to be a video/content link
@@ -1820,7 +1910,7 @@ app.get("/url", async (req, res) => {
       const seenUrls = new Set();
       while ((linkMatch = linkRegex.exec(html)) !== null && links.length < 50) {
         const href = resolveUrl(linkMatch[2].trim(), origin, finalUrl);
-        if (!href || seenUrls.has(href) || href.startsWith("javascript:")) continue;
+        if (!href || seenUrls.has(href) || href.startsWith("javascript:") || AD_DOMAIN_PATTERN.test(href)) continue;
         seenUrls.add(href);
         const innerText = linkMatch[4].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
         links.push({ url: href, text: innerText || href });
@@ -1872,6 +1962,9 @@ app.get("/browse", async (req, res) => {
     await page.setUserAgent(UA);
     await page.setViewport({ width: 1920, height: 1080 });
 
+    // Inject blob tracking hooks BEFORE navigation (captures m3u8/mpd/mp4 URLs from XHR/fetch)
+    await injectBlobTracking(page);
+
     // Universal network interception — catches ALL video requests regardless of site
     const networkVideos = [];
     const seenNetworkUrls = new Set();
@@ -1891,21 +1984,32 @@ app.get("/browse", async (req, res) => {
     // Wait for dynamic content to render
     await new Promise((r) => setTimeout(r, 2000));
 
-    // Try clicking play button for video pages
+    // Try clicking play button — check both main document AND iframes
     try {
-      await page.evaluate(() => {
-        const selectors = [
-          "video", ".play-button", ".vjs-big-play-button", ".jw-icon-display",
-          "[class*='play']", "[aria-label*='play']", "[title*='play']",
-          ".fp-play", ".plyr__control--overlaid", ".video-play-button",
-          "button[class*='play']", "div[class*='play']",
-        ];
-        for (const sel of selectors) {
+      const browsPlaySels = [
+        "video", ".play-button", ".vjs-big-play-button", ".jw-icon-display",
+        "[class*='play']", "[aria-label*='play']", "[title*='play']",
+        ".fp-play", ".plyr__control--overlaid", ".video-play-button",
+        "button[class*='play']", "div[class*='play']", ".vjs-poster",
+      ];
+      await page.evaluate((sels) => {
+        for (const sel of sels) {
           const el = document.querySelector(sel);
           if (el) { el.click(); break; }
         }
-      });
-      await new Promise((r) => setTimeout(r, 2000));
+      }, browsPlaySels);
+      for (const frame of page.frames()) {
+        if (frame === page.mainFrame()) continue;
+        try {
+          await frame.evaluate((sels) => {
+            for (const sel of sels) {
+              const el = document.querySelector(sel);
+              if (el) { el.click(); break; }
+            }
+          }, browsPlaySels);
+        } catch { }
+      }
+      await new Promise((r) => setTimeout(r, 5000));
     } catch { }
 
     // Extract everything from the rendered DOM
@@ -1950,13 +2054,14 @@ app.get("/browse", async (req, res) => {
       }
       result.content = textParts.join("\n").replace(/\n{3,}/g, "\n\n").slice(0, maxLen);
 
-      // Extract ALL links from rendered DOM
+      // Extract ALL links from rendered DOM (filtering ad/tracker domains)
+      const adPattern = /\b(doubleclick|googlesyndication|adsystem|adserver|exoclick|juicyads|trafficjunky|trafficstars|popads|adsterra|adtng|afcpatrk|aftrk|nutaku\.net|adxpansion|clickadu|admaven|tubecorporate|twinrdsrv|plugrush|trafficforce|hilltopads|adcash|outbrain|taboola|criteo)\b/i;
       const seenUrls = new Set();
       document.querySelectorAll("a[href]").forEach((a) => {
         if (result.links.length >= 150) return;
         const href = a.href;
         if (!href || href.startsWith("javascript:") || href.startsWith("mailto:") || href.startsWith("tel:") || href === "#") return;
-        if (seenUrls.has(href)) return;
+        if (seenUrls.has(href) || adPattern.test(href)) return;
         seenUrls.add(href);
         const text = (a.getAttribute("title") || a.textContent || "").replace(/\s+/g, " ").trim();
         if (text.length > 0 && text.length < 300) {
@@ -2024,13 +2129,16 @@ app.get("/browse", async (req, res) => {
       favicon: `https://www.google.com/s2/favicons?domain=${(() => { try { return new URL(finalUrl).hostname; } catch { return ""; } })()}&sz=16`,
     };
 
-    console.log(`[browse] Done: ${finalUrl} — ${pageData.links.length} links, ${allVideos.length} videos, ${pageData.images.length} images`);
+    // Filter out ad/tracker links from extracted links
+    const filteredLinks = pageData.links.filter(link => !AD_DOMAIN_PATTERN.test(link.url));
+
+    console.log(`[browse] Done: ${finalUrl} — ${filteredLinks.length} links (${pageData.links.length - filteredLinks.length} ad links filtered), ${allVideos.length} videos, ${pageData.images.length} images`);
     res.json({
       url,
       finalUrl,
       meta,
       content: pageData.content,
-      links: pageData.links,
+      links: filteredLinks,
       images: pageData.images,
       videos: allVideos,
       headings: pageData.headings,
@@ -2057,6 +2165,9 @@ app.get("/video-extract", async (req, res) => {
     // Universal age-gate cookies — set for any domain
     await setAgeGateCookies(page, url);
 
+    // Inject blob tracking hooks BEFORE navigation (captures m3u8/mpd/mp4 URLs from XHR/fetch)
+    await injectBlobTracking(page);
+
     // Universal network interception — catches ALL video requests regardless of site
     const networkVideos = [];
     const seenNetworkUrls = new Set();
@@ -2070,23 +2181,35 @@ app.get("/video-extract", async (req, res) => {
     // Wait for video player to initialize
     await new Promise((r) => setTimeout(r, 3000));
 
-    // Try clicking play button if video hasn't started
+    // Try clicking play button — check both main document AND iframes (e.g. hanime omni-player)
+    const playSelectors = [
+      "video", ".play-button", ".vjs-big-play-button", ".jw-icon-display",
+      "[class*='play']", "[aria-label*='play']", "[title*='play']",
+      ".fp-play", ".plyr__control--overlaid", ".video-play-button",
+      "button[class*='play']", "div[class*='play']", ".vjs-poster",
+    ];
     try {
-      await page.evaluate(() => {
-        // Common play button selectors
-        const selectors = [
-          "video", ".play-button", ".vjs-big-play-button", ".jw-icon-display",
-          "[class*='play']", "[aria-label*='play']", "[title*='play']",
-          ".fp-play", ".plyr__control--overlaid", ".video-play-button",
-          "button[class*='play']", "div[class*='play']",
-        ];
-        for (const sel of selectors) {
+      // Click in main document first
+      await page.evaluate((sels) => {
+        for (const sel of sels) {
           const el = document.querySelector(sel);
           if (el) { el.click(); break; }
         }
-      });
-      // Wait for video to start loading after click
-      await new Promise((r) => setTimeout(r, 2000));
+      }, playSelectors);
+      // Also click inside all iframes (cross-origin iframes will throw — that's OK)
+      for (const frame of page.frames()) {
+        if (frame === page.mainFrame()) continue;
+        try {
+          await frame.evaluate((sels) => {
+            for (const sel of sels) {
+              const el = document.querySelector(sel);
+              if (el) { el.click(); break; }
+            }
+          }, playSelectors);
+        } catch { }
+      }
+      // Wait for pre-roll ad to complete and real video to start loading
+      await new Promise((r) => setTimeout(r, 8000));
     } catch { }
 
     // Universal DOM video extraction — detects all player frameworks, data attrs, iframes, scripts
@@ -2193,7 +2316,9 @@ app.get("/video-proxy", async (req, res) => {
     // CDN URLs need the original site as referer, not the CDN itself
     // boomio-cdn serves rule34video, remote_control.php URLs need the source site referer
     let referer = origin + "/";
-    if (/boomio-cdn\.com|remote_control\.php/i.test(videoUrl)) {
+    if (/streamable\.cloud/i.test(videoUrl)) {
+      referer = "https://player.hanime.tv/";
+    } else if (/boomio-cdn\.com|remote_control\.php/i.test(videoUrl)) {
       // Extract source site from acctoken or default to rule34video
       const acctoken = parsed.searchParams.get("acctoken");
       if (acctoken) {

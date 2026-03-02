@@ -1,5 +1,6 @@
 import corePrompt from "@/app/prompts/core.txt";
 import cognitionPrompt from "@/app/prompts/cognition.txt";
+import integrityPrompt from "@/app/prompts/integrity.txt";
 import actionsPrompt from "@/app/prompts/actions.txt";
 import browserPrompt from "@/app/prompts/browser.txt";
 import researchPrompt from "@/app/prompts/research.txt";
@@ -43,6 +44,9 @@ export function buildLayeredPrompt(ctx: PromptContext): string {
   // Layer 1.5: Reasoning blueprint (always included — governs how the AI thinks)
   layers.push(cognitionPrompt);
 
+  // Layer 1.75: Integrity & accuracy (always included — governs honesty and fact-checking)
+  layers.push(integrityPrompt);
+
   // Layer 2: Actions (when agent mode is on)
   if (ctx.agentMode) {
     layers.push(actionsPrompt);
@@ -65,6 +69,11 @@ export function buildLayeredPrompt(ctx: PromptContext): string {
 
   // Layer 6: Dynamic context
   const contextParts: string[] = [];
+
+  // Date awareness — prevents outdated answers (iPhone 15 vs 16, Galaxy S24 vs S25)
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  contextParts.push(`Current date: ${dateStr}. When discussing products, events, or versions, always use the most current information available. If your knowledge may be outdated, suggest searching for the latest.`);
 
   if (ctx.memoryContext) {
     contextParts.push(ctx.memoryContext);

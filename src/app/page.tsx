@@ -11,9 +11,10 @@ import { useLocation } from "@/hooks/use-location";
 import { useMemory, parseMemoryTags } from "@/hooks/use-memory";
 import type { Message, Conversation, AppSettings, BrowserInfo, LocationInfo, WebSource, SenkoTab, Activity } from "@/types/chat";
 import { buildLayeredPrompt, messageHasUrl } from "@/lib/prompt-builder";
+import { extractStatusFromContent, inferStatusFromContent } from "@/lib/status-utils";
 import { parseIntent } from "@/lib/intent-parser";
 import { streamChat } from "@/lib/stream-chat";
-import { getYouTubeId, filterPlayableVideos, deduplicateVideos, filterContentLinks, getContextUrl, AD_LINK_PATTERN, isJsHeavySite, isVideoSite } from "@/lib/browse-helpers";
+import { getYouTubeId, filterPlayableVideos, deduplicateVideos, filterContentLinks, getContextUrl, AD_LINK_PATTERN, isJsHeavySite, isVideoPageUrl } from "@/lib/browse-helpers";
 import { getTheme, applyTheme } from "@/lib/themes";
 import researchPromptText from "@/app/prompts/research.txt";
 
@@ -108,12 +109,7 @@ function createConversation(title: string): Conversation {
   };
 }
 
-// Parse [STATUS:icon:text] from AI output
-function parseStatusTag(text: string): { icon: string; text: string } | null {
-  const match = text.match(/\[STATUS:([a-z]+):([^\]]+)\]/i);
-  if (match) return { icon: match[1].toLowerCase(), text: match[2].trim() };
-  return null;
-}
+// parseStatusTag replaced by extractStatusFromContent from @/lib/status-utils
 
 // Parse and extract [Source N] citations from AI output, returning clean text + extracted sources
 function parseAIOutput(text: string): { cleanText: string; extractedSources: WebSource[] } {
@@ -816,22 +812,9 @@ export default function Home() {
       if (actions.length === 0) return;
 
       // Extract status tag before stripping
-      const statusParsed = parseStatusTag(content);
-      if (statusParsed) {
-        const iconColorMap: Record<string, string> = {
-          happy: "#34d399", sad: "#94a3b8", angry: "#ef4444", excited: "#f97316",
-          sleepy: "#a78bfa", hungry: "#fbbf24", flustered: "#fb7185", scared: "#8b5cf6",
-          chill: "#00d4ff", thinking: "#60a5fa", love: "#f472b6", gaming: "#34d399",
-          music: "#f472b6", sparkle: "#00d4ff", fire: "#f97316", crying: "#94a3b8", shocked: "#fbbf24",
-        };
-        updateConversation(convId, (conv) => ({
-          ...conv,
-          status: {
-            icon: statusParsed.icon,
-            text: statusParsed.text,
-            color: iconColorMap[statusParsed.icon] || "#a78bfa",
-          },
-        }));
+      const actionStatus = extractStatusFromContent(content);
+      if (actionStatus) {
+        updateConversation(convId, (conv) => ({ ...conv, status: actionStatus }));
       }
 
       // Strip action tags, malformed image tags, raw URLs, and filler text from displayed content
@@ -1152,8 +1135,8 @@ export default function Home() {
             console.log(`%c[BROWSE] 🚨 Fabricated URL detected — resolving real link instead`, "color: #ff4444; font-weight: bold", url);
             resolveFabricatedUrl(url, messageId);
           } else {
-            // Check if this is a video site — DON'T embed (they block iframes with X-Frame-Options)
-            const isVideoSiteUrl = /\b(rule34video|pornhub|xvideos|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|hentaihaven|hanime|iwara|dailymotion|vimeo|bitchute|rumble)\b/i.test(url);
+            // Check if this looks like a video page — DON'T embed (they block iframes with X-Frame-Options)
+            const isVideoSiteUrl = isVideoPageUrl(url);
             if (ytId) {
               console.log(`%c[BROWSE] 🎬 YouTube video detected, embedding player`, "color: #ff0000", { embedId: ytId });
               videos.push({ url, platform: "youtube", embedId: ytId });
@@ -1190,6 +1173,28 @@ export default function Home() {
         }
         if (action.type === "SEARCH") {
           let searchQuery = action.value;
+          // Guard: skip search if the user's last message was roleplay/casual (AI shouldn't search during RP)
+          const conv0 = conversations.find((c) => c.id === convId);
+          if (conv0) {
+            const lastUserMsg = conv0.messages.filter((m) => m.role === "user").pop()?.content?.trim() || "";
+            // If we can't find the user message (empty = stale state), trust the AI's decision to search
+            if (lastUserMsg.length > 0) {
+              const isRoleplay = /^\s*\*/.test(lastUserMsg) || /\*[^*]+\*/.test(lastUserMsg);
+              const hasSearchIntent = /\b(search|look\s*up|find|what\s+is|who\s+is|tell\s+me|show\s+me|explain|how\s+to|what\s+are|recommend|trending|latest|compare|deep\s*dive|surprise\s+me)\b/i.test(lastUserMsg);
+              const isCasualShort = lastUserMsg.split(/\s+/).length <= 5 && !hasSearchIntent;
+              const isCasualGreeting = /^\s*(?:haha|lol|lmao|ok|okay|yes|no|nah|yeah|yep|nope|thanks|ty|thx|hi|hey|hello|bye|gn|gm|uwu|owo|:3|xd|nice|cool|aww|ooh|hmm)\b/i.test(lastUserMsg);
+              if (isRoleplay || isCasualGreeting || (isCasualShort && !lastUserMsg.includes("?"))) {
+                console.log(`%c[SEARCH] 🚫 Skipping — user message is roleplay/casual: "${lastUserMsg}"`, "color: #ff8800; font-weight: bold");
+                continue;
+              }
+            }
+            // Guard: skip duplicate searches (same query already searched in this conversation)
+            const recentSearches = conv0.messages.filter((m) => m.searchQuery).map((m) => m.searchQuery!.toLowerCase());
+            if (recentSearches.includes(searchQuery.toLowerCase())) {
+              console.log(`%c[SEARCH] 🚫 Skipping — duplicate query: "${searchQuery}"`, "color: #ff8800; font-weight: bold");
+              continue;
+            }
+          }
           // Context enrichment: resolve vague/pronoun-heavy queries using recent conversation topic
           const pronounPattern = /\b(them|they|their|theirs|it|its|he|him|his|she|her|hers|this|that|these|those)\b/i;
           const hasPronouns = pronounPattern.test(searchQuery);
@@ -1243,8 +1248,8 @@ export default function Home() {
           console.log(`%c[BROWSE] 📋 Opening search result #${idx + 1}`, "color: #00ccff; font-weight: bold", { index: idx, totalResults: results.length, result: results[idx] });
           if (results[idx]) {
             const resultUrl = results[idx].url;
-            // For video sites, extract video inline without opening tabs
-            const isVideoSite = /\b(xvideos|pornhub|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|rule34video|rule34world)\b/i.test(resultUrl);
+            // For video pages, extract video inline without opening tabs
+            const isVideoSite = isVideoPageUrl(resultUrl);
             if (isVideoSite) {
               console.log(`%c[BROWSE] 🎬 Video site result — extracting video inline (no tabs)`, "color: #ff9900", resultUrl);
               videoUrlsToExtract.push(resultUrl);
@@ -1325,8 +1330,7 @@ export default function Home() {
               // --- AUTO VIDEO EXTRACTION ---
               // Check if the page looks like a video page (video site URL or has video-related content)
               const pageUrl = action.value.toLowerCase();
-              const isVideoSite = /\b(video|watch|view_video|clip|embed|play|rule34video|pornhub|xvideos|xhamster|redtube|tube8|spankbang|xnxx|youporn|dailymotion|vimeo|bitchute|rumble|streamable)\b/i.test(pageUrl);
-              const isVideoPage = isVideoSite || /\b(video|watch|player|clip)\b/i.test(data.meta?.title || "") || /\b(video|watch|player)\b/i.test(pageUrl);
+              const isVideoPage = isVideoPageUrl(action.value) || /\b(video|watch|player|clip)\b/i.test(data.meta?.title || "") || /\b(video|watch|player)\b/i.test(pageUrl);
               let foundVideos: { url: string; type?: string; quality?: string; poster?: string }[] = data.videos || [];
               console.log(`%c[READ_URL] 📊 Initial videos from API: ${foundVideos.length}`, "color: #88ccff", foundVideos.map((v: {url:string}) => v.url.slice(0, 100)));
 
@@ -1394,7 +1398,7 @@ export default function Home() {
                 // Skip get_file URLs (KVS sites — duplicate of CDN URL, 404s without browser cookies)
                 if (/\/get_file\//i.test(u)) return false;
                 // Skip known ad domains
-                if (/\b(banhq|otcagpqmeoqb|eunow4u)\b/i.test(u)) return false;
+                if (/\b(banhq|otcagpqmeoqb|eunow4u|adtng|afcpatrk|aftrk|nutaku|adxpansion|admaven|tubecorporate|twinrdsrv|plugrush|trafficforce)\b/i.test(u)) return false;
                 // Skip screenshot/thumbnail URLs that look like videos but aren't (e.g., preview.mp4.jpg)
                 if (/\.(mp4|webm|m3u8|mpd|ogg|mov)\.(jpg|jpeg|png|gif|webp)\b/i.test(u)) return false;
                 if (/videos_screenshots|preview_|thumbnail/i.test(u)) return false;
@@ -1527,9 +1531,9 @@ export default function Home() {
               }
 
               // --- NO VIDEO FOUND: Fall through to normal READ_URL flow ---
-              // If video page but no sources at all, open page in new tab as last resort
-              if (isVideoPage && foundVideos.length === 0) {
-                console.log(`%c[READ_URL] 🎬 Video page but couldn't extract sources — opening in new tab as fallback`, "color: #ffaa00; font-weight: bold");
+              // If video page but no playable sources (all were ads or unextractable), open in new tab
+              if (isVideoPage) {
+                console.log(`%c[READ_URL] 🎬 Video page but no playable sources (${foundVideos.length} raw, all filtered) — opening in new tab`, "color: #ffaa00; font-weight: bold");
                 try {
                   window.open(action.value, "_blank", "noopener,noreferrer");
                 } catch (e) { console.error("[READ_URL] Failed to open tab:", e); }
@@ -1537,7 +1541,7 @@ export default function Home() {
 
               // Build a context message with the page data — send MORE links for browsing
               // Filter out ad/tracking/junk links that confuse navigation
-              const adLinkPattern = /\b(doubleclick|googlesyndication|googleadservices|adsystem|adserver|adclick|clicktrack|tracker|pagead|pubads|syndication|taboola|outbrain|mgid|exoclick|exosrv|juicyads|trafficjunky|trafficstars|popunder|popads|clickadu|adsterra|propellerads|popcash|hilltopads|adcash|clickaine|revcontent|zergnet|disqus\.com|facebook\.com\/tr|analytics|pixel|beacon|imp\?|\/ad\/|\/ads\/|\/adx\/|banner|sponsor)\b/i;
+              const adLinkPattern = /\b(doubleclick|googlesyndication|googleadservices|adsystem|adserver|adclick|clicktrack|tracker|pagead|pubads|syndication|taboola|outbrain|mgid|exoclick|exosrv|juicyads|trafficjunky|trafficstars|popunder|popads|clickadu|adsterra|propellerads|popcash|hilltopads|adcash|clickaine|revcontent|zergnet|disqus\.com|facebook\.com\/tr|analytics|pixel|beacon|imp\?|\/ad\/|\/ads\/|\/adx\/|banner|sponsor|adtng|afcpatrk|aftrk|nutaku\.net|adxpansion|admaven|tubecorporate|twinrdsrv|plugrush|trafficforce)\b/i;
               const filteredLinks = (data.links || [])
                 .filter((l: { url: string; text: string }) => {
                   if (!l.url || !l.text?.trim()) return false;
@@ -1715,7 +1719,7 @@ export default function Home() {
             const filterPlayable = (vids: { url: string; type?: string }[]) => vids.filter((v) => {
               const u = v.url.toLowerCase();
               if (/\/get_file\//i.test(u)) return false;
-              if (/\b(banhq|otcagpqmeoqb|eunow4u)\b/i.test(u)) return false;
+              if (/\b(banhq|otcagpqmeoqb|eunow4u|adtng|afcpatrk|aftrk|nutaku|adxpansion|admaven|tubecorporate|twinrdsrv|plugrush|trafficforce)\b/i.test(u)) return false;
               // Skip screenshot/thumbnail URLs that look like videos but aren't (e.g., preview.mp4.jpg)
               if (/\.(mp4|webm|m3u8|mpd|ogg|mov)\.(jpg|jpeg|png|gif|webp)\b/i.test(u)) return false;
               if (/videos_screenshots|preview_|thumbnail/i.test(u)) return false;
@@ -1803,7 +1807,8 @@ export default function Home() {
                 } : m),
               }));
             } else {
-              console.log(`%c[BROWSE] 🎬 No playable videos found — page already open in new tab`, "color: #ffaa00");
+              console.log(`%c[BROWSE] 🎬 No playable videos found — opening page in new tab as fallback`, "color: #ffaa00");
+              try { window.open(videoUrl, "_blank", "noopener,noreferrer"); } catch {}
             }
           } catch (e) {
             console.error("[BROWSE] Video extraction error:", e);
@@ -2116,23 +2121,13 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
             // Clean up thinking message if it wasn't already removed
             if (!firstChunkReceived) removeThinkingMsg(convId, thinkId);
             console.log(`%c[fetchSearch] ✅ Research synthesis done, isStreaming=false`, "color: #00ff88; font-weight: bold");
-            // Extract and apply status tag from synthesis response
-            const statusFromSynth = parseStatusTag(synthContent);
-            const synthIconColorMap: Record<string, string> = {
-              happy: "#34d399", sad: "#94a3b8", angry: "#ef4444", excited: "#f97316",
-              sleepy: "#a78bfa", hungry: "#fbbf24", flustered: "#fb7185", scared: "#8b5cf6",
-              chill: "#00d4ff", thinking: "#60a5fa", love: "#f472b6", gaming: "#34d399",
-              music: "#f472b6", sparkle: "#00d4ff", fire: "#f97316", crying: "#94a3b8", shocked: "#fbbf24",
-            };
+            // Extract and apply status tag from synthesis response (with sentiment fallback)
+            const synthStatus = extractStatusFromContent(synthContent) || inferStatusFromContent(synthContent);
             // Sanitize any leaked image URLs from the final content
             // Parse AI output: extract [Source N] citations into UI pills, clean the text
             updateConversation(convId, (conv) => ({
               ...conv,
-              status: statusFromSynth ? {
-                icon: statusFromSynth.icon,
-                text: statusFromSynth.text,
-                color: synthIconColorMap[statusFromSynth.icon] || "#a78bfa",
-              } : conv.status,
+              status: synthStatus || conv.status,
               messages: conv.messages.map((m) => {
                 if (m.id !== commentId) return m;
                 let content = m.content;
@@ -2413,14 +2408,8 @@ I should cover: evolutions, competitive viability, cultural impact, and why fans
         () => {
           console.log(`%c[sendToAI] ✅ Done, setting isStreaming=false`, "color: #00ff88; font-weight: bold", { totalContentLength: totalContent.length, preview: totalContent.slice(0, 100) });
 
-          // Extract and apply status tag from AI response
-          const statusFromAI = parseStatusTag(totalContent);
-          const iconColorMap: Record<string, string> = {
-            happy: "#34d399", sad: "#94a3b8", angry: "#ef4444", excited: "#f97316",
-            sleepy: "#a78bfa", hungry: "#fbbf24", flustered: "#fb7185", scared: "#8b5cf6",
-            chill: "#00d4ff", thinking: "#60a5fa", love: "#f472b6", gaming: "#34d399",
-            music: "#f472b6", sparkle: "#00d4ff", fire: "#f97316", crying: "#94a3b8", shocked: "#fbbf24",
-          };
+          // Extract and apply status tag from AI response (with sentiment fallback)
+          const statusFromAI = extractStatusFromContent(totalContent) || inferStatusFromContent(totalContent);
 
           // Extract and save memory tags from AI response
           const memoryTags = parseMemoryTags(totalContent);
@@ -2435,11 +2424,7 @@ I should cover: evolutions, competitive viability, cultural impact, and why fans
           setConversations((prev) =>
             prev.map((c) => {
               if (c.id !== convId) return c;
-              const newStatus = statusFromAI ? {
-                icon: statusFromAI.icon,
-                text: statusFromAI.text,
-                color: iconColorMap[statusFromAI.icon] || "#a78bfa",
-              } : c.status;
+              const newStatus = statusFromAI || c.status;
               // Extract final thinking block for persistence
               const finalThinkMatch = totalContent.match(/<\s*think\s*>([\s\S]*?)<\s*\/\s*think\s*>/i);
               const finalThinkingBlock = finalThinkMatch ? finalThinkMatch[1].trim() : undefined;

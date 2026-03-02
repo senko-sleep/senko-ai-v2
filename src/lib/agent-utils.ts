@@ -5,15 +5,17 @@ const AD_DOMAINS = /spankurbate|rule34comic|exoclick|trafficjunky|juicyads|adgla
 const NAV_LINK_TEXT = /\b(login|sign|register|page|next|prev|tag|categor|sort|filter|lang|privacy|terms|dmca|contact|about|faq|help|home|menu|search|advanced)\b/i;
 const SKIP_URL_PARTS = /\/(login|register|signup|tags|categories|members)\b/i;
 
-// ── JS-heavy sites that need Puppeteer (BROWSE) instead of simple fetch ──
-const JS_HEAVY_PATTERN = /\b(xvideos|pornhub|xhamster|redtube|tube8|spankbang|xnxx|youporn|eporner|tnaflix|rule34video|twitter|x\.com|reddit|instagram|tiktok)\b/i;
+// ── JS-heavy site detection (generic — path keywords + known SPAs) ──
+const JS_HEAVY_PATTERN = /\/(video|watch|embed|player|play|stream|clip|episode|movie|hentai|anime)s?[\d\/\?#]/i;
+const JS_HEAVY_SPA = /\b(twitch|tiktok|instagram|twitter|x\.com|facebook|reddit|discord)\b/i;
 
 // ── Video URL patterns ──
 const VIDEO_URL_PATTERN = /\/(video|watch|view_video|clip)s?\b/i;
 const VIDEO_QUERY_PATTERN = /view_video|viewkey|watch\?v=/i;
 
-// ── Video site detection ──
-const VIDEO_SITE_PATTERN = /\b(video|watch|view_video|clip|embed|play|rule34video|pornhub|xvideos|xhamster|redtube|tube8|spankbang|xnxx|youporn)\b/i;
+// ── Video page detection (generic — URL path keywords, not domain names) ──
+const VIDEO_PAGE_PATH = /\/(video|watch|embed|player|play|stream|clip|episode|movie|hentai|anime|view_video)s?[\d\/\?#]/i;
+const VIDEO_PAGE_QUERY = /[?&](v|video|viewkey|watch|clip|id)=/i;
 
 export interface PageLink {
   url: string;
@@ -24,14 +26,14 @@ export interface PageLink {
  * Checks if a URL belongs to a JS-heavy site that needs Puppeteer.
  */
 export function isJsHeavySite(url: string): boolean {
-  return JS_HEAVY_PATTERN.test(url);
+  return JS_HEAVY_PATTERN.test(url) || JS_HEAVY_SPA.test(url);
 }
 
 /**
  * Checks if a URL looks like a video page.
  */
 export function isVideoUrl(url: string): boolean {
-  return VIDEO_SITE_PATTERN.test(url);
+  return VIDEO_PAGE_PATH.test(url) || VIDEO_QUERY_PATTERN.test(url) || VIDEO_PAGE_QUERY.test(url);
 }
 
 /**

@@ -14,6 +14,16 @@ const UNEMBEDDABLE_PATTERNS = [
   /facebook\.com\/.*video/i,
   /twitter\.com/i,
   /x\.com/i,
+  /github\.com/i,
+  /stackoverflow\.com/i,
+  /stackexchange\.com/i,
+  /reddit\.com/i,
+  /medium\.com/i,
+  /linkedin\.com/i,
+  /discord\.com/i,
+  /discord\.gg/i,
+  /docs\.google\.com/i,
+  /drive\.google\.com/i,
 ];
 
 function isUnembeddable(url: string): boolean {
@@ -67,7 +77,7 @@ export function WebEmbed({ embed }: WebEmbedProps) {
           setLoaded(true);
           // Don't set error -- the proxy returns a styled error page on failure
         }
-      }, 20000);
+      }, 8000);
     }
   }, [loaded]);
 
