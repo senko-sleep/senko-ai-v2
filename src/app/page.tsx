@@ -9,6 +9,7 @@ import { useBrowserInfo } from "@/hooks/use-browser-info";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useLocation } from "@/hooks/use-location";
 import { useMemory, parseMemoryTags } from "@/hooks/use-memory";
+import { useDevMemory } from "@/hooks/use-dev-memory";
 import type { Message, Conversation, AppSettings, BrowserInfo, LocationInfo, WebSource, SenkoTab, Activity } from "@/types/chat";
 import { buildLayeredPrompt, messageHasUrl } from "@/lib/prompt-builder";
 import { extractStatusFromContent, inferStatusFromContent } from "@/lib/status-utils";
@@ -358,7 +359,9 @@ export default function Home() {
   const searchResultsByConv = useRef<Record<string, { url: string; title: string }[]>>({});
   const scrapedContentByConv = useRef<Record<string, { url: string; title: string; content: string }>>({});
   const scrapingInProgress = useRef(false);
+  const devAuthPendingRef = useRef(false);
   const { addMemory, getMemoryContext } = useMemory();
+  const { isDevAuthenticated, authenticateDev, saveDevMemory, saveConversation, getDevContext } = useDevMemory();
 
   // Load from localStorage after hydration (client only)
   useEffect(() => {
@@ -2334,6 +2337,12 @@ ${(searchData.results || []).slice(0, 8).map((r: { title: string; snippet: strin
         tabs: browseIntent ? activeConv?.tabs : undefined,
       });
 
+      // Inject developer persistent memory context when authenticated
+      const devCtx = getDevContext();
+      if (devCtx) {
+        systemPrompt += devCtx;
+      }
+
       // Thinking mode: instruct the model to reason step-by-step
       const useThinking = mode === "thinking";
       if (useThinking) {
@@ -2415,6 +2424,10 @@ I should cover: evolutions, competitive viability, cultural impact, and why fans
           const memoryTags = parseMemoryTags(totalContent);
           for (const mem of memoryTags) {
             addMemory(mem.key, mem.value);
+            // Also persist to developer memory (Vercel Blob) if dev is authenticated
+            if (isDevAuthenticated) {
+              saveDevMemory(mem.key, mem.value);
+            }
           }
 
           // Strip [STATUS:...], [MEMORY:...], [ACTION:...], and <think>...</think> blocks from displayed content
@@ -2853,6 +2866,25 @@ I should cover: evolutions, competitive viability, cultural impact, and why fans
 
       if (isFirst) {
         generateTitle(activeConversationId, content);
+      }
+
+      // Developer two-step passphrase detection
+      // Step 1: "333senko" sets pending state
+      // Step 2: "434life" confirms and triggers full authentication
+      const trimmed = content.trim();
+      if (trimmed === "333senko" && !isDevAuthenticated) {
+        devAuthPendingRef.current = true;
+        console.log("%c[DEV] 🔑 Step 1 received — awaiting confirmation", "color: #ffcc00; font-weight: bold");
+      } else if (trimmed === "434life" && devAuthPendingRef.current && !isDevAuthenticated) {
+        devAuthPendingRef.current = false;
+        authenticateDev("333senko").then((ok) => {
+          if (ok) console.log("%c[DEV] 🔑 Step 2 confirmed — developer authenticated, memories loaded", "color: #00ff88; font-weight: bold");
+          else console.log("%c[DEV] ❌ Authentication failed (API error)", "color: #ff4444; font-weight: bold");
+        });
+      } else if (devAuthPendingRef.current && trimmed !== "434life") {
+        // Wrong confirmation — reset pending state
+        devAuthPendingRef.current = false;
+        console.log("%c[DEV] ❌ Wrong confirmation — auth cancelled", "color: #ff4444; font-weight: bold");
       }
 
       // Context gate: only run navigation/pagination pre-interceptors when we actually have browsing/search context.

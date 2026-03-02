@@ -2451,6 +2451,133 @@ app.options("/video-proxy", (req, res) => {
   res.status(204).end();
 });
 
+// Developer memory storage endpoint (file-based, persistent on Render.com)
+const fs = require("fs");
+const path = require("path");
+
+const DEV_PASSPHRASE = "333senko";
+const MEMORY_DIR = path.join(__dirname, "dev-memory");
+const MEMORY_FILE = path.join(MEMORY_DIR, "memories.json");
+const CONV_DIR = path.join(MEMORY_DIR, "conversations");
+
+// Ensure directories exist
+if (!fs.existsSync(MEMORY_DIR)) fs.mkdirSync(MEMORY_DIR, { recursive: true });
+if (!fs.existsSync(CONV_DIR)) fs.mkdirSync(CONV_DIR, { recursive: true });
+
+// Auth middleware
+function authDev(req, res, next) {
+  const passphrase = req.headers["x-dev-passphrase"];
+  if (passphrase !== DEV_PASSPHRASE) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  next();
+}
+
+// GET /dev-memory?type=memories|conversations&id=convId
+app.get("/dev-memory", authDev, (req, res) => {
+  const type = req.query.type || "memories";
+
+  if (type === "memories") {
+    try {
+      const data = fs.existsSync(MEMORY_FILE) ? JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8")) : [];
+      res.json({ memories: data });
+    } catch (err) {
+      console.error("[dev-memory] Read error:", err);
+      res.json({ memories: [] });
+    }
+  } else if (type === "conversations") {
+    const convId = req.query.id;
+    if (convId) {
+      const convFile = path.join(CONV_DIR, `${convId}.json`);
+      try {
+        const data = fs.existsSync(convFile) ? JSON.parse(fs.readFileSync(convFile, "utf8")) : null;
+        res.json({ conversation: data });
+      } catch (err) {
+        console.error("[dev-memory] Conv read error:", err);
+        res.json({ conversation: null });
+      }
+    } else {
+      // List all conversations
+      try {
+        const files = fs.readdirSync(CONV_DIR).filter(f => f.endsWith(".json"));
+        const conversations = files.slice(-20).map(f => {
+          try {
+            return JSON.parse(fs.readFileSync(path.join(CONV_DIR, f), "utf8"));
+          } catch { return null; }
+        }).filter(Boolean);
+        res.json({ conversations });
+      } catch (err) {
+        console.error("[dev-memory] Conv list error:", err);
+        res.json({ conversations: [] });
+      }
+    }
+  } else {
+    res.status(400).json({ error: "Invalid type" });
+  }
+});
+
+// POST /dev-memory { type: "memory"|"conversation", key, value, id, title, summary }
+app.post("/dev-memory", authDev, (req, res) => {
+  const { type, key, value, id, title, summary } = req.body;
+
+  if (type === "memory") {
+    if (!key || !value) return res.status(400).json({ error: "key and value required" });
+
+    try {
+      const memories = fs.existsSync(MEMORY_FILE) ? JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8")) : [];
+      const existing = memories.findIndex(m => m.key.toLowerCase() === key.toLowerCase());
+
+      if (existing >= 0) {
+        memories[existing] = { key, value, timestamp: Date.now() };
+      } else {
+        memories.push({ key, value, timestamp: Date.now() });
+      }
+
+      const trimmed = memories.length > 200 ? memories.slice(-200) : memories;
+      fs.writeFileSync(MEMORY_FILE, JSON.stringify(trimmed, null, 2));
+      res.json({ ok: true, count: trimmed.length });
+    } catch (err) {
+      console.error("[dev-memory] Write error:", err);
+      res.status(500).json({ error: "Write failed" });
+    }
+  } else if (type === "conversation") {
+    if (!id || !summary) return res.status(400).json({ error: "id and summary required" });
+
+    try {
+      const conv = { id, title: title || "Untitled", summary, timestamp: Date.now() };
+      const convFile = path.join(CONV_DIR, `${id}.json`);
+      fs.writeFileSync(convFile, JSON.stringify(conv, null, 2));
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("[dev-memory] Conv write error:", err);
+      res.status(500).json({ error: "Write failed" });
+    }
+  } else {
+    res.status(400).json({ error: "Invalid type" });
+  }
+});
+
+// DELETE /dev-memory?key=memoryKey
+app.delete("/dev-memory", authDev, (req, res) => {
+  const key = req.query.key;
+  if (!key) return res.status(400).json({ error: "key required" });
+
+  try {
+    const memories = fs.existsSync(MEMORY_FILE) ? JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8")) : [];
+    const filtered = memories.filter(m => m.key.toLowerCase() !== key.toLowerCase());
+
+    if (filtered.length === memories.length) {
+      return res.status(404).json({ error: "Memory not found" });
+    }
+
+    fs.writeFileSync(MEMORY_FILE, JSON.stringify(filtered, null, 2));
+    res.json({ ok: true, count: filtered.length });
+  } catch (err) {
+    console.error("[dev-memory] Delete error:", err);
+    res.status(500).json({ error: "Delete failed" });
+  }
+});
+
 // Graceful shutdown
 process.on("SIGTERM", async () => {
   if (browser) await browser.close();
