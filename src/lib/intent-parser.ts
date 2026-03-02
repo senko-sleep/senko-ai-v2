@@ -213,12 +213,18 @@ export function parseIntent(text: string): ParsedIntent {
 
   // ═══ COMPLEXITY GATE ═══
   // Messages >10 words are too complex for simple regex patterns.
-  // But if a known site is mentioned, we MUST intercept — the AI will
-  // sanitize/refuse NSFW queries. So scan for known sites first.
+  // But if a known site is mentioned WITH a site-search action verb, we intercept
+  // to prevent AI from sanitizing NSFW queries. Research questions pass through.
   if (wordCount > 10) {
+    // Only intercept if the message has site-search action verbs
+    // Research questions ("what's trending", "tell me about", "why is") should pass to AI
+    const hasSiteSearchVerb = /\b(look\s*up|search\s*(?:for)?|find|browse|go\s*to|open|visit|show\s*me|list|get\s*me)\b/i.test(lower);
+    const isResearchQuestion = /^(what|why|how|who|when|where|tell|explain|describe|summarize)\b/i.test(lower.trim());
+    
     // Scan for a known site name anywhere in the text
     const knownSiteMatch = findKnownSiteInText(lower);
-    if (knownSiteMatch) {
+    // Only intercept if: has known site + has action verb + NOT a research question
+    if (knownSiteMatch && hasSiteSearchVerb && !isResearchQuestion) {
       // Extract the search query: everything that looks like a search term
       // Strip the site name and ALL instruction/filler words to get the real query
       const queryCandidate = lower

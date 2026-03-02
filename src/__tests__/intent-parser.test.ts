@@ -39,6 +39,23 @@ describe("Complexity gate", () => {
     );
     expect(result.type).toBe("none");
   });
+
+  it("research question mentioning known site → returns none (AI handles)", () => {
+    // "What's trending on Twitter" is a research question, not a site-search command
+    const result = parseIntent(
+      "what's going viral on Twitter and Reddit right now? I want the specific posts, memes, or drama"
+    );
+    expect(result.type).toBe("none");
+  });
+
+  it("site-search command with action verb → intercepts", () => {
+    // "look up eevee on rule34video" has action verb + known site → intercept
+    const result = parseIntent(
+      "look up eevee porn on rule34 video listing ALL options on that page"
+    );
+    expect(result.type).toBe("site-search");
+    expect(result.site).toBe("https://rule34video.com");
+  });
 });
 
 // ══════════════════════════════════════════════════════════════
