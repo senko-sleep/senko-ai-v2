@@ -24,7 +24,7 @@ const ORDINALS: Record<string, number> = {
   sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10, last: -1,
 };
 
-// ── Known sites map: canonical name → real URL ──
+// ── Known sites map: canonical name → real URL (used for instant resolution + search URL patterns) ──
 const KNOWN_SITES: Record<string, string> = {
   "rule34video": "https://rule34video.com",
   "rule 34 video": "https://rule34video.com",
@@ -61,7 +61,32 @@ const KNOWN_SITES: Record<string, string> = {
   "amazon": "https://www.amazon.com",
 };
 
-// ── Site URL resolution ──
+// ── Check if a site name resolves to a known site (no validation needed) ──
+export function isKnownSite(name: string): boolean {
+  const lower = name.toLowerCase().trim();
+  const noSpaces = lower.replace(/\s+/g, "");
+  if (KNOWN_SITES[lower] || KNOWN_SITES[noSpaces]) return true;
+  for (const key of Object.keys(KNOWN_SITES)) {
+    if (noSpaces === key.replace(/\s+/g, "")) return true;
+  }
+  return false;
+}
+
+// ── Validate a candidate URL is real (async HEAD request) ──
+export async function validateSiteUrl(candidateUrl: string): Promise<{ valid: boolean; url: string }> {
+  try {
+    const res = await fetch(`/api/validate-url?url=${encodeURIComponent(candidateUrl)}`);
+    if (!res.ok) return { valid: false, url: candidateUrl };
+    const data = await res.json();
+    return { valid: !!data.valid, url: data.url || candidateUrl };
+  } catch {
+    return { valid: false, url: candidateUrl };
+  }
+}
+
+// ── Site URL resolution — freely constructs candidate URLs ──
+// For known sites: returns the exact canonical URL (trusted, no validation needed)
+// For unknown sites: constructs a candidate URL that MUST be validated before use
 function resolveSiteUrl(name: string): string {
   const lower = name.toLowerCase().trim();
   
@@ -72,8 +97,7 @@ function resolveSiteUrl(name: string): string {
   const noSpaces = lower.replace(/\s+/g, "");
   if (KNOWN_SITES[noSpaces]) return KNOWN_SITES[noSpaces];
   
-  // 3. Check if any known site key is a prefix of the input
-  //    "rule34video" matches "rule34video" but NOT "rule34videolistingalloptionson"
+  // 3. Check known site keys with spaces stripped
   for (const [key, url] of Object.entries(KNOWN_SITES)) {
     if (noSpaces === key.replace(/\s+/g, "")) return url;
   }
@@ -85,13 +109,13 @@ function resolveSiteUrl(name: string): string {
     return clean;
   }
   
-  // 5. For unknown names without extensions — only resolve if short (max 20 chars without spaces)
-  //    This prevents garbage like "rule34videolistingalloptionson" from becoming a URL
-  if (noSpaces.length <= 20) {
+  // 5. Freely construct a candidate URL for unknown sites
+  //    Short names (≤25 chars) get .com appended — caller MUST validate before using
+  if (noSpaces.length <= 25 && /^[a-z0-9]+$/i.test(noSpaces)) {
     return "https://" + noSpaces + ".com";
   }
   
-  // Too long to be a real site name — return empty to signal failure
+  // Too long or has weird characters — not a site name
   return "";
 }
 
@@ -127,37 +151,39 @@ function extractOrdinal(text: string): number {
   return 0;
 }
 
-// ── Detect if a word/phrase is a site reference ──
+// ── Detect if a word/phrase looks like a site reference ──
+// This is permissive — it detects CANDIDATES, caller validates unknown ones
 function isSiteReference(phrase: string): boolean {
   const lower = phrase.toLowerCase().trim();
   const noSpaces = lower.replace(/\s+/g, "");
   
   // Reject phrases that are too long — real site names are short
   if (noSpaces.length > 25) return false;
+  // Reject if it has non-alphanumeric chars (except dots/hyphens for domains)
+  if (!/^[a-z0-9.\-\s]+$/i.test(lower)) return false;
   
-  // Check known sites map
-  if (KNOWN_SITES[lower] || KNOWN_SITES[noSpaces]) return true;
-  for (const key of Object.keys(KNOWN_SITES)) {
-    if (noSpaces === key.replace(/\s+/g, "")) return true;
-  }
+  // Known sites — instant yes
+  if (isKnownSite(lower)) return true;
   
-  // Has a domain extension
+  // Has a domain extension (.com, .net, .org, etc.)
   if (/\.[a-z]{2,}$/i.test(lower)) return true;
   
-  // Is a known short name (must be the WHOLE phrase, not just contained)
-  if (/^(?:xvideos|pornhub|xhamster|redtube|xnxx|reddit|youtube|twitch|google|rule34video|rule34|nhentai|e621|gelbooru|danbooru|spankbang|tiktok|instagram|facebook|discord|spotify|amazon|twitter)$/i.test(noSpaces)) return true;
-  
-  // Short phrase (1-2 words) containing a site-like suffix
+  // Short phrase (1-3 words) that looks like a site name
   const wordCount = lower.split(/\s+/).length;
-  if (wordCount <= 3 && /(?:video|hub|tube|porn|xxx|rule34|hentai)$/i.test(noSpaces)) return true;
+  if (wordCount <= 3 && noSpaces.length <= 25) {
+    // Contains a site-like suffix
+    if (/(?:video|hub|tube|porn|xxx|rule34|hentai|chan|booru|wiki|forum|manga|anime)$/i.test(noSpaces)) return true;
+    // Single word that's short enough to be a domain name
+    if (wordCount === 1 && noSpaces.length >= 3 && noSpaces.length <= 20) return true;
+  }
   
   return false;
 }
 
 // ── Extract just the site name from a phrase, stopping at common stop words ──
 function extractSiteFromPhrase(raw: string): string {
-  // Stop at common sentence continuation words that aren't part of a site name
-  const stopPattern = /\b(so|because|to|for|where|while|when|since|if|but|or|as|that|which|who|with|about|into|like|just|also|too|please|cause|cuz|bc|cos|we|you|i|they|he|she|it|my|your|our|the|a|an|can|could|would|should|let|lets|ill|gonna|wanna|gotta)\b/i;
+  // Stop at common sentence continuation words AND action/instruction words that aren't part of a site name
+  const stopPattern = /\b(so|because|to|for|where|while|when|since|if|but|or|as|that|which|who|with|about|into|like|just|also|too|please|cause|cuz|bc|cos|we|you|i|they|he|she|it|my|your|our|the|a|an|can|could|would|should|let|lets|ill|gonna|wanna|gotta|listing|showing|displaying|all|every|each|click|open|play|watch|show|list|get|give|find|look|search|make|put|send|tell|pick|select|choose|on|from|at)\b/i;
   const match = raw.match(stopPattern);
   if (match && match.index !== undefined && match.index > 0) {
     raw = raw.substring(0, match.index).trim();

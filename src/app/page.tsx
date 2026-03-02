@@ -13,7 +13,7 @@ import { useDevMemory } from "@/hooks/use-dev-memory";
 import type { Message, Conversation, AppSettings, BrowserInfo, LocationInfo, WebSource, SenkoTab, Activity } from "@/types/chat";
 import { buildLayeredPrompt, messageHasUrl } from "@/lib/prompt-builder";
 import { extractStatusFromContent, inferStatusFromContent } from "@/lib/status-utils";
-import { parseIntent } from "@/lib/intent-parser";
+import { parseIntent, isKnownSite, validateSiteUrl } from "@/lib/intent-parser";
 import { streamChat } from "@/lib/stream-chat";
 import { getYouTubeId, filterPlayableVideos, deduplicateVideos, filterContentLinks, getContextUrl, AD_LINK_PATTERN, isJsHeavySite, isVideoPageUrl } from "@/lib/browse-helpers";
 import { getTheme, applyTheme } from "@/lib/themes";
@@ -2831,7 +2831,7 @@ I should cover: evolutions, competitive viability, cultural impact, and why fans
   }, [updateConversation]);
 
   const handleSendMessage = useCallback(
-    (content: string) => {
+    async (content: string) => {
       console.log(`%c[handleSend] 💬 Attempting to send`, "color: #ffcc00; font-weight: bold", {
         content: content.slice(0, 50),
         activeConversationId: activeConversationId?.slice(0, 8),
@@ -2906,9 +2906,34 @@ I should cover: evolutions, competitive viability, cultural impact, and why fans
       console.log(`%c[NLP] 🧠 Parsed intent:`, "color: #cc88ff; font-weight: bold", nlpIntent);
 
       if (nlpIntent.type === "site-search" && nlpIntent.site && nlpIntent.query && nlpIntent.confidence >= 0.8) {
-        const siteUrl = nlpIntent.site;
+        let siteUrl = nlpIntent.site;
         const searchQuery = nlpIntent.query;
         const nlpAutoPick = nlpIntent.autoPick || 0;
+        const siteName = nlpIntent.siteName || "";
+
+        // For unknown sites, validate the URL is real before executing
+        if (!isKnownSite(siteName)) {
+          console.log(`%c[NLP] 🔎 Unknown site "${siteName}" — validating ${siteUrl}...`, "color: #ffaa00; font-weight: bold");
+          try {
+            const validation = await validateSiteUrl(siteUrl);
+            if (!validation.valid) {
+              console.log(`%c[NLP] ❌ Site "${siteName}" (${siteUrl}) is not real — passing to AI`, "color: #ff6666; font-weight: bold");
+              // Fall through to AI — don't intercept
+            } else {
+              siteUrl = validation.url || siteUrl;
+              console.log(`%c[NLP] ✅ Site validated: ${siteUrl}`, "color: #66ff66; font-weight: bold");
+            }
+            if (!validation.valid) {
+              // Skip the entire site-search block — let AI handle it naturally
+              sendToAI(activeConversationId, updatedMessages);
+              return;
+            }
+          } catch (err) {
+            console.log(`%c[NLP] ⚠️ Validation failed for "${siteName}" — passing to AI`, "color: #ffaa00", err);
+            sendToAI(activeConversationId, updatedMessages);
+            return;
+          }
+        }
 
         console.log(`%c[NLP] 🔍 Site search: "${searchQuery}" on ${siteUrl}`, "color: #00ffcc; font-weight: bold");
         // Site-aware search URL construction — different sites need different formats
