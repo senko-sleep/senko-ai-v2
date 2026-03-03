@@ -2378,100 +2378,71 @@ app.get("/structured-browse", async (req, res) => {
       const descMeta = document.querySelector('meta[name="description"]') || document.querySelector('meta[property="og:description"]');
       if (descMeta) result.description = descMeta.getAttribute("content") || "";
 
-      // 3. Extract content items based on page type
-      const itemSelectors = [
-        // Video listing selectors (most specific first)
-        ".video-item", ".video-card", ".video-thumb", ".thumb-item", ".thumb",
-        ".video-block", ".video-list-item", ".video", "[class*='video-item']",
-        // Gallery/image selectors
-        ".gallery-item", ".image-item", ".photo-item", ".pic-item",
-        // Generic content selectors
-        ".item", ".card", ".result", ".entry", ".post-item",
-        // Grid items
-        ".grid-item", "[class*='grid-item']",
-      ];
-
+      // 3. Extract content items using scoring approach (same as universalVideoLinkExtract)
+      // This works reliably for rule34video, pornhub, and other video sites
       let items = [];
-      for (const selector of itemSelectors) {
-        const elements = document.querySelectorAll(selector);
-        if (elements.length >= 3) { // Found a likely content pattern
-          elements.forEach((el, idx) => {
-            if (items.length >= 50) return;
-            
-            // Find the main link
-            const link = el.querySelector("a[href]");
-            const href = link ? resolveUrl(link.href) : "";
-            if (!href || isNavUrl(href) || isAdUrl(href)) return;
-            
-            // Find title
-            let title = "";
-            const titleEl = el.querySelector("h1, h2, h3, h4, .title, .name, [class*='title'], [class*='name']");
-            if (titleEl) title = getText(titleEl);
-            if (!title && link) title = link.getAttribute("title") || getText(link);
-            if (!title) title = `Item ${idx + 1}`;
-            
-            // Find thumbnail
-            const img = el.querySelector("img");
-            const thumbnail = img ? (img.currentSrc || img.src || img.getAttribute("data-src") || "") : "";
-            
-            // Find duration (for videos)
-            const durationEl = el.querySelector(".duration, .time, [class*='duration'], [class*='time']");
-            const duration = durationEl ? getText(durationEl) : "";
-            
-            // Find views/stats
-            const viewsEl = el.querySelector(".views, .count, [class*='views'], [class*='count']");
-            const views = viewsEl ? getText(viewsEl) : "";
-            
-            // Find rating
-            const ratingEl = el.querySelector(".rating, .score, [class*='rating'], [class*='percent']");
-            const rating = ratingEl ? getText(ratingEl) : "";
-            
-            items.push({
-              index: items.length + 1,
-              title: title.slice(0, 200),
-              url: href,
-              thumbnail: thumbnail ? resolveUrl(thumbnail) : "",
-              duration,
-              views,
-              rating,
-              type: duration ? "video" : (thumbnail ? "image" : "link"),
-            });
+      const seenUrls = new Set();
+      
+      document.querySelectorAll("a[href]").forEach((a) => {
+        if (items.length >= 50) return;
+        const href = a.href;
+        if (!href || seenUrls.has(href)) return;
+        
+        // Get title from multiple sources
+        const titleAttr = a.getAttribute("title") || "";
+        const altAttr = a.getAttribute("alt") || "";
+        const innerText = (a.textContent || "").replace(/\s+/g, " ").trim();
+        // Prefer title attribute, then alt, then inner text
+        let title = titleAttr || altAttr || innerText;
+        
+        // Skip if no meaningful title
+        if (!title || title.length < 3) return;
+        
+        const u = href.toLowerCase();
+        // Skip navigation, auth, taxonomy, and ad links
+        if (isNavUrl(u)) return;
+        if (isAdUrl(u)) return;
+        if (u === location.href.toLowerCase()) return;
+        
+        // Score the link — higher score = more likely to be content
+        let score = 0;
+        
+        // URL contains video-related path segments
+        if (/\/(video|watch|view_video|clip|embed|play|movie|episode)s?\b/i.test(u)) score += 3;
+        if (/viewkey|watch\?v=|\/v\//i.test(u)) score += 3;
+        // URL has an ID/slug pattern
+        if (/\/[a-z0-9-]{10,}/i.test(u)) score += 1;
+        if (/\d{3,}/.test(u)) score += 1;
+        // Title is a reasonable length (not just "Home", "Next", etc.)
+        if (title.length > 10 && title.length < 300) score += 2;
+        // Has thumbnail inside
+        const img = a.querySelector("img");
+        if (img) score += 2;
+        // Parent has video-related class
+        if (a.closest(".thumb, .video-item, .video-card, [class*=thumb], [class*=video]")) score += 2;
+        
+        // Only include if score is high enough
+        if (score >= 3) {
+          seenUrls.add(href);
+          
+          // Get thumbnail
+          const thumbnail = img ? (img.currentSrc || img.src || img.getAttribute("data-src") || "") : "";
+          
+          // Try to find duration from nearby elements
+          const parent = a.closest(".thumb, .video-item, .video-card, [class*=thumb], [class*=video]") || a.parentElement;
+          const durationEl = parent?.querySelector(".duration, .time, [class*='duration'], [class*='time']");
+          const duration = durationEl ? getText(durationEl) : "";
+          
+          items.push({
+            index: items.length + 1,
+            title: title.slice(0, 200),
+            url: resolveUrl(href),
+            thumbnail: thumbnail ? resolveUrl(thumbnail) : "",
+            duration,
+            type: (img || duration) ? "video" : "link",
           });
-          if (items.length > 0) break; // Found items, stop looking
         }
-      }
-
-      // Fallback: extract from all links with thumbnails
-      if (items.length === 0) {
-        document.querySelectorAll("a[href]").forEach((a, idx) => {
-          if (items.length >= 50) return;
-          const href = resolveUrl(a.href);
-          if (!href || isNavUrl(href) || isAdUrl(href) || href === location.href) return;
-          
-          const img = a.querySelector("img");
-          const text = getText(a);
-          
-          // Only include links that look like content (have image or substantial text)
-          if ((img || text.length > 10) && text.length < 300) {
-            // Check if this looks like a video/content link
-            const lowerHref = href.toLowerCase();
-            const isContent = /\/(video|watch|view|clip|play|embed|post|image|photo|gallery|article)s?\b/i.test(lowerHref) ||
-                             /viewkey|watch\?v=|\/v\//i.test(lowerHref) ||
-                             /\d{3,}/.test(lowerHref) ||
-                             img;
-            
-            if (isContent) {
-              items.push({
-                index: items.length + 1,
-                title: (a.getAttribute("title") || text || `Item ${idx + 1}`).slice(0, 200),
-                url: href,
-                thumbnail: img ? resolveUrl(img.currentSrc || img.src || img.getAttribute("data-src") || "") : "",
-                type: img ? "video" : "link",
-              });
-            }
-          }
-        });
-      }
+      });
 
       result.items = items;
 
