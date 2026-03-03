@@ -3089,13 +3089,40 @@ I should cover: evolutions, competitive viability, cultural impact, and why fans
             };
 
             // ── Reusable: browse a URL and try to extract content links ──
+            // Uses structured-browse for intelligent item extraction, falls back to browse/url
             const browseAndFilter = async (url: string): Promise<{ url: string; text: string }[]> => {
               try {
+                // Try structured-browse first — returns properly parsed items with titles
+                const structuredRes = await fetch(`/api/structured-browse?url=${encodeURIComponent(url)}`);
+                if (structuredRes.ok) {
+                  const structuredData = await structuredRes.json();
+                  console.log(`%c[browseAndFilter] 📊 Structured browse: ${structuredData.items?.length || 0} items, pageType: ${structuredData.pageType}`, "color: #00ffcc", structuredData);
+                  
+                  // If structured-browse found items, use them directly
+                  if (structuredData.items && structuredData.items.length > 0) {
+                    const structuredLinks = structuredData.items.map((item: { title: string; url: string; index: number }) => ({
+                      text: item.title || `Item ${item.index}`,
+                      url: item.url,
+                    }));
+                    console.log(`%c[browseAndFilter] ✅ Using ${structuredLinks.length} structured items`, "color: #00ff88", structuredLinks.slice(0, 3));
+                    return structuredLinks;
+                  }
+                  
+                  // Fallback to links from structured-browse if no items but has links
+                  if (structuredData.links && structuredData.links.length > 0) {
+                    return filterContentLinks(structuredData.links, url);
+                  }
+                }
+                
+                // Fallback to regular browse/url
                 const r = await fetch(`${isJsHeavy ? "/api/browse" : "/api/url"}?url=${encodeURIComponent(url)}&maxContent=20000`);
                 const d = await r.json();
                 if (d.error) return [];
                 return filterContentLinks(d.links || [], url);
-              } catch { return []; }
+              } catch (e) {
+                console.error("[browseAndFilter] Error:", e);
+                return [];
+              }
             };
 
             // ── Strategy 1: Direct site search URL ──

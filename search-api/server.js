@@ -2275,6 +2275,415 @@ app.get("/video-extract", async (req, res) => {
   }
 });
 
+// GET /structured-browse?url=URL — Intelligent structured page extraction with navigation instructions
+// Returns JSON that the AI can use to understand and navigate the page
+app.get("/structured-browse", async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ error: "url required" });
+
+  let page;
+  try {
+    const b = await getBrowser();
+    page = await b.newPage();
+    await page.setUserAgent(UA);
+    await page.setViewport({ width: 1920, height: 1080 });
+
+    // Inject blob tracking hooks BEFORE navigation
+    await injectBlobTracking(page);
+
+    // Universal network interception
+    const networkVideos = [];
+    const seenNetworkUrls = new Set();
+    await page.setRequestInterception(true);
+    setupVideoInterception(page, networkVideos, seenNetworkUrls);
+
+    // Universal age-gate cookies
+    await setAgeGateCookies(page, url);
+
+    console.log(`[structured-browse] Loading ${url}`);
+    await page.goto(url, { waitUntil: "networkidle2", timeout: 20000 }).catch(() => {
+      console.log(`[structured-browse] networkidle2 timed out, continuing`);
+    });
+    const finalUrl = page.url();
+
+    // Wait for dynamic content
+    await new Promise((r) => setTimeout(r, 2000));
+
+    // Extract structured page data
+    const structuredData = await page.evaluate(() => {
+      const result = {
+        pageType: "unknown", // listing, video, article, search, gallery, homepage
+        title: document.title || "",
+        description: "",
+        
+        // Content items (videos, images, articles, etc.)
+        items: [],
+        
+        // Navigation options
+        navigation: {
+          pagination: null, // { currentPage, totalPages, nextUrl, prevUrl, pageUrls }
+          categories: [],   // [{ name, url, count? }]
+          filters: [],      // [{ name, options: [{ label, url, active }] }]
+          search: null,     // { formUrl, inputName, currentQuery }
+          sorting: [],      // [{ label, url, active }]
+          breadcrumbs: [],  // [{ text, url }]
+        },
+        
+        // Page sections for complex navigation
+        sections: [],
+        
+        // Raw content for fallback
+        textContent: "",
+      };
+
+      // Helper: extract text safely
+      const getText = (el) => el?.textContent?.replace(/\s+/g, " ").trim() || "";
+      
+      // Helper: resolve URL
+      const resolveUrl = (href) => {
+        if (!href) return "";
+        try {
+          return new URL(href, location.origin).href;
+        } catch { return href; }
+      };
+
+      // Helper: check if URL is navigation (not content)
+      const isNavUrl = (url) => /\/(login|signup|register|account|privacy|terms|dmca|contact|about|help|faq)\b/i.test(url);
+      
+      // Helper: check if URL is ad/tracker
+      const isAdUrl = (url) => /\b(doubleclick|googlesyndication|adsystem|exoclick|juicyads|trafficjunky|popads|adsterra|adtng|afcpatrk|nutaku|adxpansion|clickadu|admaven|tubecorporate|plugrush|trafficforce|hilltopads|outbrain|taboola|criteo)\b/i.test(url);
+
+      // 1. Detect page type based on URL and content
+      const urlLower = location.href.toLowerCase();
+      const hasVideoPlayer = !!document.querySelector("video, .video-player, .player-container, #player, .jw-video, .vjs-tech, [class*='player']");
+      const hasSearchResults = !!document.querySelector(".search-results, .results, [class*='search-result'], [class*='video-list'], .videos-list, .thumb-list");
+      const hasGallery = !!document.querySelector(".gallery, .image-gallery, [class*='gallery'], .thumbs, .grid");
+      const hasPagination = !!document.querySelector(".pagination, .pager, [class*='pagination'], .page-numbers, nav[aria-label*='page']");
+      
+      if (hasVideoPlayer && !hasSearchResults) {
+        result.pageType = "video";
+      } else if (/\/search|[?&]q=|[?&]query=|[?&]search=/i.test(urlLower) || hasSearchResults) {
+        result.pageType = "search";
+      } else if (hasGallery || /\/gallery|\/images|\/photos/i.test(urlLower)) {
+        result.pageType = "gallery";
+      } else if (hasPagination || /\/videos|\/browse|\/category|\/tag/i.test(urlLower)) {
+        result.pageType = "listing";
+      } else if (urlLower === location.origin + "/" || urlLower === location.origin) {
+        result.pageType = "homepage";
+      } else if (document.querySelector("article, .article, .post, .entry-content")) {
+        result.pageType = "article";
+      }
+
+      // 2. Extract meta description
+      const descMeta = document.querySelector('meta[name="description"]') || document.querySelector('meta[property="og:description"]');
+      if (descMeta) result.description = descMeta.getAttribute("content") || "";
+
+      // 3. Extract content items based on page type
+      const itemSelectors = [
+        // Video listing selectors (most specific first)
+        ".video-item", ".video-card", ".video-thumb", ".thumb-item", ".thumb",
+        ".video-block", ".video-list-item", ".video", "[class*='video-item']",
+        // Gallery/image selectors
+        ".gallery-item", ".image-item", ".photo-item", ".pic-item",
+        // Generic content selectors
+        ".item", ".card", ".result", ".entry", ".post-item",
+        // Grid items
+        ".grid-item", "[class*='grid-item']",
+      ];
+
+      let items = [];
+      for (const selector of itemSelectors) {
+        const elements = document.querySelectorAll(selector);
+        if (elements.length >= 3) { // Found a likely content pattern
+          elements.forEach((el, idx) => {
+            if (items.length >= 50) return;
+            
+            // Find the main link
+            const link = el.querySelector("a[href]");
+            const href = link ? resolveUrl(link.href) : "";
+            if (!href || isNavUrl(href) || isAdUrl(href)) return;
+            
+            // Find title
+            let title = "";
+            const titleEl = el.querySelector("h1, h2, h3, h4, .title, .name, [class*='title'], [class*='name']");
+            if (titleEl) title = getText(titleEl);
+            if (!title && link) title = link.getAttribute("title") || getText(link);
+            if (!title) title = `Item ${idx + 1}`;
+            
+            // Find thumbnail
+            const img = el.querySelector("img");
+            const thumbnail = img ? (img.currentSrc || img.src || img.getAttribute("data-src") || "") : "";
+            
+            // Find duration (for videos)
+            const durationEl = el.querySelector(".duration, .time, [class*='duration'], [class*='time']");
+            const duration = durationEl ? getText(durationEl) : "";
+            
+            // Find views/stats
+            const viewsEl = el.querySelector(".views, .count, [class*='views'], [class*='count']");
+            const views = viewsEl ? getText(viewsEl) : "";
+            
+            // Find rating
+            const ratingEl = el.querySelector(".rating, .score, [class*='rating'], [class*='percent']");
+            const rating = ratingEl ? getText(ratingEl) : "";
+            
+            items.push({
+              index: items.length + 1,
+              title: title.slice(0, 200),
+              url: href,
+              thumbnail: thumbnail ? resolveUrl(thumbnail) : "",
+              duration,
+              views,
+              rating,
+              type: duration ? "video" : (thumbnail ? "image" : "link"),
+            });
+          });
+          if (items.length > 0) break; // Found items, stop looking
+        }
+      }
+
+      // Fallback: extract from all links with thumbnails
+      if (items.length === 0) {
+        document.querySelectorAll("a[href]").forEach((a, idx) => {
+          if (items.length >= 50) return;
+          const href = resolveUrl(a.href);
+          if (!href || isNavUrl(href) || isAdUrl(href) || href === location.href) return;
+          
+          const img = a.querySelector("img");
+          const text = getText(a);
+          
+          // Only include links that look like content (have image or substantial text)
+          if ((img || text.length > 10) && text.length < 300) {
+            // Check if this looks like a video/content link
+            const lowerHref = href.toLowerCase();
+            const isContent = /\/(video|watch|view|clip|play|embed|post|image|photo|gallery|article)s?\b/i.test(lowerHref) ||
+                             /viewkey|watch\?v=|\/v\//i.test(lowerHref) ||
+                             /\d{3,}/.test(lowerHref) ||
+                             img;
+            
+            if (isContent) {
+              items.push({
+                index: items.length + 1,
+                title: (a.getAttribute("title") || text || `Item ${idx + 1}`).slice(0, 200),
+                url: href,
+                thumbnail: img ? resolveUrl(img.currentSrc || img.src || img.getAttribute("data-src") || "") : "",
+                type: img ? "video" : "link",
+              });
+            }
+          }
+        });
+      }
+
+      result.items = items;
+
+      // 4. Extract pagination
+      const paginationContainer = document.querySelector(".pagination, .pager, [class*='pagination'], .page-numbers, nav[aria-label*='page'], .pages");
+      if (paginationContainer) {
+        const pagination = { currentPage: 1, totalPages: null, nextUrl: null, prevUrl: null, pageUrls: [] };
+        
+        // Find current page
+        const currentEl = paginationContainer.querySelector(".current, .active, [aria-current='page'], .selected");
+        if (currentEl) {
+          const num = parseInt(getText(currentEl));
+          if (!isNaN(num)) pagination.currentPage = num;
+        }
+        
+        // Find next/prev links
+        const nextEl = paginationContainer.querySelector("a[rel='next'], .next a, a.next, [class*='next'] a, a[aria-label*='next']");
+        const prevEl = paginationContainer.querySelector("a[rel='prev'], .prev a, a.prev, [class*='prev'] a, a[aria-label*='prev']");
+        if (nextEl) pagination.nextUrl = resolveUrl(nextEl.href);
+        if (prevEl) pagination.prevUrl = resolveUrl(prevEl.href);
+        
+        // Find page number links
+        paginationContainer.querySelectorAll("a[href]").forEach((a) => {
+          const num = parseInt(getText(a));
+          if (!isNaN(num) && num > 0 && num < 1000) {
+            pagination.pageUrls.push({ page: num, url: resolveUrl(a.href) });
+            if (num > (pagination.totalPages || 0)) pagination.totalPages = num;
+          }
+        });
+        
+        if (pagination.nextUrl || pagination.prevUrl || pagination.pageUrls.length > 0) {
+          result.navigation.pagination = pagination;
+        }
+      }
+
+      // 5. Extract categories/tags
+      const categoryContainers = document.querySelectorAll(".categories, .tags, [class*='category'], [class*='tag-list'], nav.tags, .sidebar-tags");
+      categoryContainers.forEach((container) => {
+        container.querySelectorAll("a[href]").forEach((a) => {
+          const href = resolveUrl(a.href);
+          const text = getText(a);
+          if (text && text.length < 50 && !isAdUrl(href)) {
+            const countMatch = text.match(/\((\d+)\)/);
+            result.navigation.categories.push({
+              name: text.replace(/\(\d+\)/, "").trim(),
+              url: href,
+              count: countMatch ? parseInt(countMatch[1]) : null,
+            });
+          }
+        });
+      });
+      // Dedupe categories
+      const seenCats = new Set();
+      result.navigation.categories = result.navigation.categories.filter((c) => {
+        if (seenCats.has(c.name.toLowerCase())) return false;
+        seenCats.add(c.name.toLowerCase());
+        return true;
+      }).slice(0, 30);
+
+      // 6. Extract sorting options
+      const sortContainers = document.querySelectorAll(".sort, .sorting, [class*='sort'], .order-by, select[name*='sort'], select[name*='order']");
+      sortContainers.forEach((container) => {
+        if (container.tagName === "SELECT") {
+          container.querySelectorAll("option").forEach((opt) => {
+            result.navigation.sorting.push({
+              label: opt.textContent.trim(),
+              value: opt.value,
+              active: opt.selected,
+            });
+          });
+        } else {
+          container.querySelectorAll("a[href]").forEach((a) => {
+            result.navigation.sorting.push({
+              label: getText(a),
+              url: resolveUrl(a.href),
+              active: a.classList.contains("active") || a.classList.contains("selected"),
+            });
+          });
+        }
+      });
+
+      // 7. Extract search form
+      const searchForm = document.querySelector("form[action*='search'], form[role='search'], form.search, .search-form form, #search-form");
+      if (searchForm) {
+        const input = searchForm.querySelector("input[type='search'], input[type='text'], input[name*='q'], input[name*='search'], input[name*='query']");
+        if (input) {
+          result.navigation.search = {
+            formUrl: resolveUrl(searchForm.action || location.href),
+            inputName: input.name || "q",
+            currentQuery: input.value || "",
+            method: searchForm.method?.toUpperCase() || "GET",
+          };
+        }
+      }
+
+      // 8. Extract breadcrumbs
+      const breadcrumbContainer = document.querySelector(".breadcrumb, .breadcrumbs, [class*='breadcrumb'], nav[aria-label*='breadcrumb']");
+      if (breadcrumbContainer) {
+        breadcrumbContainer.querySelectorAll("a[href]").forEach((a) => {
+          result.navigation.breadcrumbs.push({
+            text: getText(a),
+            url: resolveUrl(a.href),
+          });
+        });
+      }
+
+      // 9. Extract page sections (for complex sites)
+      const sectionHeaders = document.querySelectorAll("h2, h3, .section-title, [class*='section-header']");
+      sectionHeaders.forEach((header) => {
+        const text = getText(header);
+        if (text && text.length > 2 && text.length < 100) {
+          // Find associated link if any
+          const link = header.querySelector("a[href]") || header.closest("a[href]");
+          result.sections.push({
+            title: text,
+            url: link ? resolveUrl(link.href) : null,
+          });
+        }
+      });
+      result.sections = result.sections.slice(0, 20);
+
+      // 10. Extract text content (truncated)
+      const mainEl = document.querySelector("main, article, [role='main'], .content, #content") || document.body;
+      const textParts = [];
+      const walker = document.createTreeWalker(mainEl, NodeFilter.SHOW_TEXT, {
+        acceptNode: (node) => {
+          const parent = node.parentElement;
+          if (!parent) return NodeFilter.FILTER_REJECT;
+          const tag = parent.tagName.toLowerCase();
+          if (["script", "style", "noscript", "svg", "iframe"].includes(tag)) return NodeFilter.FILTER_REJECT;
+          const text = node.textContent.trim();
+          if (text.length < 3) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      });
+      let node;
+      while ((node = walker.nextNode()) && textParts.join(" ").length < 3000) {
+        textParts.push(node.textContent.trim());
+      }
+      result.textContent = textParts.join(" ").replace(/\s+/g, " ").slice(0, 3000);
+
+      return result;
+    });
+
+    // Extract videos from DOM
+    const domVideos = await page.evaluate(universalDOMExtract);
+
+    const title = await page.title();
+    await page.close();
+
+    // Merge network + DOM videos
+    const allVideos = [];
+    const allSeenVids = new Set();
+    for (const v of networkVideos) {
+      if (!allSeenVids.has(v.url)) { allVideos.push(v); allSeenVids.add(v.url); }
+    }
+    for (const v of domVideos) {
+      if (!allSeenVids.has(v.url)) { allVideos.push(v); allSeenVids.add(v.url); }
+    }
+    sortVideos(allVideos);
+
+    // Build navigation instructions for the AI
+    const instructions = [];
+    
+    if (structuredData.items.length > 0) {
+      instructions.push(`Found ${structuredData.items.length} items. Say "open #N" or "play #N" to select one.`);
+    }
+    
+    if (structuredData.navigation.pagination) {
+      const p = structuredData.navigation.pagination;
+      let pageInfo = `Page ${p.currentPage}`;
+      if (p.totalPages) pageInfo += ` of ${p.totalPages}`;
+      if (p.nextUrl) pageInfo += `. Say "next page" to continue.`;
+      if (p.prevUrl) pageInfo += ` Say "previous page" to go back.`;
+      instructions.push(pageInfo);
+    }
+    
+    if (structuredData.navigation.categories.length > 0) {
+      instructions.push(`${structuredData.navigation.categories.length} categories available. Say "go to [category]" to browse.`);
+    }
+    
+    if (structuredData.navigation.search) {
+      instructions.push(`Search available. Say "search for [query]" to find content.`);
+    }
+    
+    if (structuredData.navigation.sorting.length > 0) {
+      const sortOpts = structuredData.navigation.sorting.map(s => s.label).slice(0, 5).join(", ");
+      instructions.push(`Sort by: ${sortOpts}`);
+    }
+
+    console.log(`[structured-browse] Done: ${finalUrl} — ${structuredData.pageType} page, ${structuredData.items.length} items, ${allVideos.length} videos`);
+    
+    res.json({
+      url,
+      finalUrl,
+      pageType: structuredData.pageType,
+      title: structuredData.title || title,
+      description: structuredData.description,
+      items: structuredData.items,
+      videos: allVideos,
+      navigation: structuredData.navigation,
+      sections: structuredData.sections,
+      instructions,
+      textContent: structuredData.textContent,
+    });
+  } catch (err) {
+    if (page) await page.close().catch(() => { });
+    console.error("[structured-browse] Error:", err.message);
+    res.status(500).json({ error: err.message || "Structured browse failed", url });
+  }
+});
+
 // GET /screenshot?url=URL — take a screenshot using Puppeteer
 app.get("/screenshot", async (req, res) => {
   const url = req.query.url;
