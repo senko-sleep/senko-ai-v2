@@ -3051,7 +3051,7 @@ I should cover: evolutions, competitive viability, cultural impact, and why fans
             // ── Reusable: resolve URLs to absolute, store results, auto-pick or present list ──
             const presentResults = (rawLinks: { url: string; text: string }[], embedUrl: string) => {
               console.log(`%c[NLP] 🎯 presentResults called with ${rawLinks.length} links`, "color: #00ffcc; font-weight: bold");
-              const resolvedLinks = rawLinks.slice(0, 20).map((l) => {
+              const resolvedLinks = rawLinks.slice(0, 50).map((l) => {
                 let fullUrl = l.url;
                 if (fullUrl.startsWith("/")) { try { fullUrl = new URL(siteUrl).origin + fullUrl; } catch { /* keep */ } }
                 return { text: l.text, url: fullUrl };
@@ -3074,8 +3074,9 @@ I should cover: evolutions, competitive viability, cultural impact, and why fans
                 processActions(nlpConvId, nlpInterceptId, `[ACTION:BROWSE:${picked.url}]`);
                 return; // processActions manages streaming state
               }
-              const resultList = resolvedLinks.slice(0, 10).map((l, i) => `${i + 1}. ${l.text.replace(/\[/g, "\\[").replace(/\]/g, "\\]")}`).join("\n");
-              const resultMsg = `Found ${resolvedLinks.length} results for "${searchQuery}"~\n\n${resultList}${resolvedLinks.length > 10 ? `\n\n...and ${resolvedLinks.length - 10} more` : ""}\n\nWhich one do you wanna watch? Just say the number~`;
+              // Show ALL results from the page (up to 50)
+              const resultList = resolvedLinks.map((l, i) => `${i + 1}. ${l.text.replace(/\[/g, "\\[").replace(/\]/g, "\\]")}`).join("\n");
+              const resultMsg = `Found ${resolvedLinks.length} results for "${searchQuery}"~\n\n${resultList}\n\nWhich one? Just say the number~`;
               console.log(`%c[NLP] 📝 Updating message ${nlpInterceptId} with results list`, "color: #00ffcc");
               console.log(`%c[NLP] Result message:`, "color: #88ccff", resultMsg);
               updateConversation(nlpConvId, (c) => ({

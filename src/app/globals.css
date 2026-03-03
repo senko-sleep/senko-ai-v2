@@ -55,43 +55,45 @@
 
 :root {
   --radius: 1rem;
-  --background: #000000;
-  --foreground: #ffffff;
-  --card: rgba(8, 8, 8, 0.92);
-  --card-foreground: #ffffff;
-  --popover: rgba(6, 6, 6, 0.98);
-  --popover-foreground: #ffffff;
-  --primary: #e08a30;
-  --primary-foreground: #000000;
-  --secondary: rgba(255, 255, 255, 0.06);
-  --secondary-foreground: #ffffff;
-  --muted: rgba(255, 255, 255, 0.05);
-  --muted-foreground: #999999;
-  --accent: rgba(224, 138, 48, 0.10);
-  --accent-foreground: #e08a30;
-  --destructive: #ff4444;
-  --border: rgba(255, 255, 255, 0.10);
-  --input: rgba(255, 255, 255, 0.06);
-  --ring: rgba(224, 138, 48, 0.3);
-  --chart-1: #e08a30;
-  --chart-2: #c9a06a;
-  --chart-3: #fbbf24;
-  --chart-4: #ff6b9d;
-  --chart-5: #a78bfa;
-  --sidebar: rgba(4, 4, 4, 0.92);
-  --sidebar-foreground: #ffffff;
-  --sidebar-primary: #e08a30;
-  --sidebar-primary-foreground: #000000;
-  --sidebar-accent: rgba(224, 138, 48, 0.08);
-  --sidebar-accent-foreground: #e08a30;
-  --sidebar-border: rgba(255, 255, 255, 0.07);
-  --sidebar-ring: rgba(224, 138, 48, 0.2);
-  --glass: rgba(255, 255, 255, 0.025);
-  --glass-border: rgba(255, 255, 255, 0.07);
-  --glass-hover: rgba(255, 255, 255, 0.06);
-  --senko-accent: #e08a30;
-  --senko-accent-dim: rgba(224, 138, 48, 0.15);
-  --senko-surface: rgba(6, 6, 6, 0.7);
+  /* Softer, warmer dark theme - easier on the eyes */
+  --background: #0f0f12;
+  --foreground: #e8e6e3;
+  --card: rgba(22, 22, 28, 0.92);
+  --card-foreground: #e8e6e3;
+  --popover: rgba(18, 18, 24, 0.98);
+  --popover-foreground: #e8e6e3;
+  /* Softer coral/peach accent instead of harsh orange */
+  --primary: #f0a070;
+  --primary-foreground: #1a1a1f;
+  --secondary: rgba(255, 255, 255, 0.07);
+  --secondary-foreground: #e8e6e3;
+  --muted: rgba(255, 255, 255, 0.06);
+  --muted-foreground: #a8a5a0;
+  --accent: rgba(240, 160, 112, 0.12);
+  --accent-foreground: #f0a070;
+  --destructive: #e85555;
+  --border: rgba(255, 255, 255, 0.08);
+  --input: rgba(255, 255, 255, 0.05);
+  --ring: rgba(240, 160, 112, 0.25);
+  --chart-1: #f0a070;
+  --chart-2: #d4b896;
+  --chart-3: #f5c563;
+  --chart-4: #e88a9e;
+  --chart-5: #b8a4e0;
+  --sidebar: rgba(14, 14, 18, 0.95);
+  --sidebar-foreground: #e8e6e3;
+  --sidebar-primary: #f0a070;
+  --sidebar-primary-foreground: #1a1a1f;
+  --sidebar-accent: rgba(240, 160, 112, 0.10);
+  --sidebar-accent-foreground: #f0a070;
+  --sidebar-border: rgba(255, 255, 255, 0.06);
+  --sidebar-ring: rgba(240, 160, 112, 0.18);
+  --glass: rgba(255, 255, 255, 0.03);
+  --glass-border: rgba(255, 255, 255, 0.06);
+  --glass-hover: rgba(255, 255, 255, 0.07);
+  --senko-accent: #f0a070;
+  --senko-accent-dim: rgba(240, 160, 112, 0.14);
+  --senko-surface: rgba(18, 18, 24, 0.75);
 }
 
 @layer base {
@@ -197,9 +199,9 @@
   background-size: 200% 100%;
 }
 
-/* ── Black Stained Glass System ── */
+/* ── Soft Dark Glass System ── */
 .glass-panel {
-  background: linear-gradient(160deg, rgba(12, 12, 12, 0.7) 0%, rgba(4, 4, 4, 0.85) 100%);
+  background: linear-gradient(160deg, rgba(20, 20, 26, 0.75) 0%, rgba(12, 12, 16, 0.88) 100%);
   border: 1px solid rgba(255, 255, 255, 0.07);
   backdrop-filter: blur(40px) saturate(1.4);
   -webkit-backdrop-filter: blur(40px) saturate(1.4);
@@ -217,7 +219,7 @@
 }
 
 .glass-panel-solid {
-  background: linear-gradient(160deg, rgba(8, 8, 8, 0.94) 0%, rgba(2, 2, 2, 0.98) 100%);
+  background: linear-gradient(160deg, rgba(18, 18, 24, 0.96) 0%, rgba(12, 12, 16, 0.98) 100%);
   border: 1px solid rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(48px) saturate(1.5);
   -webkit-backdrop-filter: blur(48px) saturate(1.5);
@@ -234,9 +236,9 @@
   pointer-events: none;
 }
 
-/* Stained glass message bubble */
+/* Soft glass message bubble */
 .glass-bubble {
-  background: linear-gradient(160deg, rgba(14, 14, 14, 0.88) 0%, rgba(6, 6, 6, 0.95) 100%);
+  background: linear-gradient(160deg, rgba(24, 24, 30, 0.90) 0%, rgba(16, 16, 20, 0.95) 100%);
   border: 1px solid rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(32px) saturate(1.3);
   -webkit-backdrop-filter: blur(32px) saturate(1.3);
@@ -255,8 +257,8 @@
 
 /* User message glass */
 .glass-user {
-  background: linear-gradient(160deg, rgba(224, 138, 48, 0.08) 0%, rgba(224, 138, 48, 0.03) 100%);
-  border: 1px solid rgba(224, 138, 48, 0.14);
+  background: linear-gradient(160deg, rgba(240, 160, 112, 0.10) 0%, rgba(240, 160, 112, 0.04) 100%);
+  border: 1px solid rgba(240, 160, 112, 0.16);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
 }
@@ -270,8 +272,8 @@
 }
 
 .glass-input:focus-within {
-  border-color: rgba(224, 138, 48, 0.4);
-  box-shadow: 0 0 0 2px rgba(224, 138, 48, 0.12), 0 0 20px rgba(224, 138, 48, 0.06);
+  border-color: rgba(240, 160, 112, 0.35);
+  box-shadow: 0 0 0 2px rgba(240, 160, 112, 0.10), 0 0 16px rgba(240, 160, 112, 0.05);
 }
 
 .depth-shadow {
@@ -522,7 +524,7 @@
 
 .send-btn:hover:not(:disabled) {
   transform: scale(1.05);
-  box-shadow: 0 0 12px rgba(224, 138, 48, 0.3);
+  box-shadow: 0 0 12px rgba(240, 160, 112, 0.25);
 }
 
 .send-btn:active:not(:disabled) {
