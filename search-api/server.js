@@ -2378,57 +2378,64 @@ app.get("/structured-browse", async (req, res) => {
       const descMeta = document.querySelector('meta[name="description"]') || document.querySelector('meta[property="og:description"]');
       if (descMeta) result.description = descMeta.getAttribute("content") || "";
 
-      // 3. Extract content items using scoring approach (same as universalVideoLinkExtract)
-      // This works reliably for rule34video, pornhub, and other video sites
+      // 3. Extract content items — strict filtering to only get actual content links
       let items = [];
       const seenUrls = new Set();
+      const currentHost = location.hostname.replace(/^www\./, "");
       
       document.querySelectorAll("a[href]").forEach((a) => {
         if (items.length >= 50) return;
         const href = a.href;
-        if (!href || seenUrls.has(href)) return;
+        if (!href || !href.startsWith("http") || seenUrls.has(href)) return;
+        
+        // MUST be same domain — this kills all ad links immediately
+        try {
+          const linkHost = new URL(href).hostname.replace(/^www\./, "");
+          if (linkHost !== currentHost) return;
+        } catch { return; }
+        
+        const u = href.toLowerCase();
+        
+        // Skip current page
+        if (u === location.href.toLowerCase()) return;
+        
+        // Skip taxonomy pages (tags, categories, models, channels, artists, playlists)
+        if (/\/(tags|categories|models|channels|artists|playlists|members|users|top-model)\b/i.test(u)) return;
+        // Skip nav/utility pages
+        if (/\/(login|signup|register|account|privacy|terms|dmca|contact|about|help|faq|search|upload|submit)\b/i.test(u)) return;
+        // Skip if URL is just the homepage
+        try { if (new URL(href).pathname === "/" || new URL(href).pathname === "") return; } catch {}
         
         // Get title from multiple sources
         const titleAttr = a.getAttribute("title") || "";
-        const altAttr = a.getAttribute("alt") || "";
         const innerText = (a.textContent || "").replace(/\s+/g, " ").trim();
-        // Prefer title attribute, then alt, then inner text
-        let title = titleAttr || altAttr || innerText;
-        
-        // Skip if no meaningful title
+        let title = titleAttr || innerText;
         if (!title || title.length < 3) return;
         
-        const u = href.toLowerCase();
-        // Skip navigation, auth, taxonomy, and ad links
-        if (isNavUrl(u)) return;
-        if (isAdUrl(u)) return;
-        if (u === location.href.toLowerCase()) return;
-        
-        // Score the link — higher score = more likely to be content
+        // Score the link
         let score = 0;
         
-        // URL contains video-related path segments
-        if (/\/(video|watch|view_video|clip|embed|play|movie|episode)s?\b/i.test(u)) score += 3;
+        // URL contains video/content path segments (strong signal)
+        if (/\/(video|watch|view_video|clip|play|movie|episode)s?\/\d/i.test(u)) score += 5;
+        if (/\/(video|watch|view_video|clip|play|movie|episode)s?\b/i.test(u)) score += 3;
         if (/viewkey|watch\?v=|\/v\//i.test(u)) score += 3;
-        // URL has an ID/slug pattern
-        if (/\/[a-z0-9-]{10,}/i.test(u)) score += 1;
-        if (/\d{3,}/.test(u)) score += 1;
-        // Title is a reasonable length (not just "Home", "Next", etc.)
-        if (title.length > 10 && title.length < 300) score += 2;
-        // Has thumbnail inside
+        if (/\/(post|image|photo|gallery|article)s?\/\d/i.test(u)) score += 3;
+        // Numeric ID in URL (very common for content pages)
+        if (/\/\d{4,}\//.test(u)) score += 2;
+        // Long slug (video titles become slugs)
+        if (/\/[a-z0-9-]{20,}/i.test(u)) score += 1;
+        // Title is a real title (not just "Home", "Next", numbers)
+        if (title.length > 15 && title.length < 250 && !/^\d+$/.test(title)) score += 1;
+        // Has thumbnail image
         const img = a.querySelector("img");
         if (img) score += 2;
-        // Parent has video-related class
+        // Parent element has video-related class
         if (a.closest(".thumb, .video-item, .video-card, [class*=thumb], [class*=video]")) score += 2;
         
-        // Only include if score is high enough
-        if (score >= 3) {
+        // Must score at least 4 to be included
+        if (score >= 4) {
           seenUrls.add(href);
-          
-          // Get thumbnail
           const thumbnail = img ? (img.currentSrc || img.src || img.getAttribute("data-src") || "") : "";
-          
-          // Try to find duration from nearby elements
           const parent = a.closest(".thumb, .video-item, .video-card, [class*=thumb], [class*=video]") || a.parentElement;
           const durationEl = parent?.querySelector(".duration, .time, [class*='duration'], [class*='time']");
           const duration = durationEl ? getText(durationEl) : "";
@@ -2436,7 +2443,7 @@ app.get("/structured-browse", async (req, res) => {
           items.push({
             index: items.length + 1,
             title: title.slice(0, 200),
-            url: resolveUrl(href),
+            url: href,
             thumbnail: thumbnail ? resolveUrl(thumbnail) : "",
             duration,
             type: (img || duration) ? "video" : "link",
