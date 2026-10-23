@@ -273,13 +273,13 @@ async function fetchLiveModels(c: CompatConfig, key: string, ttl: number): Promi
       });
       if (!r.ok) return [];
       const j = (await r.json()) as {
-        data?: { id: string; active?: boolean; architecture?: { input_modalities?: string[] } }[];
+        data?: { id: string; active?: boolean; input_modalities?: string[]; architecture?: { input_modalities?: string[] } }[];
       };
       return (j.data || [])
         .filter((m) => m.active !== false)
         .map((m) => ({
           id: m.id.replace(/^models\//, ""),
-          vision: !!m.architecture?.input_modalities?.includes("image"),
+          vision: !!(m.architecture?.input_modalities ?? m.input_modalities)?.includes("image"),
         }));
     } catch {
       return [];
@@ -609,6 +609,24 @@ const PROVIDERS: Provider[] = [
     maxModels: 3,
     missingDetail: "Add GEMINI_API_KEY (free at aistudio.google.com/apikey)",
     budget: () => ({ input: num("GEMINI_TOKEN_BUDGET", 60_000), output: 4096 }),
+  }),
+  // Paid, but cheap and without hard per-minute caps: what keeps the agent fast when the
+  // free tiers are used up. DeepSeek-V4.1-Flash also reads screenshots.
+  compatProvider({
+    id: "deepseek",
+    label: "DeepSeek",
+    baseUrl: () => "https://api.deepseek.com",
+    key: () => env("DEEPSEEK_API_KEY"),
+    envModel: () => (env("DEEPSEEK_MODEL") === "deepseek-chat" ? "" : env("DEEPSEEK_MODEL")),
+    envVisionModel: () => env("DEEPSEEK_VISION_MODEL"),
+    preferred: ["deepseek-flash", "deepseek-v4-pro"],
+    preferredVision: ["deepseek-flash"],
+    fastPreferred: ["deepseek-flash"],
+    isVision: (m) => m.vision,
+    extras: () => ({ reasoning_effort: "low" }),
+    maxModels: 2,
+    missingDetail: "Add DEEPSEEK_API_KEY (platform.deepseek.com, pay as you go)",
+    budget: () => ({ input: num("DEEPSEEK_TOKEN_BUDGET", 60_000), output: 4096 }),
   }),
   compatProvider({
     id: "groq",
