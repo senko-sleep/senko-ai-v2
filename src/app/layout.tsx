@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Bricolage_Grotesque, Geist, Geist_Mono, Inter } from "next/font/google";
 import "./globals.css";
+import "./senko.css";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -11,6 +12,13 @@ const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
 });
+
+// Senko UI: Inter for reading, Bricolage Grotesque for display headings.
+const skSans = Inter({ variable: "--font-sk-sans", subsets: ["latin"], display: "swap" });
+const skDisplay = Bricolage_Grotesque({ variable: "--font-sk-display", subsets: ["latin"], weight: ["500", "600", "700"], display: "swap" });
+
+// Apply the saved theme before first paint, so there's no flash of the wrong one.
+const THEME_SCRIPT = `try{var t=localStorage.getItem("senko.theme");document.documentElement.dataset.theme=(t==="light"||t==="system")?t:"dark"}catch(e){}`;
 
 export const metadata: Metadata = {
   title: "Senko AI",
@@ -39,7 +47,7 @@ export const metadata: Metadata = {
     images: ["/og-image.svg"],
   },
   icons: {
-    icon: "/favicon.ico",
+    icon: [{ url: "/senko-fox.png", type: "image/png" }, { url: "/favicon.ico" }],
   },
 };
 
@@ -49,15 +57,16 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
         <meta name="theme-color" content="#000000" />
+        <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
       </head>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased overflow-hidden`}
+        className={`${geistSans.variable} ${geistMono.variable} ${skSans.variable} ${skDisplay.variable} antialiased overflow-hidden`}
       >
         {children}
       </body>

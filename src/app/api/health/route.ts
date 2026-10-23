@@ -1,12 +1,6 @@
-import { config } from "@/lib/config";
-
 export const runtime = "nodejs";
 
+// Used by the host's health check. Public (skips the password gate), so it reveals nothing.
 export async function GET() {
-  const key = config.groqApiKey;
-  return Response.json({
-    status: "ok",
-    groqKeySet: !!key,
-    groqKeyLength: key.length,
-  });
+  return Response.json({ status: "ok" });
 }

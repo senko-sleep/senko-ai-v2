@@ -1,0 +1,14 @@
+node_modules
+.next
+.git
+.vercel
+.env*
+!.env.example
+*.tsbuildinfo
+search-api
+plans
+*.html
+probe-*.js
+test-*.js
+remove-tabs.ps1
+.data

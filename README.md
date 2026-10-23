@@ -1,121 +1,78 @@
-# Senko AI v2
+# Senko: personal AI assistant
 
-A cute, expressive AI assistant that can actually *do things* -- open websites, search the web, read pages, and tell you what it found. Built with Next.js, Groq, and a whole lot of personality.
+Chat with an AI, open sites with plain-English commands, and hand multi-step browsing jobs to an **agent** you can watch live in a real browser.
 
-## Features
+- **Chat mode**: normal conversation. Simple browser commands ("Open YouTube in a new tab and search MrBeast", "play Spy x Family on Crunchyroll") open a new tab instantly.
+- **Agent mode**: the assistant plans the task, drives a headless browser step by step, streams the screen to you, and logs each step. Press **Stop** at any time. It only uses legal, official sources.
+- **Any AI backend**: a local model through Ollama (free, no usage caps) or a cloud key (Groq has a free tier). The model menu in the header switches between them.
+- The previous interface is still available at **`/classic`**.
 
-### Personality
-- Cute and expressive -- says "owo", "ooh!", "me eepy", has genuine curiosity
-- Talks like a real person, not a robot
-- Stays in character across searches, summaries, and actions
+## Run it on your PC
 
-### Browser Actions
-- **Open URLs** -- "open youtube" actually opens YouTube
-- **Web Search** -- "look up how to bake a cake" searches and shows results with source pills
-- **Site-Specific Search** -- "go to youtube and search for cat videos" opens YouTube search directly
-- **Google Images** -- "google images of anya" opens Google Images
-- **Open Results** -- "open the first result" clicks the Nth search result
-- **Sequential Commands** -- "search for X and open the first result" chains multiple actions
-
-### Page Reading
-- Automatically scrapes and summarizes pages when opened
-- Shows source pill with favicon for the page it read
-- Ghost thinking messages show the process: *searching...*, *reading site...*, *summarizing...*
-
-### Chat UI
-- Clean, no-glow message bubbles with subtle borders
-- Content-aware sizing -- plain text is compact, rich markdown gets more room
-- Image grid display (single or 2-column)
-- Source pills with favicons
-- Markdown rendering with code blocks, tables, lists, headings
-- Inline edit for user messages
-- Copy and regenerate on hover
-
-### Technical
-- Streaming responses via SSE (~500 tok/s on Groq)
-- Stop and continue generation
-- Token/context counter
-- Map embeds via Leaflet
-- Groq primary, Ollama local fallback
-- Single unified API route
-
-## Tech Stack
-
-- **Framework** -- Next.js 16 (App Router)
-- **Language** -- TypeScript
-- **Styling** -- TailwindCSS v4
-- **Components** -- shadcn/ui, Lucide icons
-- **AI** -- Groq cloud API (primary), Ollama (fallback)
-- **Markdown** -- react-markdown + remark-gfm
-- **Maps** -- Leaflet + react-leaflet
-
-## Quick Start
+Requirements: Node.js 20+, plus [Ollama](https://ollama.com) if you want the local model.
 
 ```bash
-# Install
 npm install
-
-# Add your Groq API key
-cp .env.local.example .env.local
-# Edit .env.local and add your GROQ_API_KEY
-
-# Run
-npm run dev
+npx playwright install chromium   # optional: the agent also works with your installed Edge/Chrome
+ollama pull qwen3:4b-instruct     # local model (about 2.5 GB)
+cp .env.example .env.local        # then fill in any keys you have
+npm run dev:next                  # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000)
+`npm run dev` also starts the old search API that `/classic` uses.
 
-## Environment Variables
+### Which model?
 
-Create a `.env.local` file:
+| Option | Cost | Limits | Notes |
+| --- | --- | --- | --- |
+| Ollama, `qwen3:4b-instruct` | Free | None | Runs on your PC. Fine for chat; slow on CPU-only machines and weaker at Agent mode. Bigger models (e.g. `qwen3:8b`) need more RAM. |
+| Groq (`GROQ_API_KEY`) | Free tier | Tokens per minute and per day | Fast and strong. Best choice for Agent mode on a hosted site. The app waits and retries automatically when it hits a short rate limit. |
+| OpenRouter / DeepSeek / any OpenAI-compatible API | Pay as you go | Your budget | Set the matching key in `.env.local`. |
 
-```env
-# Primary - Groq cloud inference (instant speed)
-GROQ_API_KEY=gsk_your_key_here
-GROQ_MODEL=llama-3.3-70b-versatile
+With `LLM_PROVIDER=auto` (default) the app tries Ollama first, then each cloud key you've set. It looks up each provider's current model list, so retired model names don't break chat.
 
-# Fallback - Local Ollama
-OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=mistral
+## Host it online (works from any device)
+
+The repo contains a `Dockerfile` (Next.js + Playwright Chromium in one container), a `render.yaml`, and a `railway.json`.
+
+1. Push this repo to GitHub.
+2. Pick a host:
+   - **Railway** (recommended, about $5/month, enough RAM for the browser): New Project → Deploy from GitHub repo. It detects the Dockerfile automatically.
+   - **Render**: New → Blueprint → choose the repo. The free plan (512 MB, sleeps after 15 minutes idle) is enough for chat; Agent mode's browser may run out of memory there, in which case switch the service to a paid plan with 2 GB.
+3. Set these environment variables on the host:
+   - `APP_PASSWORD`: **always set this.** The site then asks for it (any username), so strangers can't use your keys or your agent.
+   - `GROQ_API_KEY`: free at https://console.groq.com/keys. A hosted server can't run Ollama, so it needs a cloud key.
+   - Optional: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, or `OLLAMA_URL` pointing to an Ollama server that is reachable from the internet.
+4. Open the URL the host gives you on any device.
+
+## How it works
+
+```
+Browser UI ──/api/chat────► LLM layer (src/lib/llm) ──► Ollama | Groq | OpenRouter | ...
+           ──/api/agent───► Agent loop (src/lib/agent) ──► Playwright Chromium
+                              ▲  plan → observe page → choose 1 action → act → repeat
+                              └─ streams screenshots + steps back as server-sent events
+           ──/api/agent/stop  aborts the run
 ```
 
-## API Routes
+| Path | What it is |
+| --- | --- |
+| `src/components/assistant/` | New UI: chat, mode toggle, live browser panel |
+| `src/lib/browser-commands.ts` | Instant parser for "open X and search Y" style commands |
+| `src/lib/llm/index.ts` | Provider selection, streaming, retries |
+| `src/lib/agent/runner.ts` | Agent loop and prompts |
+| `src/lib/agent/safety.ts` | Blocks known piracy/torrent sites and private network addresses |
+| `src/proxy.ts` | Optional password gate (`APP_PASSWORD`) |
+| `src/app/classic/` | The previous interface |
 
-| Route | Method | Description |
-|-------|--------|-------------|
-| `/api/chat` | POST | Main AI chat with streaming SSE |
-| `/api/search` | GET | Web search via DuckDuckGo |
-| `/api/scrape` | GET | Page content extraction |
-| `/api/health` | GET | Health check |
+## Known limits
 
-## Project Structure
+- Some video sites use DRM, which headless browsers can't play. The agent gets to the right episode page and gives you an **Open on my device** button to watch there.
+- Sites can change their layout or show bot checks; the agent reports what blocked it instead of guessing.
+- Agent mode needs a capable model. Small local models often lose track on complex pages.
 
+## Tests
+
+```bash
+npm test
 ```
-src/
-  app/
-    page.tsx              # Main chat page + action system
-    api/
-      chat/route.ts       # Groq/Ollama streaming API
-      search/route.ts     # DuckDuckGo search
-      scrape/route.ts     # Page scraper
-  components/
-    chat/
-      chat-area.tsx       # Message list + controls
-      chat-input.tsx      # Input box
-      chat-message.tsx    # Message bubbles + thinking
-      markdown-renderer.tsx
-      map-embed.tsx
-    sidebar/
-      sidebar.tsx
-      history-panel.tsx
-      settings-panel.tsx
-  hooks/
-    use-browser-info.ts   # Device detection
-    use-location.ts       # Geolocation
-  types/
-    chat.ts               # Message, WebSource, MapEmbed types
-```
-
-## License
-
-MIT

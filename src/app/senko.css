@@ -1,0 +1,323 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Senko — clean modern design system (main assistant page).
+   Everything is scoped to .sk so the /classic page keeps its own styles.
+   Theme: <html data-theme="light|dark">, or follows the system when unset.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.sk {
+  /* sleek obsidian dark (default) */
+  --sk-bg: #0e0e11;
+  --sk-bg-2: #131317;
+  --sk-panel: #121216;
+  --sk-glass: rgba(22, 22, 27, 0.82);
+  --sk-glass-strong: rgba(24, 24, 30, 0.94);
+  --sk-glass-border: rgba(255, 255, 255, 0.075);
+  --sk-glass-highlight: rgba(255, 255, 255, 0.04);
+  --sk-solid: #17171c;
+  --sk-raised: #1f1f26;
+  --sk-hover: rgba(255, 255, 255, 0.05);
+  --sk-line: rgba(255, 255, 255, 0.07);
+  --sk-text: #f3f3f6;
+  --sk-muted: #9ca0ab;
+  --sk-faint: #686c77;
+  --sk-accent: #f97316;
+  --sk-accent-2: #fb923c;
+  --sk-accent-ink: #fb923c;          /* accent used as text */
+  --sk-on-accent: #ffffff;
+  --sk-accent-soft: rgba(249, 115, 22, 0.12);
+  --sk-accent-line: rgba(249, 115, 22, 0.32);
+  --sk-user: #1e1e25;
+  --sk-user-border: rgba(255, 255, 255, 0.075);
+  --sk-danger: #f87171;
+  --sk-danger-soft: rgba(248, 113, 113, 0.12);
+  --sk-ok: #4ade80;
+  --sk-code-bg: #0a0a0d;
+  --sk-shadow: 0 12px 32px -12px rgba(0, 0, 0, 0.5), 0 2px 6px -2px rgba(0, 0, 0, 0.3);
+  --sk-glow-a: rgba(249, 115, 22, 0.04);
+  --sk-glow-b: rgba(251, 146, 60, 0.025);
+  --sk-focus: 0 0 0 2px var(--sk-bg), 0 0 0 4px var(--sk-accent);
+  color-scheme: dark;
+}
+
+/* clean daylight */
+:root[data-theme="light"] .sk {
+  --sk-bg: #ffffff;
+  --sk-bg-2: #f8f8fa;
+  --sk-panel: #f6f6f8;
+  --sk-glass: rgba(255, 255, 255, 0.86);
+  --sk-glass-strong: rgba(255, 255, 255, 0.96);
+  --sk-glass-border: rgba(0, 0, 0, 0.08);
+  --sk-glass-highlight: rgba(255, 255, 255, 0.9);
+  --sk-solid: #ffffff;
+  --sk-raised: #f1f1f4;
+  --sk-hover: rgba(0, 0, 0, 0.045);
+  --sk-line: rgba(0, 0, 0, 0.075);
+  --sk-text: #141417;
+  --sk-muted: #5a5e69;
+  --sk-faint: #8c909c;
+  --sk-accent: #ea580c;
+  --sk-accent-2: #f97316;
+  --sk-accent-ink: #ea580c;
+  --sk-on-accent: #ffffff;
+  --sk-accent-soft: rgba(234, 88, 12, 0.09);
+  --sk-accent-line: rgba(234, 88, 12, 0.3);
+  --sk-user: #f3f3f6;
+  --sk-user-border: rgba(0, 0, 0, 0.06);
+  --sk-danger: #dc2626;
+  --sk-danger-soft: rgba(220, 38, 38, 0.08);
+  --sk-ok: #16a34a;
+  --sk-code-bg: #16161a;
+  --sk-shadow: 0 12px 32px -12px rgba(0, 0, 0, 0.08), 0 2px 6px -2px rgba(0, 0, 0, 0.04);
+  --sk-glow-a: rgba(249, 115, 22, 0.04);
+  --sk-glow-b: rgba(251, 146, 60, 0.03);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .sk {
+    --sk-bg: #ffffff;
+    --sk-bg-2: #f8f8fa;
+    --sk-panel: #f6f6f8;
+    --sk-glass: rgba(255, 255, 255, 0.86);
+    --sk-glass-strong: rgba(255, 255, 255, 0.96);
+    --sk-glass-border: rgba(0, 0, 0, 0.08);
+    --sk-glass-highlight: rgba(255, 255, 255, 0.9);
+    --sk-solid: #ffffff;
+    --sk-raised: #f1f1f4;
+    --sk-hover: rgba(0, 0, 0, 0.045);
+    --sk-line: rgba(0, 0, 0, 0.075);
+    --sk-text: #141417;
+    --sk-muted: #5a5e69;
+    --sk-faint: #8c909c;
+    --sk-accent: #ea580c;
+    --sk-accent-2: #f97316;
+    --sk-accent-ink: #ea580c;
+    --sk-on-accent: #ffffff;
+    --sk-accent-soft: rgba(234, 88, 12, 0.09);
+    --sk-accent-line: rgba(234, 88, 12, 0.3);
+    --sk-user: #f3f3f6;
+    --sk-user-border: rgba(0, 0, 0, 0.06);
+    --sk-danger: #dc2626;
+    --sk-danger-soft: rgba(220, 38, 38, 0.08);
+    --sk-ok: #16a34a;
+    --sk-code-bg: #16161a;
+    --sk-shadow: 0 12px 32px -12px rgba(0, 0, 0, 0.08), 0 2px 6px -2px rgba(0, 0, 0, 0.04);
+    --sk-glow-a: rgba(249, 115, 22, 0.04);
+    --sk-glow-b: rgba(251, 146, 60, 0.03);
+    color-scheme: light;
+  }
+}
+
+.sk {
+  position: relative;
+  isolation: isolate;
+  background: var(--sk-bg);
+  color: var(--sk-text);
+  font-family: var(--font-sk-sans), var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+}
+.sk::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(50vmax 35vmax at 85% -15%, var(--sk-glow-a), transparent 65%),
+    radial-gradient(40vmax 35vmax at -10% 110%, var(--sk-glow-b), transparent 65%);
+}
+.sk ::selection { background: var(--sk-accent-soft); color: var(--sk-text); }
+.sk-display { font-family: var(--font-sk-display), var(--font-sk-sans), ui-sans-serif, system-ui, sans-serif; letter-spacing: -0.02em; }
+
+/* Components live in Tailwind's "components" layer so utility classes can still override them. */
+@layer components {
+/* ── Surfaces ─────────────────────────────────────────────────────────────── */
+.sk-glass {
+  background: var(--sk-glass);
+  border: 1px solid var(--sk-glass-border);
+  box-shadow: inset 0 1px 0 var(--sk-glass-highlight), var(--sk-shadow);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  backdrop-filter: blur(20px) saturate(150%);
+}
+.sk-glass-strong {
+  background: var(--sk-glass-strong);
+  border: 1px solid var(--sk-glass-border);
+  box-shadow: inset 0 1px 0 var(--sk-glass-highlight), var(--sk-shadow);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(24px) saturate(160%);
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .sk-glass, .sk-glass-strong { background: var(--sk-solid); }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .sk-glass, .sk-glass-strong { background: var(--sk-solid); -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+@media (prefers-contrast: more) {
+  .sk { --sk-glass-border: var(--sk-faint); --sk-muted: var(--sk-text); }
+  .sk-glass, .sk-glass-strong { background: var(--sk-solid); }
+}
+
+/* ── Controls ─────────────────────────────────────────────────────────────── */
+.sk :focus-visible { outline: none; box-shadow: var(--sk-focus); }
+.sk-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
+  border-radius: 0.625rem; font-size: 0.8125rem; font-weight: 500; color: var(--sk-text);
+  transition: background-color .15s ease, color .15s ease, border-color .15s ease, transform .15s ease, opacity .15s ease;
+}
+.sk-btn:hover { background: var(--sk-hover); }
+.sk-btn:active { transform: scale(0.98); }
+.sk-btn:disabled { opacity: 0.38; pointer-events: none; }
+.sk-primary {
+  background: var(--sk-accent);
+  color: var(--sk-on-accent);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+.sk-primary:hover { filter: brightness(1.08); background: var(--sk-accent); }
+.sk-chip {
+  display: inline-flex; align-items: center; gap: 0.35rem; border-radius: 999px;
+  border: 1px solid var(--sk-line); padding: 0.2rem 0.6rem; font-size: 0.72rem; color: var(--sk-muted);
+}
+.sk-select {
+  appearance: none; background: transparent; color: var(--sk-text); font-size: 0.8rem;
+  border: 0; outline: none; cursor: pointer; max-width: 100%;
+}
+.sk-select option { background: var(--sk-solid); color: var(--sk-text); }
+.sk-scroll { scrollbar-width: thin; scrollbar-color: var(--sk-line) transparent; }
+.sk-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.sk-scroll::-webkit-scrollbar-thumb { background: var(--sk-line); border-radius: 6px; }
+
+/* Switch */
+.sk-switch {
+  position: relative; width: 2.5rem; height: 1.45rem; flex-shrink: 0; border-radius: 999px;
+  background: var(--sk-raised); border: 1px solid var(--sk-line); transition: background-color .2s ease;
+}
+.sk-switch[aria-checked="true"] { background: var(--sk-accent); border-color: transparent; }
+.sk-switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: calc(1.45rem - 6px); height: calc(1.45rem - 6px);
+  border-radius: 999px; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .3);
+  transition: transform .22s cubic-bezier(.2, .8, .2, 1);
+}
+.sk-switch[aria-checked="true"]::after { transform: translateX(1.05rem); }
+
+/* Skeleton shimmer for loading suggestions */
+.sk-skel { position: relative; overflow: hidden; background: var(--sk-hover); }
+.sk-skel::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, var(--sk-glass-highlight), transparent);
+  animation: sk-shimmer 1.4s infinite;
+}
+
+/* ── Motion ───────────────────────────────────────────────────────────────── */
+@keyframes sk-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes sk-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sk-pop { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes sk-dot { 0%, 80%, 100% { transform: translateY(0); opacity: .35; } 40% { transform: translateY(-3px); opacity: 1; } }
+@keyframes sk-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@keyframes sk-spin { to { transform: rotate(360deg); } }
+@keyframes sk-shimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@keyframes sk-tail { 0%, 100% { transform: rotate(-6deg); } 50% { transform: rotate(6deg); } }
+@keyframes sk-scan { from { transform: translateY(-100%); } to { transform: translateY(100%); } }
+
+.sk-in { animation: sk-in .28s cubic-bezier(.2, .8, .2, 1) both; }
+.sk-fade { animation: sk-fade .2s ease both; }
+.sk-pop { animation: sk-pop .32s cubic-bezier(.2, .8, .2, 1) both; }
+.sk-dot { animation: sk-dot 1.2s infinite ease-in-out; }
+.sk-pulse { animation: sk-pulse 1.4s infinite ease-in-out; }
+.sk-spin { animation: sk-spin .9s linear infinite; }
+.sk-thinking { animation: sk-tail 1.6s ease-in-out infinite; transform-origin: 50% 80%; }
+.sk-scan::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(180deg, transparent, var(--sk-accent-soft), transparent);
+  animation: sk-scan 2.2s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sk *, .sk *::before, .sk *::after {
+    animation-duration: 0.001ms !important; animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important; scroll-behavior: auto !important;
+  }
+}
+
+/* ── Markdown (assistant replies) ─────────────────────────────────────────── */
+.sk-md { line-height: 1.68; overflow-wrap: anywhere; font-size: 0.9375rem; color: var(--sk-text); }
+.sk-md p { margin: 0.6em 0; }
+.sk-md ul, .sk-md ol { margin: 0.6em 0; padding-left: 1.35em; }
+.sk-md ul { list-style: disc; }
+.sk-md ol { list-style: decimal; }
+.sk-md li { margin: 0.25em 0; padding-left: 0.15em; }
+.sk-md li::marker { color: var(--sk-muted); }
+.sk-md strong { font-weight: 600; }
+.sk-md a { color: var(--sk-accent-ink); text-decoration: underline; text-decoration-color: var(--sk-accent-line); text-underline-offset: 3px; }
+.sk-md a:hover { text-decoration-color: currentColor; }
+.sk-md h1, .sk-md h2, .sk-md h3, .sk-md h4 { font-weight: 600; line-height: 1.35; margin: 1.1em 0 0.45em; letter-spacing: -0.015em; }
+.sk-md h1 { font-size: 1.25em; } .sk-md h2 { font-size: 1.12em; } .sk-md h3 { font-size: 1.02em; }
+.sk-md hr { border: 0; border-top: 1px solid var(--sk-line); margin: 1.2em 0; }
+.sk-md blockquote { border-left: 2px solid var(--sk-accent); padding: 0.1em 0 0.1em 0.9em; color: var(--sk-muted); margin: 0.7em 0; }
+.sk-md :not(pre) > code {
+  font-family: var(--font-geist-mono), ui-monospace, monospace; font-size: 0.85em;
+  background: var(--sk-hover); border: 1px solid var(--sk-line); padding: 0.1em 0.38em; border-radius: 5px;
+}
+.sk-md table { display: block; overflow-x: auto; border-collapse: collapse; margin: 0.8em 0; font-size: 0.88em; }
+.sk-md th { text-align: left; font-weight: 600; background: var(--sk-hover); }
+.sk-md th, .sk-md td { border: 1px solid var(--sk-line); padding: 0.4em 0.7em; }
+.sk-md img { max-width: 100%; border-radius: 10px; }
+.sk-md p:has(> .sk-message-image) { display: flex; flex-wrap: wrap; align-items: start; gap: 10px; }
+.sk-md .sk-message-image { display: inline-block; flex: 1 1 160px; min-width: 0; max-width: 320px; vertical-align: top; }
+.sk-md .sk-message-image > img { display: block; width: 100%; height: 220px; object-fit: contain; background: var(--sk-hover); }
+.sk-md > :first-child { margin-top: 0; } .sk-md > :last-child { margin-bottom: 0; }
+
+/* Code blocks */
+.sk-code { margin: 0.85em 0; border-radius: 12px; overflow: hidden; background: var(--sk-code-bg); border: 1px solid rgba(255, 255, 255, 0.08); }
+.sk-code-head {
+  display: flex; align-items: center; justify-content: space-between; padding: 0.35rem 0.6rem 0.35rem 0.9rem;
+  font-size: 0.72rem; color: #9ca0ab; background: rgba(255, 255, 255, 0.03); border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+}
+.sk-code pre { margin: 0; padding: 0.85rem 1rem; overflow-x: auto; font-size: 0.83rem; line-height: 1.6; color: #e4e4e7; }
+.sk-code pre code { font-family: var(--font-geist-mono), ui-monospace, monospace; background: none; border: 0; padding: 0; }
+.sk-code .hljs-comment, .sk-code .hljs-quote { color: #8a7d70; font-style: italic; }
+.sk-code .hljs-keyword, .sk-code .hljs-selector-tag, .sk-code .hljs-built_in { color: #ff9e64; }
+.sk-code .hljs-string, .sk-code .hljs-attr, .sk-code .hljs-template-tag { color: #c3e88d; }
+.sk-code .hljs-number, .sk-code .hljs-literal, .sk-code .hljs-symbol { color: #ffcb6b; }
+.sk-code .hljs-title, .sk-code .hljs-section, .sk-code .hljs-function .hljs-title { color: #82aaff; }
+.sk-code .hljs-type, .sk-code .hljs-class .hljs-title, .sk-code .hljs-variable { color: #f78c6c; }
+.sk-code .hljs-meta, .sk-code .hljs-tag, .sk-code .hljs-name { color: #c792ea; }
+.sk-code .hljs-property, .sk-code .hljs-params { color: #f1e6da; }
+.sk-code .hljs-deletion { color: #ff8178; } .sk-code .hljs-addition { color: #7fd8a4; }
+}
+
+/* Drawers and sheets that sit on top of the chat (small screens) must stay readable even without blur. */
+@media (max-width: 1023.98px) {
+  .sk-overlay .sk-glass { background: var(--sk-solid); }
+}
+
+/* ── Agent cursor in the live browser view ─────────────────────────────────── */
+.sk-agent-cursor { will-change: transform; transition: opacity .3s ease; z-index: 3; }
+.sk-agent-cursor svg { display: block; transform-origin: 3px 2px; transition: transform .12s ease; }
+.sk-agent-cursor.sk-cursor-press svg { transform: scale(0.82); }
+.sk-cursor-tag {
+  position: absolute; left: 16px; top: 18px; white-space: nowrap;
+  padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 600; letter-spacing: .02em;
+  color: #fff; background: var(--sk-accent);
+  box-shadow: 0 2px 8px -2px rgba(0, 0, 0, .5);
+}
+.sk-target-box {
+  border: 2px solid var(--sk-accent); box-shadow: 0 0 0 4px var(--sk-accent-soft);
+  transition: opacity .35s ease, transform .25s cubic-bezier(.2, .8, .2, 1), width .25s ease, height .25s ease;
+  z-index: 2;
+}
+@keyframes sk-ripple { from { transform: translate(-50%, -50%) scale(.2); opacity: .9; } to { transform: translate(-50%, -50%) scale(1); opacity: 0; } }
+.sk-ripple {
+  position: absolute; width: 44px; height: 44px; border-radius: 999px; z-index: 2;
+  border: 2px solid var(--sk-accent); background: var(--sk-accent-soft);
+  animation: sk-ripple .6s cubic-bezier(.2, .8, .2, 1) forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sk-ripple { animation: none; opacity: 0; }
+  .sk-target-box { transition: opacity .2s ease; }
+}
+
+/* You're driving the live browser: show a focus ring, park Senko's cursor quietly. */
+.sk-live-interactive:focus-visible { box-shadow: inset 0 0 0 2px var(--sk-accent); }
+.sk-agent-cursor.sk-agent-cursor-idle { filter: saturate(.6); }
+.sk-agent-cursor.sk-agent-cursor-idle .sk-cursor-tag { opacity: .7; }
