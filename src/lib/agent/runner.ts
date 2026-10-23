@@ -528,13 +528,22 @@ export async function runAgent(opts: RunOptions): Promise<void> {
     let lastKey = "";
     let repeats = 0;
     let parseFailures = 0;
+    // A screenshot makes the step need a vision model, the scarcest (most rate-limited) kind.
+    // Send one when it helps: visual goals, the first step, after a failed step, and every
+    // few steps as a sanity check. Otherwise the page text + element list is enough.
+    const visualGoal =
+      /(images?|pictures?|photos?|pics?|gifs?|videos?|watch|play|colou?rs?|green|red|blue|pink|yellow|purple|orange|black|white|looks?|see|screenshot|icons?|logos?|thumbnails?|wallpapers?|memes?)/i.test(goal);
+    let lastOk = true;
+    let sinceShot = 99;
 
     for (let i = 0; MAX_STEPS === 0 || i < MAX_STEPS; i++) {
       if (aborted()) break;
       const s = session;
       const page = s.pages.length ? s.active() : await s.openTab();
       const blank = page.url() === "about:blank";
-      const obs = blank ? null : await observe(s, !visionOff);
+      const withShot = !blank && !visionOff && (visualGoal || !lastOk || sinceShot >= 3);
+      sinceShot = withShot ? 0 : sinceShot + 1;
+      const obs = blank ? null : await observe(s, withShot);
       if (obs) visitedSources.set(obs.url, { title: obs.title, images: obs.images });
 
       emit({ type: "status", text: "Thinking…" });
@@ -573,6 +582,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
         const note = String(d.check.note || "").slice(0, 160);
         if (d.check.ok === false) {
           s.log(`Check: last step didn't work${note ? ` (${note})` : ""}. Trying another way.`, "warn");
+          lastOk = false;
           history[history.length - 1] += ` [CHECK FAILED: ${note}]`;
         } else if (note) {
           history[history.length - 1] += ` [verified: ${note}]`;
@@ -847,9 +857,12 @@ export async function runAgent(opts: RunOptions): Promise<void> {
         ok = false;
         result = `Failed: ${friendlyError(e)}`;
       }
-      const shotId = d.action === "screenshot" ? undefined : await s.recordShot(describe(d, obs));
-      if (ok) st.done(d.thought ? String(d.thought).slice(0, 160) : undefined, shotId);
-      else st.fail(result, shotId);
+      lastOk = ok;
+      // The timeline screenshot is saved in the background so the next step starts right away.
+      const thought = d.thought ? String(d.thought).slice(0, 160) : undefined;
+      const finish = (shotId?: string) => (ok ? st.done(thought, shotId) : st.fail(result, shotId));
+      if (d.action === "screenshot") finish();
+      else void s.recordShot(describe(d, obs)).then(finish, () => finish());
       history.push(`${i + 1}. ${JSON.stringify({ ...d, thought: undefined, check: undefined })} -> ${result}`);
       s.schedulePersist();
     }

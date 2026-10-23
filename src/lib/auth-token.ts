@@ -46,6 +46,34 @@ export async function verifyDeviceToken(token: string | undefined | null): Promi
   return diff === 0 ? id : null;
 }
 
+// ---- Live-view links ---------------------------------------------------------------
+// The agent computer hands the viewer a short-lived link so the browser can read live
+// frames straight from it (no extra hop through the main host, which caused lag).
+// Minted and checked on the same machine, so DATABASE_URL works as a fallback secret.
+
+async function liveMac(data: string): Promise<string> {
+  const enc = new TextEncoder();
+  const raw = (process.env.SESSION_SECRET || "").trim() || `live:${process.env.DATABASE_URL || ""}:${accessKey()}`;
+  const key = await crypto.subtle.importKey("raw", enc.encode(raw), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return b64url(await crypto.subtle.sign("HMAC", key, enc.encode(`live:${data}`)));
+}
+
+/** Token for streaming one chat's live view until `expiresAt` (ms). */
+export async function signLive(chatId: string, ownerId: string, expiresAt: number): Promise<string> {
+  const body = `${chatId}.${ownerId}.${expiresAt}`;
+  return `${body}.${await liveMac(body)}`;
+}
+
+/** Returns the owner id if the token is valid for this chat and not expired, else null. */
+export async function verifyLive(token: string | null, chatId: string): Promise<string | null> {
+  if (!token) return null;
+  const parts = token.split(".");
+  if (parts.length !== 4) return null;
+  const [chat, owner, exp, mac] = parts;
+  if (chat !== chatId || !(Number(exp) > Date.now())) return null;
+  return safeEqual(mac, await liveMac(`${chat}.${owner}.${exp}`)) ? owner : null;
+}
+
 export function safeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;

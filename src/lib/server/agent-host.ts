@@ -92,6 +92,8 @@ function hostEnv(): Record<string, string> {
     NEXT_TELEMETRY_DISABLED: "1",
     PORT: String(PORT),
     PLAYWRIGHT_BROWSERS_PATH: "/vercel/sandbox/ms-playwright",
+    // Lets /api/sessions/:id/live hand out direct live-view links to this machine.
+    AGENT_COMPUTER: "1",
   };
   const keep = /^(DATABASE_URL|APP_ACCESS_KEY|APP_PASSWORD|SESSION_SECRET|LLM_[A-Z_]+|AGENT_(?!HOST|BACKEND)[A-Z_]+|LIVE_[A-Z_]+|SCREEN_[A-Z_]+|SEARCH_API_URL|WALLHAVEN_API_KEY|[A-Z]+_API_KEY|[A-Z]+_MODEL|[A-Z]+_VISION_MODEL|[A-Z]+_TOKEN_BUDGET|SENKO_LLM_URL|SENKO_LLM_KEY|BROWSER_PROXY_URL|OLLAMA_URL|OLLAMA_API_KEY)$/;
   for (const [k, v] of Object.entries(process.env)) {

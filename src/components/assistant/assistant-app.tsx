@@ -270,10 +270,26 @@ export default function AssistantApp() {
     streamRef.current = null;
   }, []);
 
+  // Direct live-view links (straight to the machine running the browser), per chat.
+  // A link that fails once falls back to the normal path for that chat.
+  const directLive = useRef<Map<string, { url: string | null; until: number }>>(new Map());
   const attachStream = useCallback(
-    (chatId: string) => {
+    (chatId: string, viaHost = false) => {
       closeStream();
-      const es = new EventSource(`/api/sessions/${chatId}/stream`);
+      const cached = directLive.current.get(chatId);
+      if (!viaHost && (!cached || cached.until < Date.now())) {
+        // Ask once (cheap); reconnect with whatever we learn.
+        directLive.current.set(chatId, { url: null, until: Date.now() + 9 * 60_000 });
+        fetch(`/api/sessions/${chatId}/live`)
+          .then((r) => (r.ok ? r.json() : { url: null }))
+          .then((j: { url?: string | null }) => {
+            directLive.current.set(chatId, { url: j.url || null, until: Date.now() + 9 * 60_000 });
+            if (j.url && activeRef.current === chatId) attachStream(chatId);
+          })
+          .catch(() => {});
+      }
+      const direct = viaHost ? null : directLive.current.get(chatId)?.url;
+      const es = new EventSource(direct || `/api/sessions/${chatId}/stream`);
       streamRef.current = es;
       es.onmessage = (ev) => {
         let e: { type: string } & Record<string, unknown>;
@@ -296,6 +312,9 @@ export default function AssistantApp() {
         es.close();
         if (streamRef.current !== es) return;
         streamRef.current = null;
+        // A direct link that failed (expired, host replaced, blocked): use the normal path for a
+        // minute, then ask for a fresh link.
+        if (direct) directLive.current.set(chatId, { url: null, until: Date.now() + 60_000 });
         // Keep the view live whenever you're watching it, not only while a task runs.
         if ((runningRef.current || panelOpenRef.current) && activeRef.current === chatId) {
           streamRetry.current = setTimeout(() => attachStream(chatId), runningRef.current ? 1500 : 4000);
