@@ -111,6 +111,8 @@ interface Observation {
   atBottom: boolean;
   tabs: string;
   video: VideoState | null;
+  /** Live state of a graphing app on the page (Desmos expressions + errors), if any. */
+  app?: string | null;
   screenshot?: Buffer;
 }
 
@@ -202,6 +204,58 @@ function describeVideo(v: VideoState | null): string {
   return `Video: ${state} at ${time}${v.muted ? ", muted" : ""}${v.fullscreen ? ", fullscreen" : ""}`;
 }
 
+type DesmosCalc = {
+  getExpressions(): { id: string; type?: string; latex?: string; hidden?: boolean }[];
+  setExpressions(e: { id: string; latex: string }[]): void;
+  removeExpressions(e: { id: string }[]): void;
+  expressionAnalysis?: Record<string, { isError?: boolean; errorMessage?: string }>;
+};
+
+/** Desmos (2D or 3D) exposes its calculator as window.Calc: read the expressions and their errors. */
+async function desmosState(page: Page): Promise<string | null> {
+  return page
+    .evaluate(() => {
+      const C = (window as unknown as { Calc?: DesmosCalc }).Calc;
+      if (!C?.getExpressions) return null;
+      const an = C.expressionAnalysis || {};
+      const lines = C.getExpressions()
+        .filter((e) => (e.type || "expression") === "expression")
+        .map((e, i) => {
+          const a = an[e.id];
+          return `  ${i + 1}. ${e.latex || "(empty)"}${e.hidden ? " (hidden)" : ""}${a?.isError ? `  <- ERROR: ${a.errorMessage}` : ""}`;
+        });
+      return lines.join("\n") || "  (no expressions: the graph is empty)";
+    })
+    .catch(() => null);
+}
+
+/** Write Desmos expressions straight into the calculator (LaTeX), then report what it made of them. */
+async function desmosEdit(page: Page, op: string, expressions: string[]): Promise<{ ok: boolean; result: string }> {
+  const done = await page
+    .evaluate(
+      ({ op, expressions }) => {
+        const C = (window as unknown as { Calc?: DesmosCalc }).Calc;
+        if (!C?.getExpressions) return false;
+        if (op === "set" || op === "clear") C.removeExpressions(C.getExpressions());
+        if (op !== "clear") {
+          const stamp = Date.now().toString(36);
+          C.setExpressions(expressions.map((latex, i) => ({ id: `agent_${stamp}_${i}`, latex })));
+        }
+        return true;
+      },
+      { op, expressions }
+    )
+    .catch(() => false);
+  if (!done) return { ok: false, result: "This page has no Desmos calculator (open https://www.desmos.com/calculator or https://www.desmos.com/3d first)." };
+  await page.waitForTimeout(900);
+  const state = (await desmosState(page)) || "";
+  const bad = state.includes("<- ERROR");
+  return {
+    ok: !bad,
+    result: `${op === "clear" ? "Cleared the graph" : `Wrote ${expressions.length} expression(s)`}. Desmos now has:\n${state}${bad ? "\nFix the expressions marked ERROR (rewrite them with op set or add)." : ""}`,
+  };
+}
+
 function formatObservation(o: Observation): string {
   const els = o.elements
     .map((e) => {
@@ -223,6 +277,7 @@ function formatObservation(o: Observation): string {
     `Title: ${o.title}`,
     `Tabs: ${o.tabs}`,
     describeVideo(o.video),
+    o.app ? `Desmos expressions on this page (this is the truth about what is graphed):\n${o.app}` : "",
     `Interactive elements:\n${els || "(none visible)"}`,
     `Visible images (use exact URLs; col/row = approx grid position 0-3 from top-left):\n${o.images.map((img, i) => `  [img${i}] col=${img.col} row=${img.row} alt="${img.alt}" url=${img.url}`).join("\n") || "(none)"}`,
     `Visible text (truncated):\n${o.text.slice(0, 1200)}${o.atBottom ? "\n(end of page)" : ""}`,
@@ -245,6 +300,7 @@ type Action =
   | { action: "close_tab"; index: number }
   | { action: "media"; op: "play" | "pause" | "toggle" | "fullscreen" | "exit_fullscreen" | "mute" | "unmute" | "seek" | "skip"; seconds?: number }
   | { action: "dismiss" }
+  | { action: "desmos"; op: "set" | "add" | "clear"; expressions?: string[] }
   | { action: "screenshot"; label?: string }
   | { action: "fetch_image"; url: string; alt?: string }
   | { action: "make_collage"; ids?: string[]; label?: string }
@@ -274,6 +330,7 @@ Actions:
 {"action":"switch_tab","index":1}                     tabs are numbered from 1
 {"action":"close_tab","index":2}
 {"action":"media","op":"pause"}                       play | pause | toggle | fullscreen | exit_fullscreen | mute | unmute | seek (seconds = absolute) | skip (seconds = relative, e.g. 85 to skip an intro)
+{"action":"desmos","op":"set","expressions":["x^2+y^2+z^2=4"]}  on a Desmos page, write expressions directly as LaTeX: "set" replaces everything, "add" appends, "clear" empties the graph. Much more reliable than typing; the result lists each expression and any Desmos ERROR so you can fix it.
 {"action":"dismiss"}                                  close cookie banners / overlays / modals blocking the page
 {"action":"screenshot","label":"..."}                 save a screenshot to show the user
 {"action":"fetch_image","url":"https://...","alt":"description"} download an image into the session stash. Use direct media URLs (.jpg/.png/.webp) from the images list.
@@ -289,7 +346,9 @@ Rules:
 - For "play" goals: the job isn't done until Video says PLAYING. If it isn't, try the play button, dismiss overlays, or click the video.
 - Unexpected pop-ups/new tabs are closed automatically; use dismiss for in-page overlays and ads.
 - If a login, paywall or captcha blocks you, don't invent credentials: finish with done, say exactly what's needed, and give the URL.
-- EDITORS & MATH TOOLS (Desmos, GeoGebra, code editors, docs): click the box, then type the way a person types on a keyboard, not LaTeX. In Desmos/MathQuill: "^" starts an exponent and "/" starts a fraction (press ArrowRight to leave them), type "<=" for ≤, "sqrt" for √, "pi" for π, and limit a shape with braces (a square face in 3D: z=0{-1<=x<=1}{-1<=y<=1}); type several expressions in one go separated by "\\n" (each Enter makes a new line) with submit:false. Desmos has a real 3D calculator at https://www.desmos.com/3d (use it for anything 3D). Check the screenshot after typing and fix mistakes.
+- DESMOS: use the desmos action (LaTeX) instead of clicking and typing. Desmos 3D (https://www.desmos.com/3d) handles 3D: implicit surfaces like x^2+y^2+z^2=4, parametric surfaces (x(u,v),y(u,v),z(u,v)) with u,v in 0..1, restrictions in braces, sliders, lists and recursive functions (e.g. M(p,c,n)=\left\{n=0:p,B(M(p,c,n-1))+c\right\} on points). Fractals work as point clouds: build a grid with [(a,b,c) for a=G,b=G,c=G] (lists max 10,000 items, so ~21 values per axis) and keep the points that stay bounded. Function names must be 2+ letters or a capital letter (r, t, x, y, z are reserved). Ambitious requests (fractals, animations) are worth a real attempt: build the best version you can (a simpler or approximate one beats none), check the reported errors, fix them, and explain any limitation in your answer.
+- NEVER claim something is on the page, graphed, deleted or done unless the current page state or screenshot shows it. Never say a task is impossible without having tried it.
+- EDITORS & MATH TOOLS (GeoGebra, code editors, docs): click the box, then type the way a person types on a keyboard, not LaTeX. In Desmos/MathQuill: "^" starts an exponent and "/" starts a fraction (press ArrowRight to leave them), type "<=" for ≤, "sqrt" for √, "pi" for π, and limit a shape with braces (a square face in 3D: z=0{-1<=x<=1}{-1<=y<=1}); type several expressions in one go separated by "\\n" (each Enter makes a new line) with submit:false. Desmos has a real 3D calculator at https://www.desmos.com/3d (use it for anything 3D). Check the screenshot after typing and fix mistakes.
 - Only use element ids from the CURRENT list. Scroll if what you need isn't listed.
 - When the user says "first option", "first result", "first image", "first one" in the context of a search results page or image grid, they mean the first visible item in that grid/list — click it.
 - IMAGE RECOGNITION: When the user asks to click a specific image by visual description (e.g. the one where she's drinking, the crying gif, the one with peanuts), use examine_images with the user's own description; it finds the image on screen and clicks it. Never guess visually. If it finds no match, scroll down and run it again.
@@ -357,6 +416,8 @@ function describe(a: Action, obs: Observation | null): string {
       return { play: "Playing the video", pause: "Pausing the video", toggle: "Toggling play/pause", fullscreen: "Going fullscreen", exit_fullscreen: "Leaving fullscreen", mute: "Muting", unmute: "Unmuting", seek: `Jumping to ${a.seconds}s`, skip: `Skipping ${a.seconds}s` }[a.op] || `Media: ${a.op}`;
     case "dismiss":
       return "Closing an overlay";
+    case "desmos":
+      return a.op === "clear" ? "Clearing the graph" : `Writing ${a.expressions?.length || 0} expression${a.expressions?.length === 1 ? "" : "s"} in Desmos`;
     case "screenshot":
       return "Taking a screenshot";
     case "fetch_image":
@@ -458,7 +519,8 @@ export async function runAgent(opts: RunOptions): Promise<void> {
     const tabs = (await s.tabs()).map((t) => `${t.index + 1}. ${t.title.slice(0, 50)}${t.active ? " (active)" : ""}`).join(" | ");
     const video = await videoState(p);
     const screenshot = withShot ? await s.screenshot(55).catch(() => undefined) : undefined;
-    return { url: p.url(), title: await p.title().catch(() => ""), tabs, video, screenshot, ...r };
+    const app = await desmosState(p);
+    return { url: p.url(), title: await p.title().catch(() => ""), tabs, video, app, screenshot, ...r };
   };
 
   /** Show the agent's cursor gliding to an element, with a highlight box. */
@@ -536,6 +598,8 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       /(images?|pictures?|photos?|pics?|gifs?|videos?|watch|play|colou?rs?|green|red|blue|pink|yellow|purple|orange|black|white|looks?|see|screenshot|icons?|logos?|thumbnails?|wallpapers?|memes?)/i.test(goal);
     let lastOk = true;
     let sinceShot = 99;
+    let actionsTaken = 0; // actions run this task, for the early-finish check
+    let finishPushedBack = false;
 
     for (let i = 0; MAX_STEPS === 0 || i < MAX_STEPS; i++) {
       if (aborted()) break;
@@ -595,6 +659,23 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       lastKey = key;
 
       if (d.action === "done") {
+        // Weak models like to finish early: claiming a change they never made, or calling a
+        // task impossible after one click. Push back once with what's really going on.
+        const answer = String(d.answer || "");
+        const gaveUp = /\b(can(?:'|no)?t|cannot|isn'?t (?:built|able|designed|possible|suited)|not (?:possible|supported|able|designed|built)|unable|doesn'?t support|too (?:complex|advanced))\b/i.test(answer);
+        const wantsChange = /\b(make|create|draw|plot|graph|add|remove|delete|clear|type|write|build|fill|set ?up|change|edit|put|move|turn|replace)\b/i.test(goal);
+        if (!finishPushedBack && ((wantsChange && actionsTaken === 0) || (gaveUp && actionsTaken < 4))) {
+          finishPushedBack = true;
+          lastOk = false; // get a screenshot next step
+          history.push(
+            `${i + 1}. (You tried to finish, but ${
+              actionsTaken === 0
+                ? "you haven't done anything on the page yet. Look at the current page state: it may not match what you said. Do the task now."
+                : `you gave up after only ${actionsTaken} action(s). Make a real attempt first (a simpler or approximate version is better than none); only then explain limits.`
+            })`
+          );
+          continue;
+        }
         const fin = step("Finished");
         const shotId = await s.recordShot("Final result");
         fin.done(undefined, shotId);
@@ -722,6 +803,17 @@ export async function runAgent(opts: RunOptions): Promise<void> {
           case "dismiss":
             result = await dismissOverlays(p);
             break;
+          case "desmos": {
+            const list = (Array.isArray(d.expressions) ? d.expressions : []).map(String).filter((x) => x.trim());
+            const op = d.op === "add" || d.op === "clear" ? d.op : "set";
+            if (op !== "clear" && !list.length) {
+              ok = false;
+              result = 'desmos needs "expressions": a list of LaTeX strings';
+              break;
+            }
+            ({ ok, result } = await desmosEdit(p, op, list));
+            break;
+          }
           case "screenshot": {
             const buf = await s.screenshot(80);
             imageIds.push(await saveImage(ownerId, "image/jpeg", buf));
@@ -878,6 +970,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
         result = `Failed: ${friendlyError(e)}`;
       }
       lastOk = ok;
+      actionsTaken++;
       // The timeline screenshot is saved in the background so the next step starts right away.
       const thought = d.thought ? String(d.thought).slice(0, 160) : undefined;
       const finish = (shotId?: string) => (ok ? st.done(thought, shotId) : st.fail(result, shotId));
