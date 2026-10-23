@@ -310,8 +310,23 @@ ${notes.length ? `Notes so far:\n${notes.slice(-6).join("\n\n")}\n\n` : ""}${pag
     return "done";
   }
   if (mode.noBrowser) {
+    // Out of turns with no browser to hand off to: one last call that must answer from what was read.
     const p = web.current();
-    const answer = p ? `I got as far as **${p.title || p.url}** (${p.url}) but couldn't finish this without a real browser.` : "I couldn't finish this without a real browser.";
+    let answer = "";
+    try {
+      const r = await complete(
+        [
+          { role: "system", content: "Answer the user's goal now in markdown, using only the page and notes below. Say plainly what you could not do without a real browser, and give direct links where useful." + (voice ? `\n\n${voice}` : "") },
+          { role: "user", content: `Goal: ${goal}\n\n${notes.slice(-6).join("\n\n")}\n\n${p ? `Current page:\n${describePage(p)}` : ""}` },
+        ],
+        { provider, signal, temperature: 0.2, maxTokens: 900, maxWaitMs: 60_000, fast: true }
+      );
+      last = { provider: r.providerLabel, model: r.model };
+      answer = r.text.trim();
+    } catch {
+      /* fall back to the plain message */
+    }
+    if (!answer) answer = p ? `I got as far as **${p.title || p.url}** (${p.url}) but couldn't finish this without a real browser.` : "I couldn't finish this without a real browser.";
     emit({ type: "done", answer, url: p?.url, imageIds: [], ...last });
     return "done";
   }
