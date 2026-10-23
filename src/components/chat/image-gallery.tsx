@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { X, Grid3X3, Filter, ExternalLink, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ImageLightbox } from "./image-lightbox";
@@ -40,6 +41,7 @@ export function ImageGallery({
   query,
   onClose,
 }: ImageGalleryProps) {
+  const [mounted, setMounted] = useState(false);
   const [allImages, setAllImages] = useState<MessageImage[]>(initialImages);
   const [lightboxImage, setLightboxImage] = useState<{ url: string; alt?: string } | null>(null);
   const [activeEngine, setActiveEngine] = useState<string | null>(null);
@@ -49,6 +51,23 @@ export function ImageGallery({
   const [hasMore, setHasMore] = useState(!!query);
   const scrollRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // Lock body scroll while open
+  useEffect(() => {
+    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+    const prevOverflow = document.body.style.overflow;
+    const prevPaddingRight = document.body.style.paddingRight;
+    document.body.style.paddingRight = `${scrollbarWidth}px`;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.body.style.paddingRight = prevPaddingRight;
+    };
+  }, [lightboxImage]);
 
   // Get unique engines from images
   const engines = Array.from(new Set(allImages.map((img) => img.engine).filter(Boolean))) as string[];
@@ -129,180 +148,206 @@ export function ImageGallery({
     return () => window.removeEventListener("keydown", handleKey);
   }, [onClose, lightboxImage]);
 
+  const handleBackdropClick = (e: React.MouseEvent) => {
+    if (e.target === e.currentTarget) {
+      onClose();
+    }
+  };
+
   const engineCounts = engines.reduce<Record<string, number>>((acc, eng) => {
     acc[eng] = allImages.filter((img) => img.engine === eng).length;
     return acc;
   }, {});
 
-  return (
-    <div className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-sm flex flex-col animate-in fade-in duration-200">
-      {/* Header */}
-      <div className="flex-shrink-0 flex items-center justify-between px-4 py-3 border-b border-white/[0.06] bg-black/60 backdrop-blur-md">
-        <div className="flex items-center gap-3 min-w-0">
-          <Grid3X3 className="h-5 w-5 text-[var(--senko-accent)] flex-shrink-0" />
-          <div className="min-w-0">
-            <h2 className="text-sm font-medium text-white/90 truncate">
-              Gallery{query ? ` — ${query}` : ""}
-            </h2>
-            <p className="text-xs text-white/40">
-              {filteredImages.length} image{filteredImages.length !== 1 ? "s" : ""}
-              {activeEngine && ` from ${ENGINE_LABELS[activeEngine] || activeEngine}`}
-              {!activeEngine && engines.length > 1 && ` from ${engines.length} sources`}
-            </p>
-          </div>
-        </div>
+  if (!mounted || typeof document === "undefined") {
+    return null;
+  }
 
-        <div className="flex items-center gap-2">
-          {/* Column toggle */}
-          <div className="flex items-center gap-1 bg-white/[0.04] rounded-lg p-0.5 border border-white/[0.06]">
-            {[2, 3, 4].map((n) => (
-              <button
-                key={n}
-                onClick={() => setColumns(n)}
-                className={cn(
-                  "px-2 py-1 text-xs rounded-md transition-all",
-                  columns === n
-                    ? "bg-[var(--senko-accent)]/20 text-[var(--senko-accent)] font-medium"
-                    : "text-white/40 hover:text-white/60"
-                )}
-              >
-                {n}col
-              </button>
-            ))}
+  const galleryModal = (
+    <div
+      className="fixed inset-0 z-[9999] flex items-center justify-center p-3 sm:p-6 bg-black/80 backdrop-blur-md animate-in fade-in duration-200"
+      onClick={handleBackdropClick}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div
+        className="relative z-10 w-full max-w-5xl h-[88vh] max-h-[900px] flex flex-col rounded-2xl bg-[#121215] border border-white/10 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex-shrink-0 flex items-center justify-between px-5 py-3.5 border-b border-white/[0.08] bg-black/40 backdrop-blur-md">
+          <div className="flex items-center gap-3 min-w-0">
+            <Grid3X3 className="h-5 w-5 text-[var(--senko-accent,#f59e0b)] flex-shrink-0" />
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold text-white/90 truncate">
+                Gallery{query ? ` — ${query}` : ""}
+              </h2>
+              <p className="text-xs text-white/50">
+                {filteredImages.length} image{filteredImages.length !== 1 ? "s" : ""}
+                {activeEngine && ` from ${ENGINE_LABELS[activeEngine] || activeEngine}`}
+                {!activeEngine && engines.length > 1 && ` from ${engines.length} sources`}
+              </p>
+            </div>
           </div>
 
-          {/* Close */}
-          <button
-            onClick={onClose}
-            className="p-2 rounded-lg text-white/40 hover:text-white hover:bg-white/[0.06] transition-all"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-      </div>
+          <div className="flex items-center gap-2">
+            {/* Column toggle */}
+            <div className="flex items-center gap-1 bg-white/[0.04] rounded-lg p-0.5 border border-white/[0.06]">
+              {[2, 3, 4].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setColumns(n)}
+                  className={cn(
+                    "px-2 py-1 text-xs rounded-md transition-all",
+                    columns === n
+                      ? "bg-[var(--senko-accent)]/20 text-[var(--senko-accent)] font-medium"
+                      : "text-white/40 hover:text-white/60"
+                  )}
+                >
+                  {n}col
+                </button>
+              ))}
+            </div>
 
-      {/* Source filter pills */}
-      {engines.length > 1 && (
-        <div className="flex-shrink-0 flex items-center gap-2 px-4 py-2 border-b border-white/[0.04] overflow-x-auto scrollbar-none">
-          <Filter className="h-3.5 w-3.5 text-white/30 flex-shrink-0" />
-          <button
-            onClick={() => setActiveEngine(null)}
-            className={cn(
-              "px-2.5 py-1 text-xs rounded-full border transition-all flex-shrink-0",
-              !activeEngine
-                ? "bg-[var(--senko-accent)]/20 text-[var(--senko-accent)] border-[var(--senko-accent)]/30 font-medium"
-                : "bg-white/[0.04] text-white/50 border-white/[0.06] hover:text-white/70 hover:border-white/10"
-            )}
-          >
-            All ({allImages.length})
-          </button>
-          {engines.map((eng) => (
+            {/* Close */}
             <button
-              key={eng}
-              onClick={() => setActiveEngine(activeEngine === eng ? null : eng)}
+              type="button"
+              onClick={onClose}
+              className="p-2 rounded-lg text-white/50 hover:text-white hover:bg-white/[0.08] transition-all"
+              aria-label="Close gallery"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Source filter pills */}
+        {engines.length > 1 && (
+          <div className="flex-shrink-0 flex items-center gap-2 px-5 py-2.5 border-b border-white/[0.06] bg-white/[0.01] overflow-x-auto scrollbar-none">
+            <Filter className="h-3.5 w-3.5 text-white/30 flex-shrink-0" />
+            <button
+              type="button"
+              onClick={() => setActiveEngine(null)}
               className={cn(
                 "px-2.5 py-1 text-xs rounded-full border transition-all flex-shrink-0",
-                activeEngine === eng
-                  ? ENGINE_COLORS[eng] || "bg-white/10 text-white/80 border-white/20"
+                !activeEngine
+                  ? "bg-[var(--senko-accent)]/20 text-[var(--senko-accent)] border-[var(--senko-accent)]/30 font-medium"
                   : "bg-white/[0.04] text-white/50 border-white/[0.06] hover:text-white/70 hover:border-white/10"
               )}
             >
-              {ENGINE_LABELS[eng] || eng} ({engineCounts[eng]})
+              All ({allImages.length})
             </button>
-          ))}
-        </div>
-      )}
-
-      {/* Masonry grid */}
-      <div
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto overflow-x-hidden px-3 py-3"
-        style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(255,255,255,0.1) transparent" }}
-      >
-        {filteredImages.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-white/30 text-sm">
-            No images found{activeEngine ? ` from ${ENGINE_LABELS[activeEngine] || activeEngine}` : ""}
-          </div>
-        ) : (
-          <div className="flex gap-2" style={{ alignItems: "flex-start" }}>
-            {getColumns().map((col, colIdx) => (
-              <div key={colIdx} className="flex-1 flex flex-col gap-2 min-w-0">
-                {col.map((img, imgIdx) => (
-                  <div
-                    key={img.url}
-                    className="group relative overflow-hidden rounded-lg border border-white/[0.06] hover:border-[var(--senko-accent)]/30 transition-all cursor-pointer bg-white/[0.02]"
-                    onClick={() => setLightboxImage({ url: img.url, alt: img.alt })}
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={img.url}
-                      alt=""
-                      className={cn(
-                        "w-full h-auto transition-transform duration-300 group-hover:scale-[1.03]",
-                        /\.gif(\?|$)/i.test(img.url) ? "object-contain bg-black/20" : "object-cover"
-                      )}
-                      loading="lazy"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).closest("div")!.style.display = "none";
-                      }}
-                    />
-
-                    {/* Overlay with source info */}
-                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-2 pt-8 opacity-0 group-hover:opacity-100 transition-opacity">
-                      {img.alt && (
-                        <p className="text-[10px] text-white/70 truncate mb-1">{img.alt}</p>
-                      )}
-                      <div className="flex items-center gap-1.5">
-                        {img.engine && (
-                          <span
-                            className={cn(
-                              "text-[9px] px-1.5 py-0.5 rounded-full border",
-                              ENGINE_COLORS[img.engine] || "bg-white/10 text-white/60 border-white/20"
-                            )}
-                          >
-                            {ENGINE_LABELS[img.engine] || img.engine}
-                          </span>
-                        )}
-                        {img.source && (
-                          <a
-                            href={img.source}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="text-[9px] text-white/40 hover:text-white/70 flex items-center gap-0.5 transition-colors"
-                          >
-                            <ExternalLink className="h-2.5 w-2.5" />
-                            source
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
+            {engines.map((eng) => (
+              <button
+                key={eng}
+                type="button"
+                onClick={() => setActiveEngine(activeEngine === eng ? null : eng)}
+                className={cn(
+                  "px-2.5 py-1 text-xs rounded-full border transition-all flex-shrink-0",
+                  activeEngine === eng
+                    ? ENGINE_COLORS[eng] || "bg-white/10 text-white/80 border-white/20"
+                    : "bg-white/[0.04] text-white/50 border-white/[0.06] hover:text-white/70 hover:border-white/10"
+                )}
+              >
+                {ENGINE_LABELS[eng] || eng} ({engineCounts[eng]})
+              </button>
             ))}
           </div>
         )}
 
-        {/* Infinite scroll sentinel */}
-        {hasMore && (
-          <div ref={sentinelRef} className="flex items-center justify-center py-6">
-            {isLoadingMore ? (
-              <div className="flex items-center gap-2 text-white/30 text-xs">
-                <div className="h-4 w-4 border-2 border-white/20 border-t-[var(--senko-accent)] rounded-full animate-spin" />
-                Loading more...
-              </div>
-            ) : (
-              <button
-                onClick={loadMore}
-                className="flex items-center gap-1 text-xs text-white/30 hover:text-white/50 transition-colors"
-              >
-                <ChevronDown className="h-3.5 w-3.5" />
-                Load more
-              </button>
-            )}
-          </div>
-        )}
+        {/* Masonry grid */}
+        <div
+          ref={scrollRef}
+          className="flex-1 overflow-y-auto overflow-x-hidden p-4 sm:p-5"
+          style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(255,255,255,0.1) transparent" }}
+        >
+          {filteredImages.length === 0 ? (
+            <div className="flex items-center justify-center h-full text-white/30 text-sm">
+              No images found{activeEngine ? ` from ${ENGINE_LABELS[activeEngine] || activeEngine}` : ""}
+            </div>
+          ) : (
+            <div className="flex gap-3" style={{ alignItems: "flex-start" }}>
+              {getColumns().map((col, colIdx) => (
+                <div key={colIdx} className="flex-1 flex flex-col gap-3 min-w-0">
+                  {col.map((img) => (
+                    <div
+                      key={img.url}
+                      className="group relative overflow-hidden rounded-xl border border-white/[0.08] hover:border-[var(--senko-accent)]/40 transition-all cursor-pointer bg-white/[0.02]"
+                      onClick={() => setLightboxImage({ url: img.url, alt: img.alt })}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={img.url}
+                        alt=""
+                        className={cn(
+                          "w-full h-auto transition-transform duration-300 group-hover:scale-[1.03]",
+                          /\.gif(\?|$)/i.test(img.url) ? "object-contain bg-black/20" : "object-cover"
+                        )}
+                        loading="lazy"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).closest("div")!.style.display = "none";
+                        }}
+                      />
+
+                      {/* Overlay with source info */}
+                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent p-2.5 pt-8 opacity-0 group-hover:opacity-100 transition-opacity">
+                        {img.alt && (
+                          <p className="text-[10px] text-white/80 truncate mb-1">{img.alt}</p>
+                        )}
+                        <div className="flex items-center gap-1.5">
+                          {img.engine && (
+                            <span
+                              className={cn(
+                                "text-[9px] px-1.5 py-0.5 rounded-full border",
+                                ENGINE_COLORS[img.engine] || "bg-white/10 text-white/60 border-white/20"
+                              )}
+                            >
+                              {ENGINE_LABELS[img.engine] || img.engine}
+                            </span>
+                          )}
+                          {img.source && (
+                            <a
+                              href={img.source}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="text-[9px] text-white/50 hover:text-white/80 flex items-center gap-0.5 transition-colors"
+                            >
+                              <ExternalLink className="h-2.5 w-2.5" />
+                              source
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Infinite scroll sentinel */}
+          {hasMore && (
+            <div ref={sentinelRef} className="flex items-center justify-center py-6">
+              {isLoadingMore ? (
+                <div className="flex items-center gap-2 text-white/30 text-xs">
+                  <div className="h-4 w-4 border-2 border-white/20 border-t-[var(--senko-accent)] rounded-full animate-spin" />
+                  Loading more...
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={loadMore}
+                  className="flex items-center gap-1 text-xs text-white/40 hover:text-white/60 transition-colors"
+                >
+                  <ChevronDown className="h-3.5 w-3.5" />
+                  Load more
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Lightbox */}
@@ -315,4 +360,6 @@ export function ImageGallery({
       )}
     </div>
   );
+
+  return createPortal(galleryModal, document.body);
 }
