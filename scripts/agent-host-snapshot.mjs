@@ -53,7 +53,7 @@ log(`code: ${sha} (${(tarball.length / 1024 / 1024).toFixed(1)} MB)`);
 let sb;
 for (const vcpus of [4, 2]) {
   try {
-    sb = await Sandbox.create({ ...credentials, runtime: "node24", resources: { vcpus }, timeout: 40 * 60_000 });
+    sb = await Sandbox.create({ ...credentials, region: (process.env.AGENT_HOST_REGION || "iad1").trim(), runtime: "node24", resources: { vcpus }, timeout: 40 * 60_000 });
     log(`sandbox up (${vcpus} vCPU)`);
     break;
   } catch (e) {

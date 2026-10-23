@@ -7,7 +7,7 @@
 // - The only automatic shutdowns are real resource limits (MAX_LIVE_SESSIONS / low memory);
 //   evicted sessions are saved first and restore when you come back, and the UI is told why.
 import type { BrowserContext, CDPSession, Page } from "playwright";
-import { SCREEN, browserMode, desktopUserAgent, freeMemoryMB, getBrowser, isHeaded, isLowMemoryHost } from "./browser";
+import { SCREEN, browserMode, browserProxy, desktopUserAgent, freeMemoryMB, getBrowser, isHeaded, isLowMemoryHost } from "./browser";
 import { isAdHost, isPrivateUrl } from "./safety";
 import { json, newId, q, q1, toBuffer } from "@/lib/server/db";
 
@@ -116,6 +116,7 @@ export class BrowserSession {
       locale: "en-US",
       colorScheme: "dark",
       acceptDownloads: false, // never download files
+      proxy: browserProxy(),
       storageState: saved?.storage ? (saved.storage as never) : undefined,
     });
     // Playwright waits 30s by default; a stuck click/press should fail fast so the agent moves on.

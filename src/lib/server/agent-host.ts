@@ -16,13 +16,16 @@ export interface AgentHost {
   url: string;
   snapshotId: string;
   expiresAt: number;
+  region?: string;
 }
 
 export function sandboxMode(): boolean {
   return process.env.AGENT_HOST === "sandbox";
 }
 
-const LIFETIME_MS = () => Math.max(5, Number(process.env.AGENT_HOST_TIMEOUT_MIN || 45)) * 60_000;
+/** Vercel region the agent computer runs in. Sites see the browser as being there (state laws, geoblocks). */
+export const HOST_REGION = () => (process.env.AGENT_HOST_REGION || "iad1").trim();
+const LIFETIME_MS =() => Math.max(5, Number(process.env.AGENT_HOST_TIMEOUT_MIN || 45)) * 60_000;
 /** Replace the host when it has less than this left, so tasks don't die mid-way. */
 const RENEW_BEFORE_MS = 6 * 60_000;
 const APP_DIR = "/vercel/sandbox/app";
@@ -90,7 +93,7 @@ function hostEnv(): Record<string, string> {
     PORT: String(PORT),
     PLAYWRIGHT_BROWSERS_PATH: "/vercel/sandbox/ms-playwright",
   };
-  const keep = /^(DATABASE_URL|APP_ACCESS_KEY|APP_PASSWORD|SESSION_SECRET|LLM_[A-Z_]+|AGENT_(?!HOST|BACKEND)[A-Z_]+|LIVE_[A-Z_]+|SCREEN_[A-Z_]+|SEARCH_API_URL|WALLHAVEN_API_KEY|[A-Z]+_API_KEY|[A-Z]+_MODEL|[A-Z]+_VISION_MODEL|[A-Z]+_TOKEN_BUDGET|SENKO_LLM_URL|SENKO_LLM_KEY|OLLAMA_URL|OLLAMA_API_KEY)$/;
+  const keep = /^(DATABASE_URL|APP_ACCESS_KEY|APP_PASSWORD|SESSION_SECRET|LLM_[A-Z_]+|AGENT_(?!HOST|BACKEND)[A-Z_]+|LIVE_[A-Z_]+|SCREEN_[A-Z_]+|SEARCH_API_URL|WALLHAVEN_API_KEY|[A-Z]+_API_KEY|[A-Z]+_MODEL|[A-Z]+_VISION_MODEL|[A-Z]+_TOKEN_BUDGET|SENKO_LLM_URL|SENKO_LLM_KEY|BROWSER_PROXY_URL|OLLAMA_URL|OLLAMA_API_KEY)$/;
   for (const [k, v] of Object.entries(process.env)) {
     if (!v || !keep.test(k)) continue;
     if (/_URL$/.test(k) && k !== "DATABASE_URL" && /localhost|127\.0\.0\.1/.test(v)) continue;
@@ -124,6 +127,7 @@ async function boot(snapshotId: string, onStatus?: (text: string) => void): Prom
   const sb = await Sandbox.create({
     ...creds(),
     name,
+    region: HOST_REGION() as never,
     source: { type: "snapshot", snapshotId },
     resources: { vcpus: Math.max(1, Number(process.env.AGENT_HOST_VCPUS || 2)) },
     timeout: LIFETIME_MS(),
@@ -144,7 +148,7 @@ async function boot(snapshotId: string, onStatus?: (text: string) => void): Prom
     await sb.stop().catch(() => {});
     throw new Error(`The agent computer didn't start.${log ? `\n${log.toString("utf8").slice(-800)}` : ""}`);
   }
-  return { name, url, snapshotId, expiresAt: Date.now() + LIFETIME_MS() - 30_000 };
+  return { name, url, snapshotId, region: HOST_REGION(), expiresAt: Date.now() + LIFETIME_MS() - 30_000 };
 }
 
 async function stopHost(name: string) {
@@ -170,7 +174,7 @@ export async function ensureHost(onStatus?: (text: string) => void): Promise<Age
   const owner = Math.random().toString(36).slice(2);
   while (Date.now() < deadline) {
     const cur = await kvGet<AgentHost>(CURRENT_KEY);
-    const fresh = cur && cur.snapshotId === snap.snapshotId && cur.expiresAt - Date.now() > RENEW_BEFORE_MS;
+    const fresh = cur && cur.snapshotId === snap.snapshotId && (cur.region || "iad1") === HOST_REGION() && cur.expiresAt - Date.now() > RENEW_BEFORE_MS;
     if (cur && fresh && (await healthy(cur.url))) {
       g.__agentHost = { host: cur, at: Date.now() };
       return cur;
@@ -179,7 +183,7 @@ export async function ensureHost(onStatus?: (text: string) => void): Promise<Age
       try {
         // Someone may have finished booting while we waited for the lock.
         const again = await kvGet<AgentHost>(CURRENT_KEY);
-        if (again && again.snapshotId === snap.snapshotId && again.expiresAt - Date.now() > RENEW_BEFORE_MS && (await healthy(again.url))) {
+        if (again && again.snapshotId === snap.snapshotId && (again.region || "iad1") === HOST_REGION() && again.expiresAt - Date.now() > RENEW_BEFORE_MS && (await healthy(again.url))) {
           return again;
         }
         const host = await boot(snap.snapshotId, onStatus);

@@ -134,6 +134,26 @@ async function launch(): Promise<Browser> {
   throw new Error(`Couldn't start a browser.\n${errors.join("\n")}`);
 }
 
+/**
+ * BROWSER_PROXY_URL routes the agent's browser through a proxy / VPN exit, e.g.
+ * "http://user:pass@host:8080" or "socks5://host:1080", so sites see it in that location.
+ */
+export function browserProxy(): { server: string; username?: string; password?: string } | undefined {
+  const raw = (process.env.BROWSER_PROXY_URL || "").trim();
+  if (!raw) return undefined;
+  try {
+    const u = new URL(raw);
+    return {
+      server: `${u.protocol}//${u.host}`,
+      username: u.username ? decodeURIComponent(u.username) : undefined,
+      password: u.password ? decodeURIComponent(u.password) : undefined,
+    };
+  } catch {
+    console.warn("[browser] BROWSER_PROXY_URL is not a valid URL; ignoring it");
+    return undefined;
+  }
+}
+
 export async function getBrowser(): Promise<Browser> {
   if (!g.__agentBrowser) {
     g.__agentBrowser = launch().catch((e) => {
