@@ -50,6 +50,8 @@ const LOW_MEMORY_MB = Number(process.env.LOW_MEMORY_MB || (isLowMemoryHost() ? 8
 // changes, so a still page costs almost nothing. LIVE_QUALITY trades sharpness for bandwidth.
 const FPS = Math.min(60, Math.max(1, Number(process.env.LIVE_FPS || (isLowMemoryHost() ? 12 : 30))));
 const QUALITY = Math.min(95, Math.max(20, Number(process.env.LIVE_QUALITY || (isLowMemoryHost() ? 50 : 60))));
+// Live view size relative to the real screen. Smaller frames encode much faster on weak CPUs.
+const SCALE = Math.min(1, Math.max(0.3, Number(process.env.LIVE_SCALE || (isLowMemoryHost() ? 0.75 : 1))));
 
 export function liveInfo(): LiveInfo {
   const m = browserMode();
@@ -365,15 +367,27 @@ export class BrowserSession {
       this.castPage = p;
       this.cdp = await this.context.newCDPSession(p);
       const minGap = 1000 / FPS;
-      this.cdp.on("Page.screencastFrame", (f: { data: string; sessionId: number; metadata: { deviceWidth: number; deviceHeight: number } }) => {
-        this.cdp?.send("Page.screencastFrameAck", { sessionId: f.sessionId }).catch(() => {});
+      const cdp = this.cdp;
+      cdp.on("Page.screencastFrame", (f: { data: string; sessionId: number; metadata: { deviceWidth: number; deviceHeight: number } }) => {
         const now = Date.now();
-        if (now - this.lastFrameAt < minGap) return;
         this.lastFrameAt = now;
         this.lastFrame = { data: f.data, width: f.metadata.deviceWidth, height: f.metadata.deviceHeight };
         this.emit({ type: "frame", ...this.lastFrame });
+        // Chrome encodes the next frame only after this ack. Acking when the next frame is
+        // actually due (instead of right away and dropping extras) means no CPU is spent
+        // encoding frames nobody sees, which is what keeps weak servers smooth.
+        const ack = () => cdp.send("Page.screencastFrameAck", { sessionId: f.sessionId }).catch(() => {});
+        const wait = minGap - (Date.now() - now);
+        if (wait > 4) setTimeout(ack, wait);
+        else void ack();
       });
-      await this.cdp.send("Page.startScreencast", { format: "jpeg", quality: QUALITY, maxWidth: SCREEN.width, maxHeight: SCREEN.height, everyNthFrame: 1 });
+      await cdp.send("Page.startScreencast", {
+        format: "jpeg",
+        quality: QUALITY,
+        maxWidth: Math.round(SCREEN.width * SCALE),
+        maxHeight: Math.round(SCREEN.height * SCALE),
+        everyNthFrame: 1,
+      });
     } catch {
       this.cdp = null;
       this.castPage = null;
