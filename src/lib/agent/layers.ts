@@ -34,6 +34,9 @@ export async function browserProblem(): Promise<string | null> {
 
 export async function runLayered(opts: RunOptions): Promise<void> {
   const { goal, chatId, emit, signal } = opts;
+  // Default: the real browser (live view, cursor, clicks) whenever one is reachable.
+  // AGENT_LAYERS=fast answers reading questions over HTTP first instead.
+  if (process.env.AGENT_LAYERS !== "fast" && !(await browserProblem())) return runAgent(opts);
   const forced = process.env.AGENT_LAYERS === "browser";
   // A chat that already has a browser open keeps using it ("pause it", "the second one").
   const hasBrowser = !!sessions.get(chatId);
