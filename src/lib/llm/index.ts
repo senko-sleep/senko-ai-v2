@@ -158,7 +158,42 @@ function isCooling(provider: string, model: string) {
   return c && c.until > Date.now() ? c : null;
 }
 function coolDown(provider: string, model: string, ms: number, reason: string, retryable = false) {
-  cooldowns.set(coolKey(provider, model), { until: Date.now() + ms, reason, retryable });
+  const c = { until: Date.now() + ms, reason, retryable };
+  cooldowns.set(coolKey(provider, model), c);
+  // Long cooldowns (daily caps, no credit) are shared through the database, so every server
+  // process (and the agent computer) skips that model instead of each finding out again.
+  if (ms >= SHARED_COOL_MS) {
+    void import("@/lib/server/db")
+      .then(({ q }) =>
+        q(
+          "INSERT INTO app_kv (key, value, updated_at) VALUES ($1, $2, now()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+          [`llm.cool:${coolKey(provider, model)}`, JSON.stringify(c)]
+        )
+      )
+      .catch(() => {});
+  }
+}
+
+const SHARED_COOL_MS = 5 * 60_000;
+let sharedSyncedAt = 0;
+/** Pull long cooldowns other processes recorded (at most every 30s; never blocks for long). */
+async function syncSharedCooldowns() {
+  if (Date.now() - sharedSyncedAt < 30_000) return;
+  sharedSyncedAt = Date.now();
+  try {
+    const { q } = await import("@/lib/server/db");
+    const rows = await Promise.race([
+      q<{ key: string; value: string }>("SELECT key, value FROM app_kv WHERE key LIKE 'llm.cool:%'"),
+      new Promise<never>((_, no) => setTimeout(() => no(new Error("slow")), 1500)),
+    ]);
+    for (const r of rows) {
+      const c = JSON.parse(r.value) as { until: number; reason: string; retryable: boolean };
+      const k = r.key.slice("llm.cool:".length);
+      if (c.until > Date.now() && (cooldowns.get(k)?.until ?? 0) < c.until) cooldowns.set(k, c);
+    }
+  } catch {
+    /* no database or slow: local cooldowns still work */
+  }
 }
 
 class ProviderError extends Error {
@@ -763,8 +798,13 @@ function friendly(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** Start a backup model if the current one hasn't started answering after this long. */
-const HEDGE_MS = () => num("LLM_HEDGE_MS", 2500);
+/**
+ * Start a backup model if the current one hasn't started answering after this long.
+ * Screenshots make models slower to start, so those get more patience. Every backup is a
+ * real request against someone's quota, so at most MAX_PARALLEL run at once.
+ */
+const HEDGE_MS = (vision = false) => (vision ? num("LLM_HEDGE_VISION_MS", 7000) : num("LLM_HEDGE_MS", 3500));
+const MAX_PARALLEL = () => Math.max(1, num("LLM_MAX_PARALLEL", 2));
 /** Give up on a model that hasn't sent its first words after this long. */
 const FIRST_TOKEN_MS = () => num("LLM_FIRST_TOKEN_MS", 20_000);
 
@@ -846,12 +886,14 @@ async function raceCandidates(
 
     const scheduleHedge = () => {
       if (hedge) clearTimeout(hedge);
-      const ms = HEDGE_MS();
-      if (ms > 0 && started.includes(false)) hedge = setTimeout(() => launch(true), ms);
+      const ms = HEDGE_MS(messages.some((m) => m.images?.length));
+      if (ms > 0 && started.includes(false) && running < MAX_PARALLEL()) hedge = setTimeout(() => launch(true), ms);
     };
 
     function launch(asBackup = false) {
       if (done) return;
+      // A backup only while fewer than MAX_PARALLEL are in flight; failures still move on at once.
+      if (asBackup && running >= MAX_PARALLEL()) return;
       // A backup should come from another provider: one provider is often slow as a whole.
       let i = asBackup ? queue.findIndex((q, n) => !started[n] && !live.has(q.p.id)) : -1;
       if (i < 0) i = started.indexOf(false);
@@ -912,6 +954,7 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
   const skipped: string[] = [];
   const deadline = Date.now() + (opts.maxWaitMs ?? 30_000);
 
+  await syncSharedCooldowns();
   for (let round = 0; round < 6; round++) {
     // Each round reports fresh reasons (retry times change between rounds).
     errors.length = 0;
@@ -943,7 +986,9 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
       const pe = e instanceof ProviderError ? e : null;
       const status = pe?.status ?? 0;
       if (!opts.simulateFail?.includes(c.provider)) {
-        const daily = /per day|daily|RPD|quota/i.test(pe?.message || "");
+        // Only real daily caps get the long cooldown. Gemini says "exceeded your current quota" for
+        // per-minute limits too, so "quota" alone isn't a sign; trust its retry hint instead.
+        const daily = /per ?day|daily|RPD|free-models-per-day/i.test(pe?.message || "") || (pe?.retryMs ?? 0) > 60 * 60_000;
         const ms =
           isTooLarge(e) ? 5_000 // not the provider's fault; a smaller request may work right away
           : status === 429 ? Math.max(pe?.retryMs ?? 30_000, daily ? 60 * 60_000 : 15_000)
