@@ -235,7 +235,7 @@ type Action =
   | { action: "search"; query: string }
   | { action: "goto"; url: string }
   | { action: "click"; id: number }
-  | { action: "type"; id: number; text: string; submit?: boolean }
+  | { action: "type"; id?: number; text: string; submit?: boolean }
   | { action: "press"; key: string }
   | { action: "scroll"; direction?: "up" | "down" }
   | { action: "back" }
@@ -265,7 +265,7 @@ Actions:
 {"action":"search","query":"..."}                     web search (Bing). Use it when the user didn't name a site, then pick the best match.
 {"action":"goto","url":"https://..."}                 open a URL (any site the user names or pastes)
 {"action":"click","id":12}                            click element [12]
-{"action":"type","id":5,"text":"...","submit":true}   type into a field; submit presses Enter
+{"action":"type","id":5,"text":"...","submit":true}   type into a field; submit presses Enter. Works on any editor (math boxes, code editors, rich text): non-form fields get real keystrokes. Omit id to type into whatever is focused now. "\\n" in text presses Enter.
 {"action":"press","key":"Escape"}                     press a key (Escape, Enter, ArrowRight, Space, f, ...)
 {"action":"scroll","direction":"down"}                or "up"
 {"action":"back"}
@@ -289,6 +289,7 @@ Rules:
 - For "play" goals: the job isn't done until Video says PLAYING. If it isn't, try the play button, dismiss overlays, or click the video.
 - Unexpected pop-ups/new tabs are closed automatically; use dismiss for in-page overlays and ads.
 - If a login, paywall or captcha blocks you, don't invent credentials: finish with done, say exactly what's needed, and give the URL.
+- EDITORS & MATH TOOLS (Desmos, GeoGebra, code editors, docs): click the box, then type the way a person types on a keyboard, not LaTeX. In Desmos/MathQuill: "^" starts an exponent and "/" starts a fraction (press ArrowRight to leave them), type "<=" for ≤, "sqrt" for √, "pi" for π, and limit a shape with braces (a square face in 3D: z=0{-1<=x<=1}{-1<=y<=1}); type several expressions in one go separated by "\\n" (each Enter makes a new line) with submit:false. Desmos has a real 3D calculator at https://www.desmos.com/3d (use it for anything 3D). Check the screenshot after typing and fix mistakes.
 - Only use element ids from the CURRENT list. Scroll if what you need isn't listed.
 - When the user says "first option", "first result", "first image", "first one" in the context of a search results page or image grid, they mean the first visible item in that grid/list — click it.
 - IMAGE RECOGNITION: When the user asks to click a specific image by visual description (e.g. the one where she's drinking, the crying gif, the one with peanuts), use examine_images with the user's own description; it finds the image on screen and clicks it. Never guess visually. If it finds no match, scroll down and run it again.
@@ -651,20 +652,39 @@ export async function runAgent(opts: RunOptions): Promise<void> {
             break;
           }
           case "type": {
+            const text = String(d.text ?? "");
+            const hasId = d.id !== undefined && d.id !== null && String(d.id) !== "";
             const sel = `[data-agent-id="${Number(d.id)}"]`;
-            if ((await p.locator(sel).count()) === 0) {
+            if (hasId && (await p.locator(sel).count()) === 0) {
               ok = false;
               result = `Element ${d.id} isn't on the page anymore.`;
               break;
             }
-            const at = await pointAt(s, sel);
-            if (at) s.emit({ type: "cursor", x: at.x, y: at.y, kind: "click", box: null, width: at.vp.width, height: at.vp.height });
-            await p.locator(sel).first().click({ timeout: 4000 }).catch(() => {});
-            await p.locator(sel).first().fill(String(d.text ?? ""), { timeout: 5000 });
-            // The field is focused after fill(); press Enter on the page so a submit that
-            // navigates away (and removes the field) doesn't wait 30s for it.
+            let how = "";
+            if (hasId) {
+              const at = await pointAt(s, sel);
+              if (at) s.emit({ type: "cursor", x: at.x, y: at.y, kind: "click", box: null, width: at.vp.width, height: at.vp.height });
+              const el = p.locator(sel).first();
+              if (at) await p.mouse.click(at.x, at.y);
+              else await el.click({ timeout: 4000 }).catch(() => {});
+              // Plain form fields: fill() is instant and replaces what's there. Anything else
+              // (Desmos/MathQuill, code editors, canvas apps) only listens to real keystrokes.
+              const isField = await el
+                .evaluate((n) => n instanceof HTMLInputElement || n instanceof HTMLTextAreaElement || n instanceof HTMLSelectElement)
+                .catch(() => false);
+              if (isField && !text.includes("\n")) {
+                await el.fill(text, { timeout: 5000 });
+                how = "fill";
+              }
+            }
+            if (!how) {
+              await p.keyboard.type(text, { delay: 12 });
+              how = "keys";
+            }
+            // The field is focused now; press Enter on the page so a submit that navigates
+            // away (and removes the field) doesn't wait 30s for it.
             if (d.submit !== false) await p.keyboard.press("Enter");
-            result = `Typed "${d.text}"`;
+            result = how === "keys" ? `Typed "${text}" as keystrokes (check the screenshot that it landed right)` : `Typed "${text}"`;
             break;
           }
           case "press":
