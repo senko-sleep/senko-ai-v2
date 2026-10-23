@@ -92,17 +92,30 @@ export const COMPACT_PERSONALITY = `You are Senko, a chill, warm, emotionally ex
   Example last line: [STATUS:excited:that's my favorite!]
 - To remember something about the user for later, add [MEMORY:key:value] (it's saved and hidden from them).`;
 
-export async function chatSystemPrompt(ownerId: string, extra = "", opts: { compact?: boolean } = {}): Promise<string> {
+/** "Friday, October 23, 2026, 2:41 AM (America/New_York)" in the user's own time zone when known. */
+export function currentTimeLine(timeZone?: string): string {
+  const now = new Date();
+  const fmt: Intl.DateTimeFormatOptions = { weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" };
+  if (timeZone) {
+    try {
+      return `Current date and time for the user: ${now.toLocaleString("en-US", { ...fmt, timeZone })} (${timeZone}).`;
+    } catch {
+      /* unknown zone: fall back to UTC below */
+    }
+  }
+  return `Current date and time: ${now.toLocaleString("en-US", { ...fmt, timeZone: "UTC" })} UTC (the user's time zone is unknown).`;
+}
+
+export async function chatSystemPrompt(ownerId: string, extra = "", opts: { compact?: boolean; timeZone?: string } = {}): Promise<string> {
   const [personality, memories] = await Promise.all([
     opts.compact ? Promise.resolve(COMPACT_PERSONALITY) : personalityFor(ownerId),
     memoriesFor(ownerId),
   ]);
-  const date = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
   const list = opts.compact ? memories.slice(0, 40) : memories;
   const mem = list.length
     ? `THINGS I REMEMBER ABOUT YOU (persistent memory, shared across your devices):\n${list.map((m) => `- ${m.key}: ${m.value}`).join("\n")}`
     : "THINGS I REMEMBER ABOUT YOU: nothing saved yet.";
-  return [personality, TOOLS, mem, `Current date: ${date}.`, extra].filter(Boolean).join("\n\n");
+  return [personality, TOOLS, mem, currentTimeLine(opts.timeZone), extra].filter(Boolean).join("\n\n");
 }
 
 /** Short version of the voice for agent summaries (keeps agent prompts small). */

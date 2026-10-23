@@ -21,4 +21,7 @@ ENV NODE_ENV=production \
 EXPOSE 3000
 
 # Hosts like Render/Railway pass their own $PORT.
-CMD ["sh", "-c", "exec npx next start -H 0.0.0.0 -p ${PORT:-3000}"]
+# Run Next directly (npx would keep an extra npm process in memory). The heap cap leaves
+# room for Chrome on small instances; raise it with NODE_OPTIONS on bigger plans.
+ENV NODE_OPTIONS=--max-old-space-size=320
+CMD ["sh", "-c", "exec node node_modules/next/dist/bin/next start -H 0.0.0.0 -p ${PORT:-3000}"]

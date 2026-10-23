@@ -136,6 +136,12 @@ const g = globalThis as unknown as { __db?: Promise<Driver> };
 
 async function init(): Promise<Driver> {
   const url = process.env.DATABASE_URL?.trim();
+  if (!url && process.env.NODE_ENV === "production" && process.env.DATA_DIR !== ":memory:") {
+    console.warn(
+      "[db] DATABASE_URL is not set: using the embedded database. It needs a lot of RAM (small hosts like Render free crash) " +
+        "and on most hosts its files are wiped on every deploy. Set DATABASE_URL to a Postgres/Neon URL."
+    );
+  }
   const driver = url ? await createPg(url) : await createPglite();
   if (url) {
     for (const stmt of SCHEMA.split(";").map((s) => s.trim()).filter(Boolean)) await driver.query(stmt);

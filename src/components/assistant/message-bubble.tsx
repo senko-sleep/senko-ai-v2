@@ -286,7 +286,7 @@ export const MessageBubble = memo(function MessageBubble({
           </form>
         ) : (
           msg.content && (
-            <div className="flex max-w-full items-center justify-end gap-1.5">
+            <div className="flex w-full items-center justify-end gap-1.5">
               {onEdit && (
                 <button
                   type="button"

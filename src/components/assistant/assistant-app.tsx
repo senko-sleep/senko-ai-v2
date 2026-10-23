@@ -477,7 +477,13 @@ export default function AssistantApp() {
         const res = await fetch(`/api/chats/${chatId}/messages`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content, imageIds, provider, truncateFrom: opts?.truncateFrom }),
+          body: JSON.stringify({
+            content,
+            imageIds,
+            provider,
+            truncateFrom: opts?.truncateFrom,
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          }),
           signal: ctl.signal,
         });
         if (!res.ok) throw new Error(await errorFromResponse(res));
@@ -645,6 +651,7 @@ export default function AssistantApp() {
           ),
         }));
       let finished = false;
+      let serverReplyId = "";
 
       try {
         const res = await fetch(`/api/chats/${chatId}/agent`, {
@@ -658,6 +665,7 @@ export default function AssistantApp() {
           const e = d as { type: string } & Record<string, unknown>;
           switch (e.type) {
             case "start":
+              if (typeof e.messageId === "string") serverReplyId = e.messageId;
               if (opts?.userId && typeof e.userMessageId === "string") {
                 patch(opts.userId, (m) => ({ ...m, id: String(e.userMessageId) }));
               }
@@ -721,6 +729,29 @@ export default function AssistantApp() {
               break;
           }
         });
+        if (!finished && serverReplyId && !ctl.signal.aborted) {
+          // The connection dropped (proxy timeout, phone sleep, flaky network) but the agent
+          // keeps working on the server. Wait for its saved result instead of failing.
+          setBrowser((b) => ({ ...b, status: "Still working… (reconnecting)" }));
+          const deadline = Date.now() + 60 * 60_000;
+          while (!ctl.signal.aborted && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 3000));
+            const stored = await API.getChat(chatId).catch(() => null);
+            const m = stored?.messages.find((x) => x.id === serverReplyId);
+            const st = m?.meta?.agent?.status;
+            if (!m || !st || st === "running") continue;
+            finished = true;
+            const final = fromStored(m);
+            end(st === "done" ? "done" : st === "error" ? "error" : "stopped", final.agent?.url);
+            handOverRef.current(chatId);
+            patch(replyId, () => ({ ...final, id: replyId, pending: false }));
+            if (st === "paused") {
+              setPaused(true);
+              setControlling(true);
+            }
+            break;
+          }
+        }
         if (!finished) throw new Error("The connection to the agent closed before it finished.");
       } catch (err) {
         if (ctl.signal.aborted) {

@@ -10,7 +10,9 @@ services:
     plan: free
     healthCheckPath: /api/health
     envVars:
-      - key: APP_PASSWORD # browser asks for it once; any username works
+      - key: DATABASE_URL # REQUIRED: the same Neon URL as Vercel. Without it the app uses an
+        sync: false       # embedded DB that runs out of memory on 512 MB and loses chats on every deploy.
+      - key: APP_PASSWORD # browser asks for it once; any username works (must match Vercel's)
         sync: false
       - key: GROQ_API_KEY # free key at https://console.groq.com/keys
         sync: false

@@ -1,5 +1,5 @@
 // Multi-engine image scraper used by /api/images and normal chat replies.
-// Scrapes Bing, Google, DuckDuckGo, Yahoo, Brave, Reddit, Wikimedia, Boorus
+// Scrapes Bing, DuckDuckGo, Reddit, Wikimedia, Wallhaven, Boorus
 // (Danbooru/Safebooru, Rule34, Gelbooru, e621), and deep gallery pages in parallel,
 // returning ~255 deduplicated images per page with engine attribution.
 
@@ -76,11 +76,24 @@ export function normalizeImageUrl(url: string): string {
   }
 }
 
+/**
+ * Key that is the same for size/format variants of one picture, e.g.
+ * thumb-350-123.jpeg, thumb-1920-123.webp and 123-800x600.jpg all collapse together.
+ */
+export function imageVariantKey(url: string): string {
+  return normalizeImageUrl(url)
+    .replace(/\.(jpe?g|png|webp|gif|avif)$/, "")
+    .replace(/\/(thumbnails?|thumbs?|samples?|previews?)\//g, "/")
+    .replace(/(^|[/_-])(thumb(nail)?|sample|preview)[-_]?(\d{2,4}[-_])?/g, "$1")
+    .replace(/[-_@]\d{2,4}x\d{0,4}(?=$|[-_.])/g, "")
+    .replace(/[-_](small|medium|large|scaled|full|orig(inal)?)(?=$|[-_.])/g, "");
+}
+
 function addImage(results: ScrapedImage[], seen: Set<string>, img: ScrapedImage): void {
   if (!img.url || !isValidImageUrl(img.url)) return;
-  const norm = normalizeImageUrl(img.url);
-  if (seen.has(norm)) return;
-  seen.add(norm);
+  const key = imageVariantKey(img.url);
+  if (seen.has(key)) return;
+  seen.add(key);
   results.push(img);
 }
 
@@ -146,63 +159,6 @@ async function fetchBingImages(query: string, page: number): Promise<ScrapedImag
   return results;
 }
 
-function extractSourceFromGoogleHtml(html: string, imgUrl: string): string {
-  const idx = html.indexOf(imgUrl.slice(0, 60));
-  if (idx > 0) {
-    const chunk = html.slice(Math.max(0, idx - 2000), idx);
-    const matches = [...chunk.matchAll(/\["(https?:\/\/(?!encrypted-tbn)[^"]{10,})"/g)];
-    if (matches.length > 0) {
-      const last = matches[matches.length - 1][1];
-      if (!/\.(jpg|jpeg|png|gif|webp)/i.test(last)) return last;
-    }
-  }
-  try {
-    return new URL(imgUrl).origin;
-  } catch {
-    return "";
-  }
-}
-
-// ── 2. GOOGLE IMAGES (8 pages in parallel, ~160 raw images) ──
-async function fetchGoogleImages(query: string, page: number): Promise<ScrapedImage[]> {
-  const results: ScrapedImage[] = [];
-  const seen = new Set<string>();
-  try {
-    const encoded = encodeURIComponent(query);
-    const baseOffset = ((page - 1) % 3) * 120;
-    const offsets = Array.from({ length: 8 }, (_, i) => baseOffset + i * 20);
-    const pages = await Promise.allSettled(
-      offsets.map((off) =>
-        fetch(`https://www.google.com/search?q=${encoded}&tbm=isch&hl=en&start=${off}&safe=off`, {
-          headers: { ...HEADERS, Referer: "https://www.google.com/" },
-          signal: AbortSignal.timeout(9000),
-        }).then((r) => r.text())
-      )
-    );
-    for (const pg of pages) {
-      if (pg.status !== "fulfilled") continue;
-      const html = pg.value;
-      const jsonImgRegex = /\["(https?:\/\/[^"]+\.(?:jpg|jpeg|png|webp|gif)[^"]*)",\s*(\d+),\s*(\d+)\]/gi;
-      let match: RegExpExecArray | null;
-      while ((match = jsonImgRegex.exec(html)) !== null) {
-        const imgUrl = match[1].replace(/\\u003d/g, "=").replace(/\\u0026/g, "&");
-        const w = parseInt(match[2], 10);
-        const h = parseInt(match[3], 10);
-        if (w < 100 || h < 100) continue;
-        addImage(results, seen, {
-          url: imgUrl,
-          alt: query,
-          source: extractSourceFromGoogleHtml(html, match[1]),
-          engine: "google",
-        });
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-  return results;
-}
-
 // ── 3. DUCKDUCKGO IMAGES (3 pages via i.js JSON API) ──
 async function fetchDDGImages(query: string, page: number): Promise<ScrapedImage[]> {
   const results: ScrapedImage[] = [];
@@ -240,62 +196,6 @@ async function fetchDDGImages(query: string, page: number): Promise<ScrapedImage
               engine: "ddg",
             });
           }
-        }
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-  return results;
-}
-
-// ── 4. YAHOO IMAGES (3 pages in parallel) ──
-async function fetchYahooImages(query: string, page: number): Promise<ScrapedImage[]> {
-  const results: ScrapedImage[] = [];
-  const seen = new Set<string>();
-  try {
-    const encoded = encodeURIComponent(query);
-    const baseOffset = (page - 1) * 180;
-    const offsets = [baseOffset + 1, baseOffset + 61, baseOffset + 121];
-    const pages = await Promise.allSettled(
-      offsets.map((b) =>
-        fetch(`https://images.search.yahoo.com/search/images?p=${encoded}&b=${b}`, {
-          headers: HEADERS,
-          signal: AbortSignal.timeout(8000),
-        }).then((r) => r.text())
-      )
-    );
-    for (const pg of pages) {
-      if (pg.status !== "fulfilled") continue;
-      const html = pg.value;
-      // Yahoo embeds data-data='{..."iurl":"...","rurl":"..."}' orimgurl= in links
-      const dataRegex = /data=["']({[^"']*?(?:iurl|imgurl)[^"']*?})["']/gi;
-      let m: RegExpExecArray | null;
-      while ((m = dataRegex.exec(html)) !== null) {
-        try {
-          const decoded = m[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&");
-          const data = JSON.parse(decoded);
-          const url = data.iurl || data.imgurl || data.oi;
-          if (url) {
-            addImage(results, seen, {
-              url,
-              alt: data.alt || data.tit || query,
-              source: data.rurl || "",
-              engine: "yahoo",
-            });
-          }
-        } catch {
-          /* skip */
-        }
-      }
-      const paramRegex = /[?&]imgurl=(https?%3A%2F%2F[^&"']+)/gi;
-      let pm: RegExpExecArray | null;
-      while ((pm = paramRegex.exec(html)) !== null) {
-        try {
-          const url = decodeURIComponent(pm[1]);
-          addImage(results, seen, { url, alt: query, source: "", engine: "yahoo" });
-        } catch {
-          /* skip */
         }
       }
     }
@@ -386,6 +286,64 @@ async function fetchWikimediaImages(query: string, page: number): Promise<Scrape
   return results;
 }
 
+// Finds the most specific existing booru tag among the query's word runs.
+// "frieren anime" -> frieren, "hatsune miku" -> hatsune_miku.
+const booruTagCache = new Map<string, { name: string; specific: boolean } | null>();
+async function resolveBooruTag(words: string[]): Promise<{ name: string; specific: boolean } | null> {
+  const cacheKey = words.join(" ");
+  if (booruTagCache.has(cacheKey)) return booruTagCache.get(cacheKey) ?? null;
+  const candidates: string[] = [];
+  for (let len = Math.min(words.length, 4); len >= 1; len--) {
+    for (let i = 0; i + len <= words.length; i++) candidates.push(words.slice(i, i + len).join("_"));
+  }
+  let found: { name: string; specific: boolean } | null = null;
+  try {
+    const url = `https://danbooru.donmai.us/tags.json?search[name_comma]=${encodeURIComponent(candidates.slice(0, 20).join(","))}&search[hide_empty]=yes&limit=20`;
+    const r = await fetch(url, { headers: { "User-Agent": "SenkoAI/2.0 (ImageAggregator)" }, signal: AbortSignal.timeout(5000) });
+    if (r.ok) {
+      const tags = (await r.json()) as { name: string; post_count: number; category: number }[];
+      const usable = Array.isArray(tags) ? tags.filter((t) => t.post_count >= 20) : [];
+      // Prefer the longest (most specific) match, then the most used.
+      usable.sort((a, b) => b.name.split("_").length - a.name.split("_").length || b.post_count - a.post_count);
+      const best = usable[0];
+      // Categories 3 (series) and 4 (character) mean the query really is about anime/game art.
+      if (best) found = { name: best.name, specific: best.category === 3 || best.category === 4 };
+    }
+  } catch {
+    /* booru lookups are best effort */
+  }
+  booruTagCache.set(cacheKey, found);
+  if (booruTagCache.size > 500) booruTagCache.delete(booruTagCache.keys().next().value as string);
+  return found;
+}
+
+// ── 6b. WALLHAVEN (high-res wallpapers, JSON API) ──
+async function fetchWallhavenImages(query: string, page: number, nsfw: boolean): Promise<ScrapedImage[]> {
+  const results: ScrapedImage[] = [];
+  const seen = new Set<string>();
+  try {
+    const key = process.env.WALLHAVEN_API_KEY ? `&apikey=${encodeURIComponent(process.env.WALLHAVEN_API_KEY)}` : "";
+    const purity = nsfw ? (key ? "111" : "110") : "100";
+    const pages = await Promise.allSettled(
+      [page * 2 - 1, page * 2].map((p) =>
+        fetch(`https://wallhaven.cc/api/v1/search?q=${encodeURIComponent(query)}&page=${p}&purity=${purity}&sorting=relevance${key}`, {
+          headers: { "User-Agent": "SenkoAI/2.0 (ImageAggregator)", Accept: "application/json" },
+          signal: AbortSignal.timeout(7000),
+        }).then((r) => (r.ok ? r.json() : null))
+      )
+    );
+    for (const pg of pages) {
+      if (pg.status !== "fulfilled" || !Array.isArray(pg.value?.data)) continue;
+      for (const w of pg.value.data as { path?: string; url?: string; resolution?: string }[]) {
+        if (w.path) addImage(results, seen, { url: w.path, alt: `${query} ${w.resolution || ""}`.trim(), source: w.url || "", engine: "wallhaven" });
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return results;
+}
+
 // ── 7. BOORU / ART BOARDS (Danbooru/Safebooru, Rule34, Gelbooru, e621) ──
 async function fetchBooruEngines(query: string, page: number): Promise<ScrapedImage[]> {
   const results: ScrapedImage[] = [];
@@ -398,17 +356,24 @@ async function fetchBooruEngines(query: string, page: number): Promise<ScrapedIm
 
   const cleanSubject = query
     .replace(
-      /\b(r34|rule\s*34|nsfw|hentai|porn|xxx|lewd|nude|naked|explicit|images?|pics?|pictures?|photos?|gifs?|animated|wallpapers?|gallery|art|fan\s*art|show\s*me|send\s*me|find|get\s*me|of|on|from|for|the|a|an|e621|gelbooru|danbooru|paheal|xbooru)\b/gi,
+      /\b(r34|rule\s*34|nsfw|hentai|porn|xxx|lewd|nude|naked|explicit|images?|pics?|pictures?|photos?|gifs?|animated|wallpapers?|gallery|art|fan\s*art|anime|manga|character|show\s*me|send\s*me|find|get\s*me|of|on|from|for|the|a|an|e621|gelbooru|danbooru|paheal|xbooru)\b/gi,
       ""
     )
     .trim();
 
   if (!cleanSubject) return results;
 
-  // Booru tags use underscores for multi-word tags when searching single subjects, or + between tags
   const words = cleanSubject.toLowerCase().split(/\s+/).filter(Boolean);
-  const plusTags = (isGif ? [...words, "animated"] : words).join("+");
-  const underscoreTag = words.length === 2 ? `${words[0]}_${words[1]}` : plusTags;
+  const animeHint = /\b(anime|manga|waifu|fan\s*art|booru|character|vtuber)\b/i.test(query);
+  const resolved = await resolveBooruTag(words);
+  // Without a known character/series tag, boorus only add noise to normal searches.
+  if (!resolved && !isNsfw && !animeHint) return results;
+  if (resolved && !resolved.specific && !isNsfw && !animeHint) return results;
+  const mainTag = resolved?.name || words.join("_");
+  // Space separates tags; anonymous Danbooru allows at most 2.
+  const allTags = (isGif ? [mainTag, "animated"] : [mainTag]).join(" ");
+  const plusTags = allTags;
+  const underscoreTag = allTags;
 
   const tasks: Promise<void>[] = [];
 
@@ -444,7 +409,7 @@ async function fetchBooruEngines(query: string, page: number): Promise<ScrapedIm
   tasks.push(
     (async () => {
       try {
-        const tagParam = words.length <= 2 ? underscoreTag : words.slice(0, 2).join("+");
+        const tagParam = allTags;
         const apiUrl = `https://danbooru.donmai.us/posts.json?limit=80&page=${page}&tags=${encodeURIComponent(tagParam)}`;
         const r = await fetch(apiUrl, {
           headers: { "User-Agent": "SenkoAI/2.0 (ImageAggregator)" },
@@ -599,11 +564,16 @@ export async function scrapeImagesFromPageUrl(pageUrl: string, defaultAlt = ""):
     const srcsetRegex = /srcset=["']([^"']+)["']/gi;
     let srcM: RegExpExecArray | null;
     while ((srcM = srcsetRegex.exec(html)) !== null) {
-      const entries = srcM[1].split(",").map((s) => s.trim().split(/\s+/)[0]);
-      for (const entry of entries) {
-        const s = resolveImg(entry);
-        if (s) addImage(imgs, seen, { url: s, alt: defaultAlt, source: pageUrl, engine: "gallery" });
-      }
+      // "a.jpg 320w, b.jpg 1280w" -> b.jpg (largest width/density)
+      const entries = srcM[1]
+        .split(/,\s+(?=\S)/)
+        .map((part) => {
+          const [u, d = ""] = part.trim().split(/\s+/);
+          return { u, size: parseFloat(d) * (d.endsWith("x") ? 1000 : 1) || 0 };
+        })
+        .sort((a, b) => b.size - a.size);
+      const s = entries[0] ? resolveImg(entries[0].u) : null;
+      if (s) addImage(imgs, seen, { url: s, alt: defaultAlt, source: pageUrl, engine: "gallery" });
     }
 
     const lazyRegex = /(?:data-src|data-original|data-lazy-src|data-full|data-image)=["'](https?:\/\/[^"']+)["']/gi;
@@ -636,6 +606,30 @@ export async function scrapeImagesFromPageUrl(pageUrl: string, defaultAlt = ""):
   return imgs;
 }
 
+// Sites that show nothing useful without a login or JavaScript.
+const NO_GALLERY_HOSTS = /(youtube\.com|google\.|facebook\.com|instagram\.com|tiktok\.com|pinterest\.|twitter\.com|x\.com\/)/i;
+
+async function bingWebResultUrls(query: string): Promise<string[]> {
+  try {
+    const r = await fetch(`https://www.bing.com/search?q=${encodeURIComponent(query)}&count=15`, {
+      headers: HEADERS,
+      signal: AbortSignal.timeout(7000),
+    });
+    if (!r.ok) return [];
+    const html = await r.text();
+    const out: string[] = [];
+    const re = /<li class="b_algo"[\s\S]*?<h2[^>]*>\s*<a[^>]*href="(https?:\/\/[^"]+)"/gi;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(html)) !== null && out.length < 8) {
+      const u = m[1].replace(/&amp;/g, "&");
+      if (!NO_GALLERY_HOSTS.test(u) && !/bing\.com|microsoft\.com/.test(u)) out.push(u);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 async function scrapeGalleryImages(query: string): Promise<ScrapedImage[]> {
   const results: ScrapedImage[] = [];
   const seen = new Set<string>();
@@ -645,13 +639,12 @@ async function scrapeGalleryImages(query: string): Promise<ScrapedImage[]> {
       headers: { ...HEADERS, Referer: "https://duckduckgo.com/" },
       signal: AbortSignal.timeout(7000),
     });
-    if (!searchRes.ok) return results;
-    const searchHtml = await searchRes.text();
+    const searchHtml = searchRes.ok ? await searchRes.text() : "";
 
     const galleryUrls: string[] = [];
     const urlRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*/gi;
     let urlMatch: RegExpExecArray | null;
-    while ((urlMatch = urlRegex.exec(searchHtml)) !== null && galleryUrls.length < 6) {
+    while ((urlMatch = urlRegex.exec(searchHtml)) !== null && galleryUrls.length < 8) {
       try {
         const raw = urlMatch[1].replace(/&amp;/g, "&");
         const decoded = decodeURIComponent(raw);
@@ -662,11 +655,18 @@ async function scrapeGalleryImages(query: string): Promise<ScrapedImage[]> {
         } else {
           pageUrl = decoded;
         }
-        if (pageUrl && pageUrl.startsWith("http") && !pageUrl.includes("youtube.com") && !pageUrl.includes("google.com")) {
+        if (pageUrl && pageUrl.startsWith("http") && !NO_GALLERY_HOSTS.test(pageUrl)) {
           galleryUrls.push(pageUrl);
         }
       } catch {
         /* skip */
+      }
+    }
+
+    if (galleryUrls.length < 3) {
+      for (const u of await bingWebResultUrls(`${query} wallpaper gallery`)) {
+        if (galleryUrls.length >= 8) break;
+        if (!galleryUrls.includes(u)) galleryUrls.push(u);
       }
     }
 
@@ -715,27 +715,18 @@ export async function searchMultiEngineImages(
         .catch(() => [])
     : Promise.resolve([]);
 
-  const [
-    proxyResults,
-    bingResults,
-    googleResults,
-    ddgResults,
-    yahooResults,
-    redditResults,
-    wikimediaResults,
-    booruResults,
-    galleryResults,
-  ] = await Promise.all([
-    proxyPromise,
-    fetchBingImages(pagedQuery, page),
-    fetchGoogleImages(pagedQuery, page),
-    fetchDDGImages(pagedQuery, page),
-    fetchYahooImages(pagedQuery, page),
-    fetchRedditImages(query, page),
-    fetchWikimediaImages(query, page),
-    fetchBooruEngines(query, page),
-    scrapeGalleryImages(pagedQuery),
-  ]);
+  const nsfw = /\b(r34|rule\s*34|nsfw|hentai|porn|xxx|lewd|nude|naked|explicit|ecchi)\b/i.test(query);
+  const [proxyResults, bingResults, ddgResults, redditResults, wikimediaResults, wallhavenResults, booruResults, galleryResults] =
+    await Promise.all([
+      proxyPromise,
+      fetchBingImages(pagedQuery, page),
+      fetchDDGImages(pagedQuery, page),
+      fetchRedditImages(query, page),
+      fetchWikimediaImages(query, page),
+      fetchWallhavenImages(query, page, nsfw),
+      fetchBooruEngines(query, page),
+      scrapeGalleryImages(pagedQuery),
+    ]);
 
   const images: ScrapedImage[] = [];
   const seen = new Set<string>();
@@ -743,13 +734,12 @@ export async function searchMultiEngineImages(
   // Interleave all engine batches so the first ~255 images represent every browser/source
   const batches: ScrapedImage[][] = [
     bingResults,
-    googleResults,
     ddgResults,
-    yahooResults,
-    redditResults,
+    wallhavenResults,
     booruResults,
-    wikimediaResults,
     galleryResults,
+    redditResults,
+    wikimediaResults,
     proxyResults,
   ].filter((b) => b.length > 0);
 

@@ -12,3 +12,5 @@ probe-*.js
 test-*.js
 remove-tabs.ps1
 .data
+test-results
+scratch

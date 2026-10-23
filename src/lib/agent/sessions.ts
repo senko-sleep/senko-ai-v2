@@ -6,9 +6,8 @@
 // - Broadcasts live-view frames, cursor moves, steps and logs to subscribers.
 // - The only automatic shutdowns are real resource limits (MAX_LIVE_SESSIONS / low memory);
 //   evicted sessions are saved first and restore when you come back, and the UI is told why.
-import os from "node:os";
 import type { BrowserContext, CDPSession, Page } from "playwright";
-import { SCREEN, browserMode, desktopUserAgent, getBrowser, isHeaded } from "./browser";
+import { SCREEN, browserMode, desktopUserAgent, freeMemoryMB, getBrowser, isHeaded, isLowMemoryHost } from "./browser";
 import { isAdHost, isPrivateUrl } from "./safety";
 import { json, newId, q, q1, toBuffer } from "@/lib/server/db";
 
@@ -45,12 +44,12 @@ interface SavedTab {
   videoTime?: number;
 }
 
-const MAX_LIVE = Math.max(1, Number(process.env.MAX_LIVE_SESSIONS || 3));
-const LOW_MEMORY_MB = Number(process.env.LOW_MEMORY_MB || 250);
+const MAX_LIVE = Math.max(1, Number(process.env.MAX_LIVE_SESSIONS || (isLowMemoryHost() ? 1 : 3)));
+const LOW_MEMORY_MB = Number(process.env.LOW_MEMORY_MB || (isLowMemoryHost() ? 80 : 250));
 // Live view frame rate. 30 keeps video watchable; Chrome only sends frames when the page
 // changes, so a still page costs almost nothing. LIVE_QUALITY trades sharpness for bandwidth.
-const FPS = Math.min(60, Math.max(1, Number(process.env.LIVE_FPS || 30)));
-const QUALITY = Math.min(95, Math.max(20, Number(process.env.LIVE_QUALITY || 60)));
+const FPS = Math.min(60, Math.max(1, Number(process.env.LIVE_FPS || (isLowMemoryHost() ? 12 : 30))));
+const QUALITY = Math.min(95, Math.max(20, Number(process.env.LIVE_QUALITY || (isLowMemoryHost() ? 50 : 60))));
 
 export function liveInfo(): LiveInfo {
   const m = browserMode();
@@ -564,13 +563,13 @@ class SessionManager {
 
   /** Real limits only: too many live browsers, or the machine is low on memory. */
   private async makeRoom(forChat: string) {
-    const lowMem = () => os.freemem() / 1024 / 1024 < LOW_MEMORY_MB;
+    const lowMem = () => freeMemoryMB() < LOW_MEMORY_MB;
     while (this.live.size >= MAX_LIVE || (lowMem() && this.live.size > 0)) {
       const victims = [...this.live.values()].filter((s) => s.chatId !== forChat && !s.running).sort((a, b) => a.lastUsed - b.lastUsed);
       const v = victims[0];
       if (!v) break;
       const why = lowMem()
-        ? `the server is low on memory (${Math.round(os.freemem() / 1024 / 1024)} MB free)`
+        ? `the server is low on memory (${freeMemoryMB()} MB free)`
         : `only ${MAX_LIVE} browser sessions fit in memory at once (MAX_LIVE_SESSIONS)`;
       v.log(`Session paused because ${why}. It was saved and will restore when you return.`, "warn");
       this.live.delete(v.chatId);

@@ -22,6 +22,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     content?: string;
     imageIds?: string[];
     provider?: string;
+    timeZone?: string;
     record?: { content: string; actions?: { url: string; label: string }[] };
     truncateFrom?: TruncateTarget;
   };
@@ -79,6 +80,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           content,
           imageIds,
           provider: body.provider,
+          timeZone: typeof body.timeZone === "string" ? body.timeZone.slice(0, 64) : undefined,
           signal: ctl.signal,
           onStart: (info) => send({ type: "start", ...info }),
           onDelta: (text) => send({ type: "delta", text }),

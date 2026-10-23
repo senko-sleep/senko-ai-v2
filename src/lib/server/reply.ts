@@ -21,6 +21,8 @@ export interface ReplyOptions {
   content: string;
   imageIds?: string[];
   provider?: string;
+  /** The user's IANA time zone (e.g. "America/New_York"), so "what time is it" is right. */
+  timeZone?: string;
   signal?: AbortSignal;
   /** Tests only: pretend these providers fail. */
   simulateFail?: string[];
@@ -77,15 +79,15 @@ export async function reply(o: ReplyOptions): Promise<StoredMessage> {
     if (imageQuery) {
       pageNote = [
         pageNote,
-        `IMAGE GALLERY: the app is already scraping images for "${imageQuery}" from Google, Bing, DuckDuckGo, Yahoo, Reddit, Wikimedia, image boards and gallery sites, and shows them under your reply as a carousel with a "View all images" gallery. Reply briefly and naturally (1-2 sentences). Don't paste image URLs or markdown images, and don't add an [[images: ...]] tag.`,
+        `IMAGE GALLERY: the app is already scraping images for "${imageQuery}" from Bing, DuckDuckGo, Wallhaven, Reddit, Wikimedia, image boards and gallery sites, and shows them under your reply as a carousel with a "View all images" gallery. Reply briefly and naturally (1-2 sentences). Don't paste image URLs or markdown images, and don't add an [[images: ...]] tag.`,
       ]
         .filter(Boolean)
         .join("\n\n");
     }
 
     const [system, compactSystem] = await Promise.all([
-      chatSystemPrompt(o.ownerId, pageNote),
-      chatSystemPrompt(o.ownerId, pageNote, { compact: true }),
+      chatSystemPrompt(o.ownerId, pageNote, { timeZone: o.timeZone }),
+      chatSystemPrompt(o.ownerId, pageNote, { compact: true, timeZone: o.timeZone }),
     ]);
     const messages: LlmMessage[] = [{ role: "system", content: system }, ...history];
     // compactSystem lets the LLM layer shrink long chats to fit each provider instead of failing.
