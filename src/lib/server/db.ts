@@ -3,6 +3,7 @@
 // so local dev and tests need no setup. Same SQL either way.
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 
 export type Row = Record<string, unknown>;
 
@@ -107,10 +108,16 @@ async function createPglite(): Promise<Driver> {
   if (process.env.DATA_DIR === ":memory:") {
     db = await PGlite.create();
   } else {
-    const dir = path.resolve(process.env.DATA_DIR || ".data", "pglite");
-    // PGlite only creates the last folder, so make the parents on a fresh checkout.
-    fs.mkdirSync(path.dirname(dir), { recursive: true });
-    db = await PGlite.create(dir);
+    try {
+      const defaultDataDir = process.env.VERCEL ? path.join(os.tmpdir(), ".data") : ".data";
+      const dir = path.resolve(process.env.DATA_DIR || defaultDataDir, "pglite");
+      // PGlite only creates the last folder, so make the parents on a fresh checkout.
+      fs.mkdirSync(path.dirname(dir), { recursive: true });
+      db = await PGlite.create(dir);
+    } catch (err) {
+      console.warn("[db] Failed to use file-backed PGlite, falling back to in-memory:", err);
+      db = await PGlite.create();
+    }
   }
   return {
     async query(sql, params) {
