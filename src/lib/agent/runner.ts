@@ -249,7 +249,7 @@ type Action =
   | { action: "fetch_image"; url: string; alt?: string }
   | { action: "make_collage"; ids?: string[]; label?: string }
   | { action: "clear_stash" }
-  | { action: "examine_images"; description: string }
+  | { action: "examine_images"; description: string; click?: boolean }
   | { action: "done"; answer: string; url?: string };
 
 type Decision = Action & { thought?: string; check?: { ok?: boolean; note?: string } };
@@ -279,7 +279,7 @@ Actions:
 {"action":"fetch_image","url":"https://...","alt":"description"} download an image into the session stash. Use direct media URLs (.jpg/.png/.webp) from the images list.
 {"action":"make_collage","ids":["img_..."],"label":"label"} combine stashed images into a single collage (omit ids to use all stashed images).
 {"action":"clear_stash"}                             delete all stashed images for this session
-{"action":"examine_images","description":"anya forger drinking"} use image recognition to identify which visible image best matches a description. Returns the matching image URL and which element to click. Use this when the user names a specific image by visual content (e.g. "the one where Anya is drinking", "the sad one", "click the gif of her cooking").
+{"action":"examine_images","description":"anya forger drinking"} look at every image on screen with vision AI and CLICK the one that best matches the description (add "click":false to only identify it). Pass the user's own words (e.g. "the green one"). Use this when the user names a specific image by visual content (e.g. "the one where Anya is drinking", "the sad one", "click the gif of her cooking").
 {"action":"done","answer":"<message for the user>","url":"<page URL>"}
 
 Rules:
@@ -291,8 +291,7 @@ Rules:
 - If a login, paywall or captcha blocks you, don't invent credentials: finish with done, say exactly what's needed, and give the URL.
 - Only use element ids from the CURRENT list. Scroll if what you need isn't listed.
 - When the user says "first option", "first result", "first image", "first one" in the context of a search results page or image grid, they mean the first visible item in that grid/list — click it.
-- IMAGE RECOGNITION: When the user asks to click a specific image by visual description (e.g. the one where she's drinking, the crying gif, the one with peanuts), use examine_images with that description BEFORE clicking. It runs vision AI on page images and returns which element to click. Never guess visually.
-- After examine_images reports a matching element id, immediately click it using that id.
+- IMAGE RECOGNITION: When the user asks to click a specific image by visual description (e.g. the one where she's drinking, the crying gif, the one with peanuts), use examine_images with the user's own description; it finds the image on screen and clicks it. Never guess visually. If it finds no match, scroll down and run it again.
 - Only state facts you saw during this task. Never guess URLs for specific episodes; click your way there.
 - Finish with done once every part of the goal is reached. For simple browser actions, use 1-3 sentences. For research, lists, or visual requests, give a useful Markdown answer with descriptive clickable source links and concise findings; use a table when comparing sources. Include relevant images from the observed image URLs using ![descriptive caption](exact image URL), with a nearby source-page link. For several images, place 2-4 images together in one paragraph. Never invent image URLs or use a search-page URL as an image. If no usable image URL is available for a requested visual, take a screenshot. Use only sources and images observed during this task. Keep the assistant's own voice described below.
 
@@ -479,7 +478,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
         {
           role: "system",
           content:
-            'You plan tasks for a browser agent. Break the goal into 1-6 short, concrete steps. If the goal is a simple question about the current page or a single action (pause, next episode, switch tab), one step is enough. Reply with JSON: {"steps": ["...", "..."]}',
+            'You plan tasks for a browser agent. Break the goal into 1-6 short, concrete steps. Keep the words the user used for what to look for (e.g. "the green one" means whichever image looks green): never swap in your guess of what it is. If the goal is a simple question about the current page or a single action (pause, next episode, switch tab), one step is enough. Reply with JSON: {"steps": ["...", "..."]}',
         },
         {
           role: "user",
@@ -739,74 +738,110 @@ export async function runAgent(opts: RunOptions): Promise<void> {
             result = "Stash cleared.";
             break;
           case "examine_images": {
-            // Fetch up to 6 visible images in parallel, then ask the vision model which one matches
-            const candidates = (obs?.images ?? []).slice(0, 6);
-            if (!candidates.length) { ok = false; result = "No images visible on the page yet. Scroll or wait, then try again."; break; }
-            emit({ type: "status", text: `Examining ${candidates.length} images for "${d.description}"…` });
-            try {
-              // Fetch each candidate into the stash (parallel, ignore failures)
-              const fetched = await Promise.all(
-                candidates.map((img) =>
-                  stashImage(chatId, img.url, img.alt, obs?.url).catch(() => null)
-                )
-              );
-              const valid = fetched.filter((x): x is NonNullable<typeof x> => !!x);
-              if (!valid.length) { ok = false; result = "Couldn't download any of the visible images to examine them."; break; }
-
-              // Ask vision model: which image matches the description?
-              const imageParts: ImagePart[] = valid.map((img) => ({
-                mime: img.mime as "image/jpeg" | "image/png" | "image/webp" | "image/gif",
-                data: img.data.toString("base64"),
-              }));
-              const matchRaw = await complete(
-                [
-                  {
-                    role: "system",
-                    content: "You are an image recognition assistant. The user is looking for a specific image. Reply with ONLY a JSON object: {\"index\": <0-based index of best match or -1 if none match>, \"reason\": \"<one sentence>\"}",
-                  },
-                  {
-                    role: "user",
-                    content: `I am looking for: "${d.description}"\n\nI am showing you ${valid.length} images (indices 0 to ${valid.length - 1}). Which image best matches my description? Reply with the JSON only.`,
-                    images: imageParts,
-                  },
-                ],
-                { temperature: 0.1, maxTokens: 120 }
-              );
-              const match = (() => { try { const s = matchRaw.text.indexOf("{"); const e = matchRaw.text.lastIndexOf("}"); return s >= 0 ? JSON.parse(matchRaw.text.slice(s, e + 1)) as { index: number; reason: string } : null; } catch { return null; } })();
-              if (!match || match.index < 0 || match.index >= valid.length) {
-                result = `None of the ${valid.length} visible images appear to match "${d.description}". Reason: ${match?.reason ?? "no match found"}. Try scrolling to see more images.`;
-                ok = false;
-                break;
-              }
-              const winner = valid[match.index];
-              // Find the nearest clickable element wrapping this image
-              const clickSel = await s.active().evaluate((url: string) => {
-                const imgs = Array.from(document.images).filter((i) => (i.currentSrc || i.src) === url);
-                if (!imgs.length) return null;
-                const img = imgs[0];
-                // Walk up to find a link or button ancestor
-                let el: HTMLElement | null = img;
-                while (el && el.tagName !== "BODY") {
-                  if (el.tagName === "A" || el.tagName === "BUTTON" || el.getAttribute("role") === "button" || el.getAttribute("role") === "link") {
-                    const id = el.getAttribute("data-agent-id");
-                    return id ? parseInt(id, 10) : null;
-                  }
-                  el = el.parentElement;
+            // Like a person: number every image on screen, look at ONE screenshot, pick the match,
+            // then move the cursor there and click it (unless click:false).
+            const desc = String(d.description || "").trim();
+            const marks = await p
+              .evaluate(() => {
+                const vw = innerWidth;
+                const vh = innerHeight;
+                type Box = { x: number; y: number; w: number; h: number; alt: string };
+                const boxes: Box[] = [];
+                for (const el of Array.from(document.querySelectorAll("img, video, [role='img']")) as HTMLElement[]) {
+                  const r = el.getBoundingClientRect();
+                  if (r.width < 48 || r.height < 48 || r.bottom < 8 || r.right < 8 || r.top > vh - 8 || r.left > vw - 8) continue;
+                  const cs = getComputedStyle(el);
+                  if (cs.visibility === "hidden" || cs.display === "none" || Number(cs.opacity) < 0.1) continue;
+                  boxes.push({ x: r.left, y: r.top, w: r.width, h: r.height, alt: (el.getAttribute("alt") || el.getAttribute("aria-label") || "").slice(0, 80) });
                 }
-                return null;
-              }, winner.url).catch(() => null);
-              result = `Found matching image at index ${match.index}: "${winner.alt || winner.url}". Reason: ${match.reason}.${clickSel != null ? ` It is element [${clickSel}] — click that to open it.` : ` No clickable element wraps it; try clicking the image directly via its URL.`}`;
-            } catch (e) {
+                // Drop near-duplicates (an image and its own wrapper/hover copy), keeping the larger.
+                const overlap = (a: Box, b: Box) => {
+                  const ix = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+                  const iy = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+                  return (ix * iy) / Math.min(a.w * a.h, b.w * b.h);
+                };
+                const kept: Box[] = [];
+                for (const b of boxes.sort((a, c) => c.w * c.h - a.w * a.h)) if (!kept.some((k) => overlap(k, b) > 0.8)) kept.push(b);
+                const out = kept
+                  .sort((a, b) => (Math.abs(a.y - b.y) > 24 ? a.y - b.y : a.x - b.x)) // reading order
+                  .slice(0, 40)
+                  .map((b, i) => ({ n: i + 1, ...b }));
+                document.getElementById("__senko_marks")?.remove();
+                const layer = document.createElement("div");
+                layer.id = "__senko_marks";
+                layer.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:2147483647";
+                for (const m of out) {
+                  const o = document.createElement("div");
+                  o.style.cssText = `position:absolute;left:${m.x}px;top:${m.y}px;width:${m.w}px;height:${m.h}px;outline:2px solid rgba(225,29,72,.85);outline-offset:-2px`;
+                  const badge = document.createElement("div");
+                  badge.textContent = String(m.n);
+                  badge.style.cssText = `position:absolute;left:${Math.max(0, m.x) + 3}px;top:${Math.max(0, m.y) + 3}px;background:#e11d48;color:#fff;font:700 15px/1 system-ui,sans-serif;padding:3px 6px;border-radius:6px;border:2px solid #fff`;
+                  layer.append(o, badge);
+                }
+                document.body.appendChild(layer);
+                return out;
+              })
+              .catch(() => [] as { n: number; x: number; y: number; w: number; h: number; alt: string }[]);
+            if (!marks.length) {
               ok = false;
-              result = `Image examination failed: ${e instanceof Error ? e.message : String(e)}`;
+              result = "No images are visible on screen. Scroll or wait for them to load, then try again.";
+              break;
             }
+            emit({ type: "status", text: `Looking at ${marks.length} images for "${desc}"…` });
+            session?.log(`Looking at ${marks.length} images for "${desc}"`);
+            let shot: Buffer;
+            try {
+              shot = await s.screenshot(75);
+            } finally {
+              await p.evaluate(() => document.getElementById("__senko_marks")?.remove()).catch(() => {});
+            }
+            const pickRaw = await complete(
+              [
+                {
+                  role: "system",
+                  content:
+                    "You look at a screenshot of a web page. Every image on it has a red outline and a red numbered badge in its top-left corner. Pick the image that best matches what the user describes. " +
+                    "Read descriptions literally by what is visible: colors, backgrounds, objects, people, poses, mood. For example \"the green one\" means the image that looks the most green (its subject OR its background); don't reinterpret it as some other subject. " +
+                    "Pick the closest match even if it isn't perfect; answer 0 only if no image is remotely plausible. " +
+                    'Reply with ONLY JSON: {"n": <badge number or 0>, "reason": "<one short sentence>"}',
+                },
+                {
+                  role: "user",
+                  content: `Looking for: "${desc}"${chatContext ? `\n\nRecent conversation (for context):\n${chatContext.slice(-600)}` : ""}\n\nBadges go from 1 to ${marks.length}.`,
+                  images: [{ mime: "image/jpeg", data: shot.toString("base64") }],
+                },
+              ],
+              { provider, signal, temperature: 0.1, maxTokens: 200, maxWaitMs: 60_000 }
+            );
+            lastProvider = { provider: pickRaw.providerLabel, model: pickRaw.model };
+            const pick = parseJson<{ n?: number; reason?: string }>(pickRaw.text);
+            const m = marks.find((x) => x.n === Number(pick?.n));
+            if (!m) {
+              ok = false;
+              result = `None of the ${marks.length} images on screen match "${desc}" (${pick?.reason || "no match"}). Scroll down and try examine_images again.`;
+              break;
+            }
+            const why = pick?.reason ? ` ${pick.reason}` : "";
+            if (d.click === false) {
+              result = `Image ${m.n} matches "${desc}"${m.alt ? ` ("${m.alt}")` : ""}.${why}`;
+              break;
+            }
+            // Click its visible center with the cursor, so you see exactly what was picked.
+            const vp = s.viewport();
+            const x = Math.min(vp.width - 2, Math.max(2, m.x + m.w / 2));
+            const y = Math.min(vp.height - 2, Math.max(2, m.y + m.h / 2));
+            s.emit({ type: "cursor", x, y, kind: "move", box: { x: m.x, y: m.y, w: m.w, h: m.h }, width: vp.width, height: vp.height });
+            await p.waitForTimeout(450);
+            s.emit({ type: "cursor", x, y, kind: "click", box: null, width: vp.width, height: vp.height });
+            await p.mouse.click(x, y);
+            result = `Clicked image ${m.n}${m.alt ? ` ("${m.alt}")` : ""}, the best match for "${desc}".${why}`;
             break;
           }
           default:
             ok = false;
             result = `Unknown action "${(d as { action: string }).action}"`;
         }
-        if (!["wait", "screenshot", "switch_tab", "close_tab", "fetch_image", "make_collage", "clear_stash", "examine_images"].includes(d.action)) await settle(s.active());
+        if (!["wait", "screenshot", "switch_tab", "close_tab", "fetch_image", "make_collage", "clear_stash"].includes(d.action) && !(d.action === "examine_images" && (d.click === false || !ok))) await settle(s.active());
       } catch (e) {
         if (aborted()) break;
         ok = false;

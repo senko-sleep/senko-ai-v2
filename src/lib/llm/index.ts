@@ -598,10 +598,10 @@ const PROVIDERS: Provider[] = [
     envModel: () => env("GEMINI_MODEL"),
     envVisionModel: () => env("GEMINI_MODEL"),
     // Newer API keys can't use the 2.5 models (404), so try the current previews first.
-    preferred: ["gemini-3.8-flash", "gemini-3-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+    preferred: ["gemini-3.8-flash", "gemini-3-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-3.5-flash-lite"],
     preferredVision: ["gemini-3.8-flash", "gemini-3-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-flash"],
     // Measured: flash-lite answers in ~0.6s, the bigger previews in 0.6-4s.
-    fastPreferred: ["gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"],
+    fastPreferred: ["gemini-3.1-flash-lite-preview", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"],
     // Prefer stable "flash" models: they have the most generous free limits.
     filter: (m) => isGeminiChat(m.id) && /flash/.test(m.id),
     isVision: (m) => isGeminiChat(m.id),
