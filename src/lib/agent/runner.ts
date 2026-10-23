@@ -650,7 +650,9 @@ export async function runAgent(opts: RunOptions): Promise<void> {
             if (at) s.emit({ type: "cursor", x: at.x, y: at.y, kind: "click", box: null, width: at.vp.width, height: at.vp.height });
             await p.locator(sel).first().click({ timeout: 4000 }).catch(() => {});
             await p.locator(sel).first().fill(String(d.text ?? ""), { timeout: 5000 });
-            if (d.submit !== false) await p.locator(sel).first().press("Enter");
+            // The field is focused after fill(); press Enter on the page so a submit that
+            // navigates away (and removes the field) doesn't wait 30s for it.
+            if (d.submit !== false) await p.keyboard.press("Enter");
             result = `Typed "${d.text}"`;
             break;
           }

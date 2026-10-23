@@ -118,6 +118,9 @@ export class BrowserSession {
       acceptDownloads: false, // never download files
       storageState: saved?.storage ? (saved.storage as never) : undefined,
     });
+    // Playwright waits 30s by default; a stuck click/press should fail fast so the agent moves on.
+    // Page loads pass their own longer timeouts.
+    this.context.setDefaultTimeout(10_000);
     await this.context.addInitScript(INIT_SCRIPT);
     await this.context.route("**/*", (route) => {
       const url = route.request().url();
