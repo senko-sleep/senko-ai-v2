@@ -5,6 +5,7 @@ import { Bot, Cpu, Globe, KeyRound, Loader2, MessageSquare, PanelLeftOpen, Squar
 import { extractOpenTags, parseBrowserCommand } from "@/lib/browser-commands";
 import { MessageBubble } from "./message-bubble";
 import { BrowserPanel, type BrowserState } from "./browser-panel";
+import type { PageOp } from "./reader-view";
 import { Composer, type Attachment } from "./composer";
 import { Sidebar } from "./sidebar";
 import { SettingsDialog, type Theme } from "./settings-dialog";
@@ -303,6 +304,24 @@ export default function AssistantApp() {
     },
     [closeStream, liveBus]
   );
+  // Your own clicks in the reader view (the HTTP browser the agent uses when there's no Chromium).
+  const [pageBusy, setPageBusy] = useState(false);
+  const pageOp = useCallback(async (op: PageOp) => {
+    const chatId = activeRef.current;
+    if (!chatId) return;
+    setPageBusy(true);
+    try {
+      const r = await fetch(`/api/chats/${chatId}/page`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(op) });
+      if (!r.ok) throw new Error(await errorFromResponse(r));
+      const { page } = (await r.json()) as { page: BrowserState["page"] };
+      if (activeRef.current === chatId && page) setBrowser((b) => ({ ...b, page, url: page.url, title: page.title }));
+    } catch (error) {
+      setBrowser((b) => ({ ...b, status: error instanceof Error ? error.message : "Could not load that page." }));
+    } finally {
+      setPageBusy(false);
+    }
+  }, []);
+
   /** Opens (or reuses) this chat's live browser and starts streaming it. */
   const openLiveBrowser = useCallback(async () => {
     const chatId = activeRef.current;
@@ -326,8 +345,19 @@ export default function AssistantApp() {
       setPanelOpen(true);
       attachStream(chatId);
     } catch (error) {
+      // No Chromium on this server: show the HTTP browser (reader view) instead.
       console.error("Could not open browser panel", error);
-      setBrowser((b) => ({ ...b, status: error instanceof Error ? error.message : "Could not open the browser." }));
+      try {
+        const r = await fetch(`/api/chats/${chatId}/page`);
+        const { page } = r.ok ? ((await r.json()) as { page: BrowserState["page"] }) : { page: null };
+        if (activeRef.current === chatId) {
+          setBrowser((b) => ({ ...b, page: page ?? null, url: page?.url || b.url, title: page?.title || b.title }));
+          if (window.innerWidth < 1440) setSidebarOpen(false);
+          setPanelOpen(true);
+        }
+      } catch {
+        /* offline */
+      }
     } finally {
       setBrowserOpening(false);
     }
@@ -690,6 +720,11 @@ export default function AssistantApp() {
             case "plan":
               setBrowser((b) => ({ ...b, plan: e.steps as string[] }));
               break;
+            case "page": {
+              const pg = e.page as NonNullable<BrowserState["page"]>;
+              setBrowser((b) => ({ ...b, page: pg, url: pg.url, title: pg.title }));
+              break;
+            }
             case "step": {
               const s = e as unknown as AgentStep;
               setBrowser((b) => {
@@ -1169,6 +1204,8 @@ export default function AssistantApp() {
             onStop={stop}
             onClose={() => setPanelOpen(false)}
             onOpenBrowser={openLiveBrowser}
+            onPageOp={pageOp}
+            pageBusy={pageBusy}
             opening={browserOpening}
             onToggleControl={() => activeId && void setControl(activeId, !controlling)}
             onResume={resumeAgent}

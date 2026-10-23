@@ -5,9 +5,10 @@
 import { complete, type LlmMessage } from "@/lib/llm";
 import { agentVoice } from "@/lib/server/persona";
 import { isPrivateUrl } from "./safety";
+import { describePage, httpSession, type PageSnap } from "./http-session";
 import type { RunOptions } from "./runner";
 
-const MAX_TURNS = 5;
+const MAX_TURNS = 12;
 const FETCH_TIMEOUT_MS = 7000;
 const MAX_BYTES = 1_200_000;
 const PAGE_CHARS = 5000;
@@ -113,7 +114,8 @@ async function search(q: string, signal: AbortSignal): Promise<Hit[]> {
   return hits;
 }
 
-async function read(url: string, signal: AbortSignal): Promise<string> {
+/** Read a page without touching the chat's browsing session (parallel reads of search results). */
+async function peek(url: string, signal: AbortSignal): Promise<string> {
   const raw = await get(url, signal);
   if (/^\s*[[{]/.test(raw)) return raw.slice(0, PAGE_CHARS);
   const { title, text } = htmlToText(raw);
@@ -124,6 +126,10 @@ async function read(url: string, signal: AbortSignal): Promise<string> {
 type Action =
   | { action: "search"; q: string }
   | { action: "open"; urls: string[] }
+  | { action: "goto"; url: string }
+  | { action: "click"; link: number }
+  | { action: "submit"; form: number; values?: Record<string, string> }
+  | { action: "back" }
   | { action: "answer"; text: string }
   | { action: "browser"; why?: string };
 
@@ -137,18 +143,28 @@ function parse(raw: string): Action | null {
   }
 }
 
-const SYSTEM = `You are the fast, browserless layer of a web agent. You can only read the web over HTTP: no clicking, no logging in, no JavaScript, no video.
+const SYSTEM = `You are the fast layer of a web agent. You browse over plain HTTP (no JavaScript, no video, no screenshots) with a real session: cookies, history, links, forms.
 Reply with ONE JSON object, nothing else:
-{"action":"search","q":"search query"}            - find pages
-{"action":"open","urls":["https://...","..."]}    - read up to 3 pages in parallel (use URLs the user gave or search results)
-{"action":"answer","text":"final answer in markdown, cite the page URLs you used"}
-{"action":"browser","why":"short reason"}         - ONLY if the goal needs real interaction (click, sign in, fill forms, play or control video, view a page that is blank without JavaScript)
-Be efficient: usually search once, open the best 1-3 results, then answer. Answer from what you read; if a fact isn't in the pages, say so rather than guessing.`;
+{"action":"search","q":"search query"}                       - web search
+{"action":"open","urls":["https://..."]}                      - quickly READ up to 3 pages in parallel (doesn't change the browser page)
+{"action":"goto","url":"https://..."}                         - navigate the browser to a page; you then see its text, numbered links and forms
+{"action":"click","link":3}                                   - follow link [3] on the current page
+{"action":"submit","form":1,"values":{"q":"cats","email":"x"}} - fill and submit form [1] (fields you omit keep their default)
+{"action":"back"}
+{"action":"answer","text":"final answer in markdown, cite the URLs you used"}
+{"action":"browser","why":"short reason"}                     - ONLY when it truly can't work without JavaScript or video: the page says it's empty without JavaScript, or the goal is to play/watch/control video
+Be efficient. Read pages instead of guessing. Never invent form values you were not given (passwords, emails, card numbers): if you need one, answer and ask for it. If a fact isn't in what you read, say so.`;
+
+const noBrowserNote = (why?: string) =>
+  why
+    ? `\n\nIMPORTANT: there is NO real browser on this server (${why.slice(0, 80)}). Never use the "browser" action. Do everything possible over HTTP. For anything that needs playing video, screenshots or JavaScript, find the right page and give the user its direct link, and say plainly what you could not do. Answer by your last turn.`
+    : "";
 
 /** Returns "done" when it answered, "needs-browser" when a real browser should take over. */
-export async function runLight(opts: RunOptions): Promise<"done" | "needs-browser"> {
-  const { goal, ownerId, provider, signal, emit, context } = opts;
+export async function runLight(opts: RunOptions, mode: { noBrowser?: string } = {}): Promise<"done" | "needs-browser"> {
+  const { chatId, goal, ownerId, provider, signal, emit, context } = opts;
   const voice = await agentVoice(ownerId).catch(() => "");
+  const web = httpSession(chatId);
   const notes: string[] = [];
   const sources: string[] = [];
   let stepId = 0;
@@ -156,22 +172,30 @@ export async function runLight(opts: RunOptions): Promise<"done" | "needs-browse
 
   const step = (label: string) => {
     const id = ++stepId;
-    emit({ type: "step", id, label, status: "running" });
+    emit({ type: "step", id, label, status: "running", url: web.current()?.url });
     return {
-      done: (detail?: string) => emit({ type: "step", id, label, status: "done", detail }),
-      fail: (detail: string) => emit({ type: "step", id, label, status: "error", detail }),
+      done: (detail?: string) => emit({ type: "step", id, label, status: "done", detail, url: web.current()?.url }),
+      fail: (detail: string) => emit({ type: "step", id, label, status: "error", detail, url: web.current()?.url }),
     };
+  };
+  const show = (p: PageSnap | null) => {
+    if (!p) return;
+    emit({ type: "page", page: p });
+    if (!sources.includes(p.url)) sources.push(p.url);
   };
 
   for (let turn = 0; turn < MAX_TURNS && !signal.aborted; turn++) {
+    const page = web.current();
     const messages: LlmMessage[] = [
-      { role: "system", content: SYSTEM + (voice ? `\n\n${voice}` : "") },
+      { role: "system", content: SYSTEM + noBrowserNote(mode.noBrowser) + (voice ? `\n\n${voice}` : "") },
       {
         role: "user",
         content: `Today is ${new Date().toISOString().slice(0, 10)}. Search for the latest information, not older years.
 
-${context ? `Recent chat:\n${context}\n\n` : ""}Goal: ${goal}\n\n${notes.length ? `What you have so far:\n${notes.join("\n\n")}` : "Nothing yet."}${
-          turn === MAX_TURNS - 1 ? "\n\nThis is your last turn: you must answer now (or hand off to the browser)." : ""
+${context ? `Recent chat:\n${context}\n\n` : ""}Goal: ${goal}
+
+${notes.length ? `Notes so far:\n${notes.slice(-6).join("\n\n")}\n\n` : ""}${page ? `Current page:\n${describePage(page)}` : "The browser has no page open yet."}${
+          turn === MAX_TURNS - 1 ? "\n\nThis is your last turn: answer now (or hand off to the browser)." : ""
         }`,
       },
     ];
@@ -179,7 +203,7 @@ ${context ? `Recent chat:\n${context}\n\n` : ""}Goal: ${goal}\n\n${notes.length 
     try {
       r = await complete(messages, { provider, signal, json: true, temperature: 0.2, maxTokens: 1400, maxWaitMs: 60_000, fast: true });
     } catch (e) {
-      if (signal.aborted) return "done";
+      if (signal.aborted) break;
       emit({ type: "error", message: e instanceof Error ? e.message : String(e) });
       return "done";
     }
@@ -191,10 +215,30 @@ ${context ? `Recent chat:\n${context}\n\n` : ""}Goal: ${goal}\n\n${notes.length 
     }
 
     if (a.action === "answer") {
-      emit({ type: "done", answer: String(a.text || "").trim() || "I couldn't find anything.", url: sources[0], imageIds: [], ...last });
+      emit({ type: "done", answer: String(a.text || "").trim() || "I couldn't find anything.", url: web.current()?.url ?? sources[0], imageIds: [], ...last });
       return "done";
     }
-    if (a.action === "browser") return "needs-browser";
+    if (a.action === "browser") {
+      if (!mode.noBrowser) return "needs-browser";
+      notes.push("(there is no real browser on this server: do it over HTTP, or answer with what you could not do)");
+      continue;
+    }
+
+    // Navigation changes the session's page; failures are reported back to the model.
+    const nav = async (label: string, run: () => Promise<PageSnap | null>) => {
+      const s = step(label);
+      try {
+        const p = await run();
+        if (!p) throw new Error("nothing to go back to");
+        s.done(p.title ? p.title.slice(0, 70) : `HTTP ${p.status}`);
+        show(p);
+        notes.push(`${label} -> ${p.url} (HTTP ${p.status})`);
+      } catch (e) {
+        const why = e instanceof Error ? e.message : String(e);
+        s.fail(why);
+        notes.push(`${label} failed: ${why}`);
+      }
+    };
 
     if (a.action === "search" && a.q) {
       const s = step(`Searching: ${a.q.slice(0, 80)}`);
@@ -226,7 +270,7 @@ ${context ? `Recent chat:\n${context}\n\n` : ""}Goal: ${goal}\n\n${notes.length 
           })();
           const s = step(`Reading ${host}`);
           try {
-            const text = await read(u, signal);
+            const text = await peek(u, signal);
             s.done(`${text.length} chars`);
             sources.push(u);
             return `Page ${u}:\n${text}`;
@@ -238,14 +282,37 @@ ${context ? `Recent chat:\n${context}\n\n` : ""}Goal: ${goal}\n\n${notes.length 
         })
       );
       notes.push(...pages);
-      // Every page was blank or blocked: a real browser may do better.
-      if (pages.every((p) => /could not read/.test(p)) && turn >= 1) return "needs-browser";
       continue;
     }
-    notes.push("(unknown action; use search, open, answer or browser)");
+
+    if (a.action === "goto" && typeof a.url === "string") {
+      await nav(`Opening ${a.url.replace(/^https?:\/\//, "").slice(0, 60)}`, () => web.goto(a.url, signal));
+      continue;
+    }
+    if (a.action === "click" && Number.isFinite(Number(a.link))) {
+      const text = web.current()?.links.find((l) => l.n === Number(a.link))?.text;
+      await nav(`Clicking “${(text || `link ${a.link}`).slice(0, 50)}”`, () => web.click(Number(a.link), signal));
+      continue;
+    }
+    if (a.action === "submit" && Number.isFinite(Number(a.form))) {
+      const values = Object.fromEntries(Object.entries(a.values || {}).map(([k, v]) => [k, String(v)]));
+      await nav(`Submitting form ${a.form}`, () => web.submit(Number(a.form), values, signal));
+      continue;
+    }
+    if (a.action === "back") {
+      await nav("Going back", async () => web.back());
+      continue;
+    }
+    notes.push("(unknown action)");
   }
   if (signal.aborted) {
     emit({ type: "stopped" });
+    return "done";
+  }
+  if (mode.noBrowser) {
+    const p = web.current();
+    const answer = p ? `I got as far as **${p.title || p.url}** (${p.url}) but couldn't finish this without a real browser.` : "I couldn't finish this without a real browser.";
+    emit({ type: "done", answer, url: p?.url, imageIds: [], ...last });
     return "done";
   }
   return "needs-browser";

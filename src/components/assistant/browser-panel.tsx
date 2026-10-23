@@ -21,6 +21,8 @@ import {
 } from "lucide-react";
 import type { AgentStep } from "./lib";
 import { LiveView, type LiveBus, type UserInput } from "./live-view";
+import { ReaderView, type PageOp } from "./reader-view";
+import type { PageSnap } from "@/lib/agent/http-session";
 
 export interface BrowserState {
   running: boolean;
@@ -30,6 +32,8 @@ export interface BrowserState {
   plan: string[];
   steps: AgentStep[];
   outcome: "idle" | "running" | "done" | "stopped" | "error";
+  /** The page the HTTP browser is on, when there's no screencast (no Chromium on this server). */
+  page?: PageSnap | null;
 }
 
 const OUTCOME: Record<BrowserState["outcome"], { text: string; cls: string }> = {
@@ -55,6 +59,8 @@ export function BrowserPanel({
   onResume,
   onInput,
   onNav,
+  onPageOp,
+  pageBusy,
 }: {
   state: BrowserState;
   bus: LiveBus;
@@ -71,6 +77,8 @@ export function BrowserPanel({
   onResume: () => void;
   onInput: (e: UserInput) => void;
   onNav: (n: NavAction) => void;
+  onPageOp: (op: PageOp) => void;
+  pageBusy: boolean;
 }) {
   const logRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<HTMLDivElement>(null);
@@ -236,7 +244,8 @@ export function BrowserPanel({
           className="relative aspect-[16/10] w-full shrink-0 overflow-hidden rounded-lg border border-[var(--sk-line)] bg-black"
         >
           <LiveView bus={bus} title={state.title} onHasFrame={onHasFrame} agentRunning={state.running} interactive={controlling} onInput={onInput} />
-          {!hasFrame && (
+          {!hasFrame && state.page !== undefined && <ReaderView page={state.page} busy={pageBusy} onOp={onPageOp} />}
+          {!hasFrame && state.page === undefined && (
             <div className={`absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-white/55 ${state.running ? "sk-scan" : ""}`}>
               {state.running ? <Loader2 size={18} className="sk-spin text-[var(--sk-accent)]" aria-hidden /> : <MonitorPlay size={18} className="opacity-50" aria-hidden />}
               <span>{state.running ? state.status || "Starting the browser…" : "Browser stream appears here when a page loads."}</span>

@@ -11,11 +11,13 @@ import { agentVoice } from "@/lib/server/persona";
 import { saveImage } from "@/lib/server/chats";
 import { stashImage, listStash, clearStash, stashStats } from "./image-store";
 import { makeCollage } from "./collage";
+import type { PageSnap } from "./http-session";
 
 export type RunEvent =
   | { type: "status"; text: string }
   | { type: "plan"; steps: string[] }
   | { type: "step"; id: number; label: string; status: "running" | "done" | "error"; detail?: string; url?: string }
+  | { type: "page"; page: PageSnap }
   | { type: "done"; answer: string; url?: string; imageIds: string[]; provider?: string; model?: string }
   | { type: "paused"; reason: string }
   | { type: "error"; message: string }

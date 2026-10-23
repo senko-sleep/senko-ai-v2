@@ -1,20 +1,25 @@
 // Picks the lightest layer that can do the job, and escalates when it can't:
-//   0. light    plain HTTP search/read/answer. No browser, any host, ~seconds.
+//   0. web      an HTTP browsing session (cookies, history, links, forms; light.ts + http-session.ts).
+//               No browser, any host, ~seconds. Handles search, reading, following links, forms, simple log-ins.
 //   1. remote   a hosted Chromium over CDP (BROWSER_CDP_URL) or the Vercel Sandbox (AGENT_HOST=sandbox).
 //   2. local    Chromium on this machine (Docker/Render/your PC).
 // Layers 1-2 are the same agent (runner.ts); getBrowser() decides which one it gets.
+// On a host with no browser at all (Wasmer) everything runs in layer 0, which says plainly
+// what it couldn't do (playing video, screenshots) and gives direct links instead.
 import { getBrowser } from "./browser";
 import { runAgent, type RunOptions } from "./runner";
 import { runLight } from "./light";
 import { sessions } from "./sessions";
 
-// Goals that are about doing things on a page, not reading it.
-const NEEDS_BROWSER =
-  /\b(click|log ?in|sign ?in|sign ?up|fill|type (in|into)|scroll|play|pause|resume|skip|fullscreen|volume|mute|watch|stream|episode|video|tab|screenshot|download|upload|add to cart|checkout|buy|book|captcha|manual control|my account)\b/i;
+// Goals that can't be done without a real browser.
+const HARD =
+  /\b(play|pause|resume|skip|fullscreen|volume|mute|watch|stream|episode|video|tab|screenshot|download|upload|captcha|manual control)\b/i;
+// Interactive goals: a real browser does them best, the HTTP session handles the simple cases.
+const SOFT = /\b(click|log ?in|sign ?in|sign ?up|fill|type (in|into)|scroll|add to cart|checkout|buy|book|my account)\b/i;
 
 let browserDown: { at: number; why: string } | null = null;
 
-async function browserProblem(): Promise<string | null> {
+export async function browserProblem(): Promise<string | null> {
   if (browserDown && Date.now() - browserDown.at < 60_000) return browserDown.why;
   try {
     await getBrowser();
@@ -28,22 +33,29 @@ async function browserProblem(): Promise<string | null> {
 }
 
 export async function runLayered(opts: RunOptions): Promise<void> {
-  const { goal, chatId, emit } = opts;
+  const { goal, chatId, emit, signal } = opts;
+  const forced = process.env.AGENT_LAYERS === "browser";
   // A chat that already has a browser open keeps using it ("pause it", "the second one").
-  const wantsBrowser = process.env.AGENT_LAYERS === "browser" || NEEDS_BROWSER.test(goal) || !!sessions.get(chatId);
+  const hasBrowser = !!sessions.get(chatId);
+  const hard = forced || hasBrowser || HARD.test(goal);
+  const soft = SOFT.test(goal);
 
-  if (!wantsBrowser) {
-    if ((await runLight(opts)) === "done") return;
-    if (opts.signal.aborted) return;
-    emit({ type: "status", text: "That needs a real browser, switching…" });
+  // Real browser first when the goal needs one, or when it's interactive and one exists.
+  if (hard || soft) {
+    const problem = await browserProblem();
+    if (!problem) return runAgent(opts);
+    // No browser on this server: the HTTP session does what it can and says what it couldn't.
+    const r = await runLight(opts, { noBrowser: problem });
+    if (r === "done" || signal.aborted) return;
+    emit({ type: "error", message: `That needs a real browser, which isn't available on this server (${problem}).` });
+    return;
   }
 
+  if ((await runLight(opts)) === "done" || signal.aborted) return;
+  emit({ type: "status", text: "That needs a real browser, switching…" });
   const problem = await browserProblem();
   if (problem) {
-    emit({
-      type: "error",
-      message: `This task needs a real browser, and none is available on this server (${problem}). Set BROWSER_CDP_URL to a hosted Chromium, or AGENT_HOST=sandbox with VERCEL_TOKEN, or run on the Docker deploy.`,
-    });
+    emit({ type: "error", message: `That page needs a real browser, which isn't available on this server (${problem}).` });
     return;
   }
   await runAgent(opts);
