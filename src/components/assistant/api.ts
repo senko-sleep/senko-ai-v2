@@ -135,7 +135,13 @@ export function ensureAgentHost(): Promise<void> {
   if (Date.now() < hostReadyUntil) return Promise.resolve();
   if (!hostWaking) {
     hostWaking = (async () => {
-      const res = await fetch("/api/agent-host", { method: "POST" });
+      // A cold boot can outlast the host's gateway timeout (an HTML 502/504) while the server
+      // keeps booting, so retry for a while before giving up.
+      let res = await fetch("/api/agent-host", { method: "POST" });
+      for (let i = 0; i < 12 && !res.ok && (res.status >= 500 || res.status === 429); i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        res = await fetch("/api/agent-host", { method: "POST" });
+      }
       if (!res.ok) throw new Error(await errorFromResponse(res));
       const j = (await res.json()) as { mode: string; expiresAt?: number };
       hostReadyUntil = j.mode === "direct" ? Date.now() + 3600_000 : Math.min(Date.now() + 60_000, (j.expiresAt || 0) - 5 * 60_000);
