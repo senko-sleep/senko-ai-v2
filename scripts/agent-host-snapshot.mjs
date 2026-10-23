@@ -29,7 +29,7 @@ if (!process.env.VERCEL_OIDC_TOKEN && !process.env.VERCEL_TOKEN) {
 }
 if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is missing from .env.local");
 
-const { Sandbox } = await import("@vercel/sandbox");
+const { Sandbox, Snapshot } = await import("@vercel/sandbox");
 const pg = (await import("pg")).default;
 const { VERCEL_TOKEN, VERCEL_TEAM_ID, VERCEL_PROJECT_ID } = process.env;
 const credentials = VERCEL_TOKEN && VERCEL_TEAM_ID && VERCEL_PROJECT_ID
@@ -92,6 +92,25 @@ try {
   );
   log(check.replace(/\s+/g, " "));
   if (!/"status":"ok"/.test(check) || !/chromium \d/.test(check)) throw new Error("smoke test failed");
+
+  // Snapshot storage is capped (Hobby: a handful of ~1.6 GB snapshots). Keep only the one
+  // the agent uses right now; this build becomes the other.
+  try {
+    const db = new pg.Client({ connectionString: process.env.DATABASE_URL, ssl: /localhost|127.0.0.1/.test(process.env.DATABASE_URL) ? undefined : { rejectUnauthorized: false } });
+    await db.connect();
+    const row = (await db.query("SELECT value FROM app_kv WHERE key = 'agent_host.snapshot'").catch(() => ({ rows: [] }))).rows[0];
+    await db.end();
+    const live = row ? JSON.parse(row.value).snapshotId : null;
+    let freed = 0;
+    for (const old of await (await Snapshot.list(credentials)).toArray()) {
+      if (old.status !== "created" || old.id === live) continue;
+      await (await Snapshot.get({ ...credentials, snapshotId: old.id })).delete().catch(() => {});
+      freed += old.sizeBytes;
+    }
+    if (freed) log(`deleted old snapshots (${(freed / 1e9).toFixed(1)} GB)`);
+  } catch (e) {
+    log(`couldn't prune old snapshots: ${e instanceof Error ? e.message : e}`);
+  }
 
   log("saving snapshot …");
   const snap = await sb.snapshot({ expiration: 0 });
