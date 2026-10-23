@@ -80,10 +80,10 @@ try {
   await run("prune dev dependencies", `cd ${APP} && npm prune --omit=dev --no-audit --no-fund --loglevel=error`);
   const check = await run(
     "smoke test (start server + launch Chromium)",
-    `cd ${APP} && (PORT=3000 node node_modules/next/dist/bin/next start -p 3000 >/tmp/next.log 2>&1 &) && ` +
+    `cd ${APP} && PORT=3000 node node_modules/next/dist/bin/next start -p 3000 >/tmp/next.log 2>&1 & echo $! > /tmp/next.pid; ` +
       `for i in $(seq 1 60); do curl -sf localhost:3000/api/health >/dev/null && break; sleep 1; done; curl -s localhost:3000/api/health; echo; ` +
       `node -e 'require("playwright").chromium.launch({args:["--no-sandbox"]}).then(async b=>{console.log("chromium",b.version());await b.close()}).catch(e=>{console.error(e.message);process.exit(1)})'; ` +
-      `pkill -f "next start" || true`,
+      `kill $(cat /tmp/next.pid) 2>/dev/null; true`,
     { env: { PLAYWRIGHT_BROWSERS_PATH: BROWSERS, NODE_ENV: "production" } }
   );
   log(check.replace(/\s+/g, " "));
