@@ -492,7 +492,7 @@ export default function AssistantApp() {
             model?: string;
             userMessageId?: string;
             query?: string;
-            images?: ScrapedImage[];
+            images?: { url: string; alt: string; source: string; engine: string }[];
           };
           if (e.type === "images" && e.images?.length) {
             patch(replyId, (m) => ({ ...m, scrapedImages: e.images, imageQuery: e.query }));

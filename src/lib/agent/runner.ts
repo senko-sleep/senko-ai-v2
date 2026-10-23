@@ -1,4 +1,4 @@
-// The agent loop, running inside a chat's persistent browser session.
+﻿// The agent loop, running inside a chat's persistent browser session.
 //   plan -> (observe page + screenshot -> model checks last step & picks one action -> act) ... -> done
 // No step or time limit: it runs until the goal is done or you press Stop.
 // Every step's outcome is checked against a fresh screenshot (when a vision model is
@@ -9,6 +9,8 @@ import { sessions, type BrowserSession } from "./sessions";
 import { isPrivateUrl } from "./safety";
 import { agentVoice } from "@/lib/server/persona";
 import { saveImage } from "@/lib/server/chats";
+import { stashImage, listStash, clearStash, stashStats } from "./image-store";
+import { makeCollage } from "./collage";
 
 export type RunEvent =
   | { type: "status"; text: string }
@@ -102,7 +104,7 @@ interface Observation {
   url: string;
   title: string;
   elements: Element[];
-  images: { url: string; alt: string }[];
+  images: { url: string; alt: string; col: number; row: number }[];
   text: string;
   atBottom: boolean;
   tabs: string;
@@ -147,10 +149,16 @@ const OBSERVE_SCRIPT = () => {
   const atBottom = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 20;
   const images = Array.from(document.images).filter((img) => {
     const rect = img.getBoundingClientRect();
-    return img.complete && img.naturalWidth >= 120 && img.naturalHeight >= 90 && rect.width >= 80 && rect.height >= 60
-      && rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth
+    return img.complete && img.naturalWidth >= 80 && img.naturalHeight >= 60 && rect.width >= 60 && rect.height >= 40
+      && rect.bottom > 0 && rect.top < window.innerHeight * 1.5 && rect.right > 0 && rect.left < window.innerWidth
       && getComputedStyle(img).visibility !== 'hidden' && /^https?:\/\//.test(img.currentSrc || img.src);
-  }).slice(0, 12).map((img) => ({ url: img.currentSrc || img.src, alt: (img.alt || img.title || '').slice(0, 160) }));
+  }).slice(0, 24).map((img) => {
+    const rect = img.getBoundingClientRect();
+    const cols = 4, rows = 4;
+    const col = Math.min(cols - 1, Math.floor(rect.left / (window.innerWidth / cols)));
+    const row = Math.min(rows - 1, Math.floor(rect.top / (window.innerHeight / rows)));
+    return { url: img.currentSrc || img.src, alt: (img.alt || img.title || '').slice(0, 160), col, row };
+  });
   return { elements: out, images, text: body.slice(0, 1500), atBottom };
 };
 
@@ -214,7 +222,7 @@ function formatObservation(o: Observation): string {
     `Tabs: ${o.tabs}`,
     describeVideo(o.video),
     `Interactive elements:\n${els || "(none visible)"}`,
-    `Visible images (use these exact URLs for Markdown images):\n${JSON.stringify(o.images)}`,
+    `Visible images (use exact URLs; col/row = approx grid position 0-3 from top-left):\n${o.images.map((img, i) => `  [img${i}] col=${img.col} row=${img.row} alt="${img.alt}" url=${img.url}`).join("\n") || "(none)"}`,
     `Visible text (truncated):\n${o.text.slice(0, 1200)}${o.atBottom ? "\n(end of page)" : ""}`,
   ].join("\n");
 }
@@ -236,6 +244,10 @@ type Action =
   | { action: "media"; op: "play" | "pause" | "toggle" | "fullscreen" | "exit_fullscreen" | "mute" | "unmute" | "seek" | "skip"; seconds?: number }
   | { action: "dismiss" }
   | { action: "screenshot"; label?: string }
+  | { action: "fetch_image"; url: string; alt?: string }
+  | { action: "make_collage"; ids?: string[]; label?: string }
+  | { action: "clear_stash" }
+  | { action: "examine_images"; description: string }
   | { action: "done"; answer: string; url?: string };
 
 type Decision = Action & { thought?: string; check?: { ok?: boolean; note?: string } };
@@ -262,6 +274,10 @@ Actions:
 {"action":"media","op":"pause"}                       play | pause | toggle | fullscreen | exit_fullscreen | mute | unmute | seek (seconds = absolute) | skip (seconds = relative, e.g. 85 to skip an intro)
 {"action":"dismiss"}                                  close cookie banners / overlays / modals blocking the page
 {"action":"screenshot","label":"..."}                 save a screenshot to show the user
+{"action":"fetch_image","url":"https://...","alt":"description"} download an image into the session stash. Use direct media URLs (.jpg/.png/.webp) from the images list.
+{"action":"make_collage","ids":["img_..."],"label":"label"} combine stashed images into a single collage (omit ids to use all stashed images).
+{"action":"clear_stash"}                             delete all stashed images for this session
+{"action":"examine_images","description":"anya forger drinking"} use image recognition to identify which visible image best matches a description. Returns the matching image URL and which element to click. Use this when the user names a specific image by visual content (e.g. "the one where Anya is drinking", "the sad one", "click the gif of her cooking").
 {"action":"done","answer":"<message for the user>","url":"<page URL>"}
 
 Rules:
@@ -272,8 +288,23 @@ Rules:
 - Unexpected pop-ups/new tabs are closed automatically; use dismiss for in-page overlays and ads.
 - If a login, paywall or captcha blocks you, don't invent credentials: finish with done, say exactly what's needed, and give the URL.
 - Only use element ids from the CURRENT list. Scroll if what you need isn't listed.
+- When the user says "first option", "first result", "first image", "first one" in the context of a search results page or image grid, they mean the first visible item in that grid/list — click it.
+- IMAGE RECOGNITION: When the user asks to click a specific image by visual description (e.g. the one where she's drinking, the crying gif, the one with peanuts), use examine_images with that description BEFORE clicking. It runs vision AI on page images and returns which element to click. Never guess visually.
+- After examine_images reports a matching element id, immediately click it using that id.
 - Only state facts you saw during this task. Never guess URLs for specific episodes; click your way there.
-- Finish with done once every part of the goal is reached. For simple browser actions, use 1-3 sentences. For research, lists, or visual requests, give a useful Markdown answer with descriptive clickable source links and concise findings; use a table when comparing sources. Include relevant images from the observed image URLs using ![descriptive caption](exact image URL), with a nearby source-page link. For several images, place 2-4 images together in one paragraph. Never invent image URLs or use a search-page URL as an image. If no usable image URL is available for a requested visual, take a screenshot. Use only sources and images observed during this task. Keep the assistant's own voice described below.`;
+- Finish with done once every part of the goal is reached. For simple browser actions, use 1-3 sentences. For research, lists, or visual requests, give a useful Markdown answer with descriptive clickable source links and concise findings; use a table when comparing sources. Include relevant images from the observed image URLs using ![descriptive caption](exact image URL), with a nearby source-page link. For several images, place 2-4 images together in one paragraph. Never invent image URLs or use a search-page URL as an image. If no usable image URL is available for a requested visual, take a screenshot. Use only sources and images observed during this task. Keep the assistant's own voice described below.
+
+
+IMAGE / COLLAGE WORKFLOW — for goals like "download the top 5 Eevee images and make a collage":
+1. Navigate to an image-rich site. Best picks:
+   - Anime/fan-art: danbooru.donmai.us, safebooru.org, gelbooru.com (general content, no login needed)
+   - Art/illustration: deviantart.com, artstation.com
+   - Stock photos: unsplash.com, pexels.com
+   - General: images.google.com, bing.com/images, pinterest.com
+   Try the next site if one blocks or paywalls you — don't retry the same site more than twice.
+2. For each image you want: use fetch_image with the direct media URL from the images list (not a page link).
+3. When you have enough images in STASH, call make_collage.
+4. Call done once the collage is saved and visible to the user.`;
 
 function parseJson<T>(text: string): T | null {
   const start = text.indexOf("{");
@@ -326,6 +357,14 @@ function describe(a: Action, obs: Observation | null): string {
       return "Closing an overlay";
     case "screenshot":
       return "Taking a screenshot";
+    case "fetch_image":
+      return `Fetching image${a.alt ? ` "${a.alt}"` : ""}`;
+    case "make_collage":
+      return "Building image collage";
+    case "clear_stash":
+      return "Clearing image stash";
+    case "examine_images":
+      return `Identifying image: "${a.description}"`;
     case "done":
       return "Finished";
   }
@@ -488,11 +527,13 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       if (obs) visitedSources.set(obs.url, { title: obs.title, images: obs.images });
 
       emit({ type: "status", text: "Thinking…" });
+      const stash = stashStats(chatId);
       const userText = [
         chatContext ? `Recent conversation:\n${chatContext}` : "",
         `Goal: ${goal}`,
         plan.length ? `Plan:\n${plan.map((p, n) => `${n + 1}. ${p}`).join("\n")}` : "",
         history.length ? `Previous steps:\n${history.slice(-10).join("\n")}` : "Previous steps: none yet",
+        stash.count > 0 ? `STASH (${stash.count}/${process.env.AGENT_STASH_MAX ?? 20} images, expires in ~30min):\n${stash.images.map((img) => `  ${img.id} — ${img.alt || img.url} (${(img.bytes / 1024).toFixed(0)} KB)`).join("\n")}` : "STASH: empty",
         visitedSources.size ? `Observed source pages and images for your final answer:\n${JSON.stringify([...visitedSources.entries()].slice(-12).map(([url, data]) => ({ url, ...data })))}` : '',
         repeats >= 2 ? "WARNING: you are repeating the same action. Try a different approach, or finish with done and explain." : "",
         obs ? `Current page:\n${formatObservation(obs)}${obs.screenshot ? "\n(Screenshot of the current page attached.)" : ""}` : "Current page: blank tab (start with search or goto).",
@@ -645,11 +686,113 @@ export async function runAgent(opts: RunOptions): Promise<void> {
             result = "Saved a screenshot for the user";
             break;
           }
+          case "fetch_image": {
+            const imgUrl = String(d.url || "").trim();
+            if (!imgUrl) { ok = false; result = "fetch_image requires a url"; break; }
+            try {
+              const referer = obs?.url;
+              const stashed = await stashImage(chatId, imgUrl, String(d.alt || ""), referer);
+              result = `Stashed image ${stashed.id} (${(stashed.data.length / 1024).toFixed(0)} KB, alt: "${stashed.alt || "none"}")`;
+            } catch (e) {
+              ok = false;
+              result = `Could not fetch image: ${e instanceof Error ? e.message : String(e)}`;
+            }
+            break;
+          }
+          case "make_collage": {
+            const allStashed = listStash(chatId);
+            const desired = Array.isArray(d.ids) && d.ids.length
+              ? d.ids.map((id: string) => allStashed.find((img) => img.id === id)).filter(Boolean) as typeof allStashed
+              : allStashed;
+            if (!desired.length) { ok = false; result = "No images in stash to make a collage from. Use fetch_image first."; break; }
+            try {
+              emit({ type: "status", text: `Building collage from ${desired.length} image${desired.length > 1 ? "s" : ""}…` });
+              const collage = await makeCollage({
+                images: desired.map((img) => ({ data: img.data, mime: img.mime, label: img.alt })),
+              });
+              const collageId = await saveImage(ownerId, collage.mime, collage.data);
+              imageIds.push(collageId);
+              await s.recordShot(d.label || `Collage (${desired.length} images)`, collage.data);
+              result = `Collage created from ${collage.cellCount} image${collage.cellCount > 1 ? "s" : ""} (${collage.width}×${collage.height}px). Saved for the user.`;
+            } catch (e) {
+              ok = false;
+              result = `Collage failed: ${e instanceof Error ? e.message : String(e)}`;
+            }
+            break;
+          }
+          case "clear_stash":
+            clearStash(chatId);
+            result = "Stash cleared.";
+            break;
+          case "examine_images": {
+            // Fetch up to 6 visible images in parallel, then ask the vision model which one matches
+            const candidates = (obs?.images ?? []).slice(0, 6);
+            if (!candidates.length) { ok = false; result = "No images visible on the page yet. Scroll or wait, then try again."; break; }
+            emit({ type: "status", text: `Examining ${candidates.length} images for "${d.description}"…` });
+            try {
+              // Fetch each candidate into the stash (parallel, ignore failures)
+              const fetched = await Promise.all(
+                candidates.map((img) =>
+                  stashImage(chatId, img.url, img.alt, obs?.url).catch(() => null)
+                )
+              );
+              const valid = fetched.filter((x): x is NonNullable<typeof x> => !!x);
+              if (!valid.length) { ok = false; result = "Couldn't download any of the visible images to examine them."; break; }
+
+              // Ask vision model: which image matches the description?
+              const imageParts: ImagePart[] = valid.map((img) => ({
+                mime: img.mime as "image/jpeg" | "image/png" | "image/webp" | "image/gif",
+                data: img.data.toString("base64"),
+              }));
+              const matchRaw = await complete(
+                [
+                  {
+                    role: "system",
+                    content: "You are an image recognition assistant. The user is looking for a specific image. Reply with ONLY a JSON object: {\"index\": <0-based index of best match or -1 if none match>, \"reason\": \"<one sentence>\"}",
+                  },
+                  {
+                    role: "user",
+                    content: `I am looking for: "${d.description}"\n\nI am showing you ${valid.length} images (indices 0 to ${valid.length - 1}). Which image best matches my description? Reply with the JSON only.`,
+                    images: imageParts,
+                  },
+                ],
+                { temperature: 0.1, maxTokens: 120 }
+              );
+              const match = (() => { try { const s = matchRaw.text.indexOf("{"); const e = matchRaw.text.lastIndexOf("}"); return s >= 0 ? JSON.parse(matchRaw.text.slice(s, e + 1)) as { index: number; reason: string } : null; } catch { return null; } })();
+              if (!match || match.index < 0 || match.index >= valid.length) {
+                result = `None of the ${valid.length} visible images appear to match "${d.description}". Reason: ${match?.reason ?? "no match found"}. Try scrolling to see more images.`;
+                ok = false;
+                break;
+              }
+              const winner = valid[match.index];
+              // Find the nearest clickable element wrapping this image
+              const clickSel = await s.active().evaluate((url: string) => {
+                const imgs = Array.from(document.images).filter((i) => (i.currentSrc || i.src) === url);
+                if (!imgs.length) return null;
+                const img = imgs[0];
+                // Walk up to find a link or button ancestor
+                let el: HTMLElement | null = img;
+                while (el && el.tagName !== "BODY") {
+                  if (el.tagName === "A" || el.tagName === "BUTTON" || el.getAttribute("role") === "button" || el.getAttribute("role") === "link") {
+                    const id = el.getAttribute("data-agent-id");
+                    return id ? parseInt(id, 10) : null;
+                  }
+                  el = el.parentElement;
+                }
+                return null;
+              }, winner.url).catch(() => null);
+              result = `Found matching image at index ${match.index}: "${winner.alt || winner.url}". Reason: ${match.reason}.${clickSel != null ? ` It is element [${clickSel}] — click that to open it.` : ` No clickable element wraps it; try clicking the image directly via its URL.`}`;
+            } catch (e) {
+              ok = false;
+              result = `Image examination failed: ${e instanceof Error ? e.message : String(e)}`;
+            }
+            break;
+          }
           default:
             ok = false;
             result = `Unknown action "${(d as { action: string }).action}"`;
         }
-        if (!["wait", "screenshot", "switch_tab", "close_tab"].includes(d.action)) await settle(s.active());
+        if (!["wait", "screenshot", "switch_tab", "close_tab", "fetch_image", "make_collage", "clear_stash", "examine_images"].includes(d.action)) await settle(s.active());
       } catch (e) {
         if (aborted()) break;
         ok = false;

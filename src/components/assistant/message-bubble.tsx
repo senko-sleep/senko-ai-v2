@@ -2,10 +2,11 @@ import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { AlertTriangle, Bot, Check, CheckCircle2, Copy, ExternalLink, PauseCircle, PawPrint, Pencil, RotateCcw, Square } from "lucide-react";
+import { AlertTriangle, Bot, Check, CheckCircle2, Copy, ExternalLink, Grid3X3, PauseCircle, PawPrint, Pencil, RotateCcw, Square } from "lucide-react";
 import { FoxMark } from "./fox-mark";
 import { activitySources } from "./activity";
 import { AgentTrail } from "./activity-trail";
+import { ImageGallery } from "../chat/image-gallery";
 import type { Msg } from "./lib";
 
 function TypingDots() {
@@ -103,6 +104,76 @@ const Markdown = memo(function Markdown({ text }: { text: string }) {
     </div>
   );
 });
+
+/** Horizontal preview strip + "View all images" gallery button for chat-mode image results. */
+function ScrapedImageStrip({
+  images,
+  query,
+}: {
+  images: NonNullable<Msg["scrapedImages"]>;
+  query?: string;
+}) {
+  const [showGallery, setShowGallery] = useState(false);
+  const preview = images.slice(0, 4);
+
+  return (
+    <div className="mt-2 w-full">
+      {/* Mini horizontal strip (up to 4 thumbnails) */}
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {preview.map((img, i) => (
+          <button
+            key={i}
+            type="button"
+            onClick={() => setShowGallery(true)}
+            className="shrink-0 rounded-lg overflow-hidden border border-[var(--sk-line)] hover:border-[var(--sk-accent-line)] transition-colors"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={img.url}
+              alt={img.alt || ""}
+              loading="lazy"
+              referrerPolicy="no-referrer"
+              className="h-24 w-24 object-cover"
+              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+            />
+          </button>
+        ))}
+        {images.length > 4 && (
+          <button
+            type="button"
+            onClick={() => setShowGallery(true)}
+            className="shrink-0 h-24 w-24 rounded-lg border border-[var(--sk-line)] bg-[var(--sk-surface)] flex items-center justify-center text-[11px] text-[var(--sk-muted)] hover:border-[var(--sk-accent-line)] hover:text-[var(--sk-text)] transition-colors"
+          >
+            +{images.length - 4} more
+          </button>
+        )}
+      </div>
+
+      {/* "View all images" button */}
+      <button
+        type="button"
+        onClick={() => setShowGallery(true)}
+        className="mt-2 flex items-center gap-1.5 text-[11.5px] text-[var(--sk-muted)] hover:text-[var(--sk-accent-ink)] transition-colors"
+      >
+        <Grid3X3 size={12} aria-hidden />
+        View all {images.length} images
+      </button>
+
+      {showGallery && (
+        <ImageGallery
+          images={images.map((img) => ({
+            url: img.url,
+            alt: img.alt,
+            source: img.source,
+            engine: img.engine,
+          }))}
+          query={query}
+          onClose={() => setShowGallery(false)}
+        />
+      )}
+    </div>
+  );
+}
 
 function Images({ ids, align }: { ids: string[]; align: "start" | "end" }) {
   return (
@@ -306,6 +377,11 @@ export const MessageBubble = memo(function MessageBubble({
         )}
 
         {msg.imageIds?.length ? <Images ids={msg.imageIds} align="start" /> : null}
+
+        {/* Scraped image strip + "View all images" button — shown for chat-mode image searches */}
+        {msg.scrapedImages?.length ? (
+          <ScrapedImageStrip images={msg.scrapedImages} query={msg.imageQuery} />
+        ) : null}
 
         {msg.error && (
           <div className="border-l-2 border-[var(--sk-danger)] pl-3 text-[12.5px]" role="alert">
