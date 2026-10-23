@@ -103,11 +103,21 @@ async function sdk() {
   return import("@vercel/sandbox");
 }
 
+/**
+ * On Vercel the SDK signs in by itself (OIDC). Anywhere else (e.g. Prisma Compute),
+ * set VERCEL_TOKEN, VERCEL_TEAM_ID and VERCEL_PROJECT_ID.
+ */
+function creds(): { token: string; teamId: string; projectId: string } | Record<string, never> {
+  const { VERCEL_TOKEN: token, VERCEL_TEAM_ID: teamId, VERCEL_PROJECT_ID: projectId } = process.env;
+  return token && teamId && projectId ? { token, teamId, projectId } : {};
+}
+
 async function boot(snapshotId: string, onStatus?: (text: string) => void): Promise<AgentHost> {
   const { Sandbox } = await sdk();
   const name = `senko-agent-${Date.now().toString(36)}`;
   onStatus?.("Starting the agent computer…");
   const sb = await Sandbox.create({
+    ...creds(),
     name,
     source: { type: "snapshot", snapshotId },
     resources: { vcpus: Math.max(1, Number(process.env.AGENT_HOST_VCPUS || 2)) },
@@ -135,7 +145,7 @@ async function boot(snapshotId: string, onStatus?: (text: string) => void): Prom
 async function stopHost(name: string) {
   try {
     const { Sandbox } = await sdk();
-    const sb = await Sandbox.get({ name });
+    const sb = await Sandbox.get({ ...creds(), name });
     await sb.stop();
   } catch {
     /* already gone */

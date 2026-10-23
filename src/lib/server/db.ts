@@ -97,7 +97,11 @@ async function createPg(url: string): Promise<Driver> {
     connectionString: url,
     ssl: local || /sslmode=disable/.test(url) ? undefined : { rejectUnauthorized: false },
     max: 5,
+    // Serverless Postgres and scale-to-zero hosts close idle connections; drop ours first.
+    idleTimeoutMillis: 10_000,
   });
+  // An idle connection closed by the server must not crash the process.
+  pool.on("error", (err) => console.warn("[db] idle connection closed:", err.message));
   return {
     async query(sql, params) {
       const r = await pool.query(sql, params as unknown[]);

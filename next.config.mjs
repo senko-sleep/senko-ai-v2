@@ -6,6 +6,8 @@ const agentBackend = (process.env.AGENT_BACKEND_URL || "").trim().replace(/\/+$/
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactCompiler: true,
+  // Prisma Compute deploys the standalone server; the deploy workflow sets this.
+  ...(process.env.NEXT_OUTPUT_STANDALONE === "1" ? { output: "standalone" } : {}),
   async rewrites() {
     // AGENT_HOST=sandbox routes agent calls itself (src/proxy.ts), to a Vercel Sandbox.
     if (!agentBackend || process.env.AGENT_HOST === "sandbox") return [];
