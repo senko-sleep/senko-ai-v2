@@ -95,6 +95,9 @@ export class BrowserSession {
   private expectingTab = false;
   private saveTimer: ReturnType<typeof setInterval> | null = null;
   private logs: Extract<BusEvent, { type: "log" }>[] = [];
+  // Your scrolling, still to be played out on the page (see glideScroll).
+  private scrollLeft = { dx: 0, dy: 0, x: SCREEN.width / 2, y: SCREEN.height / 2 };
+  private scrolling = false;
   /** Steps/plan of the current or last agent run, replayed to new subscribers. */
   replay: BusEvent[] = [];
 
@@ -466,10 +469,15 @@ export class BrowserSession {
       case "move":
         await p.mouse.move(ev.x, ev.y);
         break;
-      case "wheel":
-        await p.mouse.move(ev.x ?? SCREEN.width / 2, ev.y ?? SCREEN.height / 2);
-        await p.mouse.wheel(ev.dx || 0, ev.dy || 0);
+      case "wheel": {
+        const q = this.scrollLeft;
+        q.dx += ev.dx || 0;
+        q.dy += ev.dy || 0;
+        q.x = ev.x ?? q.x;
+        q.y = ev.y ?? q.y;
+        void this.glideScroll(); // answer right away so the next scroll can come in
         break;
+      }
       case "key":
         await p.keyboard.press(ev.key);
         break;
@@ -486,6 +494,48 @@ export class BrowserSession {
         await p.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
         break;
       }
+    }
+  }
+
+  /**
+   * Play queued scrolling out as small wheel steps, one per display frame. A single big
+   * wheel jump makes the page teleport (and Chrome draws just one new frame); gliding gives
+   * the live view a smooth stream of frames, like scrolling on a real screen.
+   */
+  private async glideScroll() {
+    if (this.scrolling) return;
+    this.scrolling = true;
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const stepOf = (left: number) => {
+      if (Math.abs(left) < 1) return 0;
+      const s = Math.round(left * 0.3); // ease out: ~90% done in 6 frames (~100ms)
+      return Math.abs(s) >= 6 ? s : Math.sign(left) * Math.min(6, Math.abs(Math.round(left)));
+    };
+    try {
+      let at = { x: -1, y: -1 };
+      for (;;) {
+        const q = this.scrollLeft;
+        const sx = stepOf(q.dx);
+        const sy = stepOf(q.dy);
+        if (!sx && !sy) break;
+        q.dx -= sx;
+        q.dy -= sy;
+        const started = Date.now();
+        const p = this.active();
+        if (q.x !== at.x || q.y !== at.y) {
+          at = { x: q.x, y: q.y };
+          await p.mouse.move(at.x, at.y);
+        }
+        await p.mouse.wheel(sx, sy);
+        const wait = 16 - (Date.now() - started);
+        if (wait > 0) await sleep(wait);
+      }
+    } catch {
+      /* page closed or navigating: drop the rest */
+    } finally {
+      this.scrollLeft.dx = 0;
+      this.scrollLeft.dy = 0;
+      this.scrolling = false;
     }
   }
 }

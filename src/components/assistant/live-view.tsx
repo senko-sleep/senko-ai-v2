@@ -314,7 +314,8 @@ export function LiveView({
       const p = toPage(e.clientX, e.clientY);
       if (p) onInput({ type: "click", ...p, button: "right" });
     };
-    // Scroll: add up wheel ticks and send them ~20 times a second.
+    // Scroll: add up wheel ticks and send them once per display frame (the agent computer
+    // glides each batch out smoothly, and queued batches merge while one is in flight).
     let wheel = { dx: 0, dy: 0, x: 0, y: 0 };
     let wheelTimer: ReturnType<typeof setTimeout> | null = null;
     const onWheel = (e: WheelEvent) => {
@@ -327,7 +328,7 @@ export function LiveView({
         onInput({ type: "wheel", ...wheel });
         wheel = { dx: 0, dy: 0, x: 0, y: 0 };
         wheelTimer = null;
-      }, 50);
+      }, 16);
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.isComposing || ["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(e.key)) return;

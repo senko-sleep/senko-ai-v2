@@ -630,7 +630,8 @@ export default function AssistantApp() {
     };
   }, [setControl]);
 
-  // Your input goes out one event at a time, in order; queued mouse moves collapse to the latest.
+  // Your input goes out one event at a time, in order; queued mouse moves collapse to the latest
+  // and queued scrolling adds up.
   const inputQueue = useRef<{ chatId: string; ev: Record<string, unknown> }[]>([]);
   const inputBusy = useRef(false);
   const pumpInput = useCallback(async () => {
@@ -667,7 +668,11 @@ export default function AssistantApp() {
       const chatId = activeRef.current;
       if (!chatId) return;
       const q = inputQueue.current;
-      if (ev.type === "move" && q.length && q[q.length - 1].ev.type === "move") q[q.length - 1] = { chatId, ev };
+      const last = q[q.length - 1];
+      if (ev.type === "move" && last?.ev.type === "move") q[q.length - 1] = { chatId, ev };
+      // Scrolling waiting behind a request in flight adds up into one, so it never lags behind.
+      else if (ev.type === "wheel" && last?.ev.type === "wheel" && last.chatId === chatId)
+        last.ev = { ...ev, dx: Number(last.ev.dx || 0) + Number(ev.dx || 0), dy: Number(last.ev.dy || 0) + Number(ev.dy || 0) };
       else q.push({ chatId, ev });
       void pumpInput();
     },
