@@ -5,7 +5,7 @@ import type { NextRequest } from "next/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 3600;
+export const maxDuration = 300;
 
 // GET (SSE) -> live view: frames, cursor, tabs/status, steps, logs, screenshots.
 // ?restore=1 reopens a saved session (after a restart or eviction) before streaming.

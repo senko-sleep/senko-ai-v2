@@ -3,7 +3,7 @@ import { HttpError, route } from "@/lib/server/identity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 3600;
+export const maxDuration = 300;
 
 // GET -> live MP3 of the agent browser's sound (Docker image only).
 export const GET = route(async (req) => {

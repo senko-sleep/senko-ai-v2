@@ -5,7 +5,7 @@ import { reply } from "@/lib/server/reply";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 800;
+export const maxDuration = 300;
 
 /**
  * POST { content, imageIds?, provider?, record?, truncateFrom? }

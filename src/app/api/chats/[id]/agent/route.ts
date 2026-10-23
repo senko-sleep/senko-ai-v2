@@ -8,7 +8,7 @@ import { sessions } from "@/lib/agent/sessions";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 // No task time limit of our own; this is just the platform's cap on one HTTP response.
-export const maxDuration = 3600;
+export const maxDuration = 300;
 
 /**
  * POST { goal, provider?, imageIds?, resume?, truncateFrom? } -> SSE of RunEvent.
