@@ -37,6 +37,8 @@ async function launch(): Promise<Browser> {
 
   const headed = isHeaded();
   const args = [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
     "--disable-dev-shm-usage",
     "--no-first-run",
     "--no-default-browser-check",
@@ -44,7 +46,6 @@ async function launch(): Promise<Browser> {
     "--autoplay-policy=no-user-gesture-required",
     "--disable-features=Translate,MediaRouter",
     ...(headed ? ["--kiosk", `--window-size=${SCREEN.width},${SCREEN.height}`, "--window-position=0,0", "--start-fullscreen"] : []),
-    ...(process.env.CHROME_NO_SANDBOX === "1" ? ["--no-sandbox"] : []),
   ];
   const attempts: [string, () => Promise<Browser>][] = [];
   if (process.env.BROWSER_PATH) {

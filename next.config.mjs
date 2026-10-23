@@ -1,6 +1,5 @@
-import type { NextConfig } from "next";
-
-const nextConfig: NextConfig = {
+/** @type {import('next').NextConfig} */
+const nextConfig = {
   reactCompiler: true,
   // Playwright ships native binaries; load it from node_modules at runtime instead of bundling it.
   serverExternalPackages: ["playwright", "playwright-core", "pg", "@electric-sql/pglite"],

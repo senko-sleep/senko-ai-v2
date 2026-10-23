@@ -6,7 +6,8 @@ FROM mcr.microsoft.com/playwright:v1.63.0-noble
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+    CHROME_NO_SANDBOX=1
 
 COPY package.json package-lock.json ./
 RUN npm ci --include=dev --no-audit --no-fund
