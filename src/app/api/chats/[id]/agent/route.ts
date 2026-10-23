@@ -2,7 +2,8 @@ import { NextRequest } from "next/server";
 import { addMessage, getMessages, maybeTitle, requireChat, truncateMessagesFrom, updateMessage, type MessageMeta, type TruncateTarget } from "@/lib/server/chats";
 import { errorResponse, HttpError, identify } from "@/lib/server/identity";
 import { absorbMemories } from "@/lib/server/persona";
-import { finishRun, registerRun, runAgent, takePausedGoal, type RunEvent } from "@/lib/agent/runner";
+import { finishRun, registerRun, takePausedGoal, type RunEvent } from "@/lib/agent/runner";
+import { runLayered } from "@/lib/agent/layers";
 import { sessions } from "@/lib/agent/sessions";
 
 export const runtime = "nodejs";
@@ -112,7 +113,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       };
 
       try {
-        await runAgent({ chatId, ownerId: who.ownerId, goal, provider: body.provider, signal: ctl.signal, emit, context });
+        await runLayered({ chatId, ownerId: who.ownerId, goal, provider: body.provider, signal: ctl.signal, emit, context });
       } finally {
         clearInterval(ping);
         finishRun(chatId, ctl);

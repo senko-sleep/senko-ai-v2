@@ -69,6 +69,18 @@ async function launch(): Promise<Browser> {
     throw new Error(`Playwright could not be loaded: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  // Layer 1: a hosted Chromium (Browserless, Browserbase, your own) over CDP. Nothing runs here.
+  const cdp = (process.env.BROWSER_CDP_URL || "").trim();
+  if (cdp) {
+    const b = await chromium.connectOverCDP(cdp, { timeout: 15_000 });
+    g.__agentBrowserMode = { headed: false, channel: "remote" };
+    console.log(`[browser] connected to remote Chromium v${b.version()}`);
+    b.on("disconnected", () => {
+      g.__agentBrowser = undefined;
+    });
+    return b;
+  }
+
   const headed = isHeaded();
   const args = [
     "--no-sandbox",

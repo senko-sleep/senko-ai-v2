@@ -94,7 +94,7 @@ export default function AssistantApp() {
   const [streamingId, setStreamingId] = useState<string | null>(null);
   const [browser, setBrowser] = useState<BrowserState>(EMPTY_BROWSER);
   const [panelOpen, setPanelOpen] = useState(false);
-  const [sessionAvailable, setSessionAvailable] = useState(false);
+  const [, setSessionAvailable] = useState(false);
   const [browserOpening, setBrowserOpening] = useState(false);
   /** You're driving the agent's browser (takeover). */
   const [controlling, setControlling] = useState(false);
@@ -303,37 +303,43 @@ export default function AssistantApp() {
     },
     [closeStream, liveBus]
   );
-  const toggleBrowserPanel = useCallback(async () => {
-    if (panelOpen) {
-      setPanelOpen(false);
-      return;
-    }
-
+  /** Opens (or reuses) this chat's live browser and starts streaming it. */
+  const openLiveBrowser = useCallback(async () => {
     const chatId = activeRef.current;
     if (!chatId || browserOpening) return;
     setBrowserOpening(true);
     try {
       await API.ensureAgentHost();
-      if (!sessionAvailable && !browser.running) {
+      // Opening is idempotent, so always ask: a quick task may have been answered without a browser.
+      if (!browser.running) {
         const response = await fetch(`/api/sessions/${chatId}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "open" }),
         });
-        if (!response.ok) throw new Error(`Could not open browser (${response.status})`);
+        if (!response.ok) throw new Error(await errorFromResponse(response));
         if (activeRef.current !== chatId) return;
         setSessionAvailable(true);
       }
       if (activeRef.current !== chatId) return;
       if (window.innerWidth < 1440) setSidebarOpen(false);
       setPanelOpen(true);
-      if (!streamRef.current) attachStream(chatId);
+      attachStream(chatId);
     } catch (error) {
       console.error("Could not open browser panel", error);
+      setBrowser((b) => ({ ...b, status: error instanceof Error ? error.message : "Could not open the browser." }));
     } finally {
       setBrowserOpening(false);
     }
-  }, [attachStream, browser.running, browserOpening, panelOpen, sessionAvailable]);
+  }, [attachStream, browser.running, browserOpening]);
+
+  const toggleBrowserPanel = useCallback(async () => {
+    if (panelOpen) {
+      setPanelOpen(false);
+      return;
+    }
+    await openLiveBrowser();
+  }, [openLiveBrowser, panelOpen]);
   useEffect(() => closeStream, [closeStream]);
   // Closing the panel stops the video stream (saves bandwidth) unless a task is still running.
   useEffect(() => {
@@ -1162,6 +1168,8 @@ export default function AssistantApp() {
             paused={paused}
             onStop={stop}
             onClose={() => setPanelOpen(false)}
+            onOpenBrowser={openLiveBrowser}
+            opening={browserOpening}
             onToggleControl={() => activeId && void setControl(activeId, !controlling)}
             onResume={resumeAgent}
             onInput={sendInput}

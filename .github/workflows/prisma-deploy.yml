@@ -32,7 +32,9 @@ jobs:
           NEXT_TELEMETRY_DISABLED: "1"
         with:
           module: module.ts
-          build-command: npm run build
+          # Webpack, not Turbopack: Turbopack renames external packages to hashed aliases
+          # (pg-587764f78a6c7a9c) that the per-function bundle doesn't ship, so `pg` fails to load.
+          build-command: npx next build --webpack
 
   teardown:
     # Branch previews are also cleaned up by the Prisma Console's branch automation.

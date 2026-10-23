@@ -49,6 +49,8 @@ export function BrowserPanel({
   paused,
   onStop,
   onClose,
+  onOpenBrowser,
+  opening,
   onToggleControl,
   onResume,
   onInput,
@@ -62,6 +64,9 @@ export function BrowserPanel({
   paused: boolean;
   onStop: () => void;
   onClose: () => void;
+  /** Start (or reconnect to) the live browser when nothing is streaming. */
+  onOpenBrowser: () => void;
+  opening: boolean;
   onToggleControl: () => void;
   onResume: () => void;
   onInput: (e: UserInput) => void;
@@ -235,6 +240,16 @@ export function BrowserPanel({
             <div className={`absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-white/55 ${state.running ? "sk-scan" : ""}`}>
               {state.running ? <Loader2 size={18} className="sk-spin text-[var(--sk-accent)]" aria-hidden /> : <MonitorPlay size={18} className="opacity-50" aria-hidden />}
               <span>{state.running ? state.status || "Starting the browser…" : "Browser stream appears here when a page loads."}</span>
+              {!state.running && (
+                <button
+                  type="button"
+                  onClick={onOpenBrowser}
+                  disabled={opening}
+                  className="sk-btn mt-1 h-7 rounded-md bg-[var(--sk-accent)] px-3 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-60"
+                >
+                  {opening ? <Loader2 size={11} className="sk-spin" aria-hidden /> : <MonitorPlay size={11} aria-hidden />} Open live browser
+                </button>
+              )}
             </div>
           )}
           {state.running && hasFrame && (

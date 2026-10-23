@@ -10,7 +10,16 @@ const PUBLIC_API = new Set(["/api/health", "/api/access", "/api/link/claim", "/a
 // computer (a Vercel Sandbox running this same app); see src/lib/server/agent-host.ts.
 const AGENT_PATH = /^\/api\/(chats\/[^/]+\/agent(\/.*)?|sessions\/.+)$/;
 
+// Hosts that can't run a browser at all (Wasmer, plain Vercel) hand every browser call,
+// plus the "wake the agent computer" call, to a deploy that can (AGENT_BACKEND_URL).
+// Read at runtime, unlike next.config rewrites, so it works with prebuilt bundles.
+const BACKEND_PATH = /^\/api\/(chats\/[^/]+\/agent(\/.*)?|sessions\/.+|agent-host)$/;
+
 async function forwardToAgentHost(req: NextRequest): Promise<NextResponse | null> {
+  const backend = (process.env.AGENT_BACKEND_URL || "").trim().replace(/\/+$/, "");
+  if (backend && process.env.AGENT_HOST !== "sandbox" && BACKEND_PATH.test(req.nextUrl.pathname)) {
+    return NextResponse.rewrite(new URL(req.nextUrl.pathname + req.nextUrl.search, backend));
+  }
   if (process.env.AGENT_HOST !== "sandbox" || !AGENT_PATH.test(req.nextUrl.pathname)) return null;
   const { currentHost } = await import("@/lib/server/agent-host");
   const host = await currentHost().catch(() => null);
