@@ -639,11 +639,19 @@ export default function AssistantApp() {
     try {
       while (inputQueue.current.length) {
         const next = inputQueue.current.shift()!;
-        const r = await fetch(`/api/sessions/${next.chatId}/input`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(next.ev),
-        }).catch(() => null);
+        // Straight to the agent computer when there's a direct link (no hop through the app
+        // host). text/plain keeps it a "simple" request: no CORS preflight per click.
+        const direct = directLive.current.get(next.chatId)?.url?.replace("/stream?", "/input?");
+        let r = direct
+          ? await fetch(direct, { method: "POST", headers: { "Content-Type": "text/plain" }, body: JSON.stringify(next.ev) }).catch(() => null)
+          : null;
+        if (!r || r.status === 401 || r.status === 404) {
+          r = await fetch(`/api/sessions/${next.chatId}/input`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(next.ev),
+          }).catch(() => null);
+        }
         // 409 = the server no longer has you in control (e.g. the agent took over again).
         if (r?.status === 409) {
           setControlling(false);
