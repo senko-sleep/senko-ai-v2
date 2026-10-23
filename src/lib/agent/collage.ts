@@ -5,7 +5,6 @@
  * in a balanced grid on a white/near-white background, just like a Pinterest board
  * or a newspaper photo spread. Returns a single JPEG buffer ready to save.
  */
-import sharp from "sharp";
 
 export interface CollageOptions {
   images: { data: Buffer; mime: string; label?: string }[];
@@ -27,9 +26,15 @@ export interface CollageResult {
   cellCount: number;
 }
 
+async function getSharp() {
+  const mod = await import("sharp");
+  return mod.default || mod;
+}
+
 /** Compute the intrinsic width & height of a buffer using sharp metadata. */
 async function intrinsicSize(buf: Buffer): Promise<{ w: number; h: number }> {
   try {
+    const sharp = await getSharp();
     const meta = await sharp(buf).metadata();
     return { w: meta.width || 400, h: meta.height || 400 };
   } catch {
@@ -42,6 +47,7 @@ async function intrinsicSize(buf: Buffer): Promise<{ w: number; h: number }> {
  * Each column gets roughly the same total height, like a Pinterest masonry board.
  */
 export async function makeCollage(opts: CollageOptions): Promise<CollageResult> {
+  const sharp = await getSharp();
   const { images, width = 1200, quality = 90, gap = 8 } = opts;
   const bg = opts.background ?? "#f8f8f8";
 
@@ -102,7 +108,7 @@ export async function makeCollage(opts: CollageOptions): Promise<CollageResult> 
   const bgRgb = bg.startsWith("#") ? hexToRgb(bg) : { r: 248, g: 248, b: 248 };
 
   // ---- Build composite list ----
-  const composites: Parameters<ReturnType<typeof sharp>["composite"]>[0] = [];
+  const composites: { input: Buffer; left: number; top: number }[] = [];
   for (let c = 0; c < cols; c++) {
     const left = gap + c * (cellW + gap);
     let top = gap;

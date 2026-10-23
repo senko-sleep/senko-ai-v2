@@ -5,7 +5,7 @@
 // (DISPLAY is set), so H.264/AAC video plays and the screen can be streamed over VNC.
 // Locally (no DISPLAY): headless, preferring a full browser (Chrome/Edge) because the
 // stripped "headless shell" is blocked by sites like Crunchyroll.
-import { chromium, type Browser } from "playwright";
+import type { Browser } from "playwright";
 
 const g = globalThis as unknown as { __agentBrowser?: Promise<Browser>; __agentBrowserMode?: BrowserMode };
 
@@ -24,6 +24,17 @@ export function isHeaded(): boolean {
 }
 
 async function launch(): Promise<Browser> {
+  if (process.env.VERCEL) {
+    throw new Error("Live browser agent is not available in Vercel serverless environment (requires Docker or local server with Chrome).");
+  }
+  let chromium;
+  try {
+    const pw = await import("playwright");
+    chromium = pw.chromium;
+  } catch (err) {
+    throw new Error(`Playwright could not be loaded: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   const headed = isHeaded();
   const args = [
     "--disable-dev-shm-usage",
