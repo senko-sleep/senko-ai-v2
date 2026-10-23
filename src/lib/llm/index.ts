@@ -43,6 +43,8 @@ export interface LlmOptions {
   maxWaitMs?: number;
   /** Called before waiting out a rate limit (e.g. to show "waiting ~20s…"). */
   onWait?: (ms: number) => void;
+  /** Latency over cleverness: try each provider's quickest models first (browser agent steps). */
+  fast?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +209,7 @@ interface Provider {
   label: string;
   configured(): boolean;
   /** Models to try, best first. */
-  candidates(needVision: boolean): Promise<Candidate[]>;
+  candidates(needVision: boolean, fast?: boolean): Promise<Candidate[]>;
   open(c: Candidate, messages: LlmMessage[], opts: LlmOptions): Promise<AsyncGenerator<string>>;
   missingDetail: string;
   /** What one request may use. Free tiers count input + max output against a per-minute limit. */
@@ -232,6 +234,8 @@ interface CompatConfig {
   envVisionModel?: () => string;
   preferred: string[];
   preferredVision?: string[];
+  /** Quickest good models, tried first when speed matters more than depth. */
+  fastPreferred?: string[];
   /** Chooses usable chat models from the live /models list. */
   filter?: (m: LiveModel) => boolean;
   isVision?: (m: LiveModel) => boolean;
@@ -291,7 +295,7 @@ function compatProvider(c: CompatConfig): Provider {
     budget: c.budget,
     local: c.local,
     configured: () => !!c.key(),
-    async candidates(needVision) {
+    async candidates(needVision, fast) {
       const live = await liveModels(c);
       const has = (id: string) => live.length === 0 || live.some((m) => m.id === id);
       const isVision = (id: string) => {
@@ -302,6 +306,13 @@ function compatProvider(c: CompatConfig): Provider {
       const push = (model: string, vision: boolean) => {
         if (model && !out.some((o) => o.model === model)) out.push({ provider: c.id, label: c.label, model, vision });
       };
+      if (fast && c.fastPreferred) {
+        for (const f of c.fastPreferred) {
+          if (!has(f)) continue;
+          const v = isVision(f) || (c.preferredVision || []).includes(f);
+          if (!needVision || v) push(f, v);
+        }
+      }
       if (needVision) {
         const ev = c.envVisionModel?.();
         if (ev) push(ev, true);
@@ -589,6 +600,8 @@ const PROVIDERS: Provider[] = [
     // Newer API keys can't use the 2.5 models (404), so try the current previews first.
     preferred: ["gemini-3.8-flash", "gemini-3-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
     preferredVision: ["gemini-3.8-flash", "gemini-3-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-flash"],
+    // Measured: flash-lite answers in ~0.6s, the bigger previews in 0.6-4s.
+    fastPreferred: ["gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"],
     // Prefer stable "flash" models: they have the most generous free limits.
     filter: (m) => isGeminiChat(m.id) && /flash/.test(m.id),
     isVision: (m) => isGeminiChat(m.id),
@@ -606,6 +619,7 @@ const PROVIDERS: Provider[] = [
     envVisionModel: () => env("GROQ_VISION_MODEL"),
     preferred: ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b"],
     preferredVision: ["meta-llama/llama-4-scout-17b-16e-instruct", "meta-llama/llama-4-maverick-17b-128e-instruct"],
+    fastPreferred: ["openai/gpt-oss-120b", "meta-llama/llama-4-scout-17b-16e-instruct"],
     filter: (m) => !/whisper|guard|orpheus|tts|allam|safeguard/i.test(m.id),
     isVision: (m) => /llama-4|vision|-vl/i.test(m.id),
     extras: (model) => (/gpt-oss/.test(model) ? { reasoning_effort: "low" } : {}),
@@ -731,6 +745,145 @@ function friendly(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** Start a backup model if the current one hasn't started answering after this long. */
+const HEDGE_MS = () => num("LLM_HEDGE_MS", 2500);
+/** Give up on a model that hasn't sent its first words after this long. */
+const FIRST_TOKEN_MS = () => num("LLM_FIRST_TOKEN_MS", 20_000);
+
+/**
+ * Open one model and read the first words, so empty replies, refusals and stalls are
+ * caught before we commit to it. Rejects with a ProviderError on any problem.
+ */
+async function tryCandidate(p: Provider, c: Candidate, messages: LlmMessage[], opts: LlmOptions, signal: AbortSignal): Promise<AsyncGenerator<string>> {
+  if (opts.simulateFail?.includes(c.provider)) {
+    throw new ProviderError(`${c.label} (${c.model}): simulated failure for testing`, 503, null);
+  }
+  const budget = p.budget();
+  // Fit the conversation to this provider. If it still says "too large" (our estimate
+  // was off), try once more at half the size before moving on.
+  let gen: AsyncGenerator<string> | null = null;
+  for (const scale of [1, 0.5]) {
+    const fitted = fitMessages(messages, Math.floor(budget.input * scale), opts.compactSystem, !!p.local || scale < 1);
+    const maxTokens = Math.min(opts.maxTokens ?? budget.output, budget.output);
+    try {
+      gen = await p.open(c, fitted, { ...opts, signal, maxTokens });
+      break;
+    } catch (err) {
+      if (scale === 1 && isTooLarge(err)) {
+        console.warn(`[llm] ${c.label} (${c.model}): request too large, retrying smaller`);
+        continue;
+      }
+      throw err;
+    }
+  }
+  if (!gen) throw new ProviderError(`${c.label} (${c.model}): request too large even after trimming`, 413, null);
+  // Pull initial chunks so an empty stream or canned refusal falls back to the next model.
+  let head = "";
+  while (head.length < 72) {
+    const step = await gen.next();
+    if (step.done) break;
+    head += step.value;
+  }
+  if (!head.trim()) {
+    throw new ProviderError(`${c.label} (${c.model}): empty response`, 422, null);
+  }
+  if (/^\s*(?:i'm sorry,? (?:but )?i (?:cannot|can't|am unable|won't)|i (?:cannot|can't|am unable to|must decline to) (?:fulfill|assist|help|provide|comply|search|open|generate)|as an ai(?: language model)?,? i (?:cannot|can't|do not))/i.test(head)) {
+    throw new ProviderError(`${c.label} (${c.model}): model refused request`, 422, null);
+  }
+  return prepend(head, gen);
+}
+
+/**
+ * Try models best-first, but don't wait on a slow one: if it hasn't started answering
+ * within HEDGE_MS, a backup starts in parallel and whichever answers first wins.
+ * Returns null when every model failed.
+ */
+async function raceCandidates(
+  queue: { p: Provider; c: Candidate }[],
+  messages: LlmMessage[],
+  opts: LlmOptions,
+  onFail: (c: Candidate, e: unknown) => void
+): Promise<{ c: Candidate; stream: AsyncGenerator<string> } | null> {
+  if (!queue.length) return null;
+  return new Promise((resolve) => {
+    const started = new Array(queue.length).fill(false);
+    const live = new Set<string>();
+    let running = 0;
+    let done = false;
+    let hedge: ReturnType<typeof setTimeout> | null = null;
+    const attempts: { ctl: AbortController; timer: ReturnType<typeof setTimeout> }[] = [];
+
+    const finish = (result: { c: Candidate; stream: AsyncGenerator<string> } | null, keep?: AbortController) => {
+      if (done) return;
+      done = true;
+      if (hedge) clearTimeout(hedge);
+      for (const a of attempts) {
+        clearTimeout(a.timer);
+        if (a.ctl !== keep) a.ctl.abort();
+      }
+      resolve(result);
+    };
+    const onAbort = () => finish(null);
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+
+    const scheduleHedge = () => {
+      if (hedge) clearTimeout(hedge);
+      const ms = HEDGE_MS();
+      if (ms > 0 && started.includes(false)) hedge = setTimeout(() => launch(true), ms);
+    };
+
+    function launch(asBackup = false) {
+      if (done) return;
+      // A backup should come from another provider: one provider is often slow as a whole.
+      let i = asBackup ? queue.findIndex((q, n) => !started[n] && !live.has(q.p.id)) : -1;
+      if (i < 0) i = started.indexOf(false);
+      if (i < 0) {
+        if (running === 0) finish(null);
+        return;
+      }
+      started[i] = true;
+      const { p, c } = queue[i];
+      live.add(p.id);
+      running++;
+      const ctl = new AbortController();
+      // The winner must still stop when the caller aborts.
+      opts.signal?.addEventListener("abort", () => ctl.abort(), { once: true });
+      let slow = false;
+      const timer = setTimeout(() => {
+        slow = true;
+        ctl.abort();
+      }, FIRST_TOKEN_MS());
+      attempts.push({ ctl, timer });
+      tryCandidate(p, c, messages, opts, ctl.signal).then(
+        (stream) => {
+          clearTimeout(timer);
+          running--;
+          live.delete(p.id);
+          if (done) {
+            void stream.return(undefined).catch(() => {});
+            return;
+          }
+          opts.signal?.removeEventListener("abort", onAbort);
+          finish({ c, stream }, ctl);
+        },
+        (e) => {
+          clearTimeout(timer);
+          running--;
+          live.delete(p.id);
+          if (done) return;
+          const err = slow ? new ProviderError(`${c.label} (${c.model}): no answer within ${Math.round(FIRST_TOKEN_MS() / 1000)}s`, 408, null) : e;
+          onFail(c, err);
+          // Failed: move to the next model right away instead of waiting for the hedge timer.
+          launch();
+        }
+      );
+      scheduleHedge();
+    }
+
+    launch();
+  });
+}
+
 /**
  * Stream a reply, falling back across providers/models until one answers.
  * Throws only when every option failed, with each reason listed.
@@ -747,16 +900,16 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
     skipped.length = 0;
     /** Soonest moment a rate-limited / temporarily failing model should be usable again. */
     let soonest = Infinity;
-    for (const p of orderedProviders(opts.provider)) {
-      if (!p.configured()) continue;
-      let cands: Candidate[] = [];
-      try {
-        cands = await p.candidates(needVision);
-      } catch {
-        cands = [];
-      }
-      for (const c of cands) {
-        if (opts.signal?.aborted) throw new Error("Aborted");
+
+    // Every usable model, best first.
+    const queue: { p: Provider; c: Candidate }[] = [];
+    let providers = orderedProviders(opts.provider).filter((p) => p.configured());
+    if (opts.fast && !needVision && (!opts.provider || opts.provider === "auto")) {
+      providers = [...providers.filter((p) => p.id === "groq"), ...providers.filter((p) => p.id !== "groq")];
+    }
+    const lists = await Promise.all(providers.map((p) => p.candidates(needVision, opts.fast).catch(() => [] as Candidate[])));
+    providers.forEach((p, i) => {
+      for (const c of lists[i]) {
         if (needVision && !c.vision) continue;
         const cool = isCooling(c.provider, c.model);
         if (cool) {
@@ -764,70 +917,39 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
           skipped.push(`${c.label} (${c.model}): ${cool.reason}`);
           continue;
         }
-        try {
-          if (opts.simulateFail?.includes(c.provider)) {
-            throw new ProviderError(`${c.label} (${c.model}): simulated failure for testing`, 503, null);
-          }
-          const budget = p.budget();
-          // Fit the conversation to this provider. If it still says "too large" (our estimate
-          // was off), try once more at half the size before moving on.
-          let gen: AsyncGenerator<string> | null = null;
-          for (const scale of [1, 0.5]) {
-            const fitted = fitMessages(messages, Math.floor(budget.input * scale), opts.compactSystem, !!p.local || scale < 1);
-            const maxTokens = Math.min(opts.maxTokens ?? budget.output, budget.output);
-            try {
-              gen = await p.open(c, fitted, { ...opts, maxTokens });
-              break;
-            } catch (err) {
-              if (scale === 1 && isTooLarge(err)) {
-                console.warn(`[llm] ${c.label} (${c.model}): request too large, retrying smaller`);
-                continue;
-              }
-              throw err;
-            }
-          }
-          if (!gen) throw new ProviderError(`${c.label} (${c.model}): request too large even after trimming`, 413, null);
-          // Pull initial chunks so an empty stream or canned refusal falls back to the next model.
-          let head = "";
-          while (head.length < 72) {
-            const step = await gen.next();
-            if (step.done) break;
-            head += step.value;
-          }
-          if (!head.trim()) {
-            throw new ProviderError(`${c.label} (${c.model}): empty response`, 422, null);
-          }
-          if (/^\s*(?:i'm sorry,? (?:but )?i (?:cannot|can't|am unable|won't)|i (?:cannot|can't|am unable to|must decline to) (?:fulfill|assist|help|provide|comply|search|open|generate)|as an ai(?: language model)?,? i (?:cannot|can't|do not))/i.test(head)) {
-            throw new ProviderError(`${c.label} (${c.model}): model refused request`, 422, null);
-          }
-          const stream = prepend(head, gen);
-          return { provider: c.provider, providerLabel: c.label, model: c.model, stream, skipped };
-        } catch (e) {
-          if (opts.signal?.aborted) throw e;
-          const pe = e instanceof ProviderError ? e : null;
-          const status = pe?.status ?? 0;
-          if (!opts.simulateFail?.includes(c.provider)) {
-            const daily = /per day|daily|RPD|quota/i.test(pe?.message || "");
-            const ms =
-              isTooLarge(e) ? 5_000 // not the provider's fault; a smaller request may work right away
-              : status === 429 ? Math.max(pe?.retryMs ?? 30_000, daily ? 60 * 60_000 : 15_000)
-              : status === 402 ? 60 * 60_000 // out of credit
-              : status === 401 || status === 403 ? 10 * 60_000
-              : status === 404 ? 60 * 60_000
-              : status === 422 ? 2_000
-              : 30_000;
-            // Worth waiting for: rate limits, network blips and server errors (not refusals/bad keys).
-            const retryable = status === 429 || status === 0 || status >= 500;
-            coolDown(c.provider, c.model, ms, status === 429 ? "rate limited" : `error ${status || "network"}`, retryable);
-            if (retryable) soonest = Math.min(soonest, ms);
-          }
-          const msg = friendly(e);
-          console.warn(`[llm] ${msg}`);
-          errors.push(msg);
-          skipped.push(msg);
-        }
+        queue.push({ p, c });
       }
-    }
+    });
+
+    const onFail = (c: Candidate, e: unknown) => {
+      const pe = e instanceof ProviderError ? e : null;
+      const status = pe?.status ?? 0;
+      if (!opts.simulateFail?.includes(c.provider)) {
+        const daily = /per day|daily|RPD|quota/i.test(pe?.message || "");
+        const ms =
+          isTooLarge(e) ? 5_000 // not the provider's fault; a smaller request may work right away
+          : status === 429 ? Math.max(pe?.retryMs ?? 30_000, daily ? 60 * 60_000 : 15_000)
+          : status === 402 ? 60 * 60_000 // out of credit
+          : status === 401 || status === 403 ? 10 * 60_000
+          : status === 404 ? 60 * 60_000
+          : status === 422 ? 2_000
+          : status === 408 ? 20_000 // too slow to answer: let faster models take over for a bit
+          : 30_000;
+        // Worth waiting for: rate limits, network blips and server errors (not refusals/bad keys).
+        const retryable = status === 429 || status === 0 || status === 408 || status >= 500;
+        coolDown(c.provider, c.model, ms, status === 429 ? "rate limited" : status === 408 ? "too slow" : `error ${status || "network"}`, retryable);
+        if (retryable) soonest = Math.min(soonest, ms);
+      }
+      const msg = friendly(e);
+      console.warn(`[llm] ${msg}`);
+      errors.push(msg);
+      skipped.push(msg);
+    };
+
+    const won = await raceCandidates(queue, messages, opts, onFail);
+    if (won) return { provider: won.c.provider, providerLabel: won.c.label, model: won.c.model, stream: won.stream, skipped };
+    if (opts.signal?.aborted) throw new Error("Aborted");
+
     // Everything is rate-limited for now: wait for the first model to free up (within the
     // caller's patience) and try again, instead of failing the whole request.
     const wait = soonest + 500;

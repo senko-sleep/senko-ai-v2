@@ -406,7 +406,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       emit({ type: "status", text });
       session?.log(text, "warn");
     };
-    const llmOpts = { provider, signal, json: true, temperature: 0.2, maxTokens, simulateFail, maxWaitMs: 90_000, onWait };
+    const llmOpts = { provider, signal, json: true, temperature: 0.2, maxTokens, simulateFail, maxWaitMs: 90_000, onWait, fast: process.env.AGENT_FAST !== "0" };
     try {
       const r = await complete(messages, llmOpts);
       lastProvider = { provider: r.providerLabel, model: r.model };
@@ -430,17 +430,20 @@ export async function runAgent(opts: RunOptions): Promise<void> {
 
   const settle = async (page: Page) => {
     await page.waitForLoadState("domcontentloaded", { timeout: 20_000 }).catch(() => {});
-    await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => {});
+    await page.waitForLoadState("networkidle", { timeout: 1_500 }).catch(() => {});
     for (let i = 0; i < 6 && !aborted(); i++) {
       const title = await page.title().catch(() => "");
       if (!/just a moment|checking your browser|attention required|verify you are human/i.test(title)) break;
       if (i === 0) emit({ type: "status", text: "Waiting for a security check…" });
       await page.waitForTimeout(2000);
     }
-    for (let i = 0; i < 4 && !aborted(); i++) {
+    // Pages that render their text late: wait while the text is still growing, not on short pages that are done.
+    let prev = -1;
+    for (let i = 0; i < 6 && !aborted(); i++) {
       const len = await page.evaluate(() => document.body?.innerText.length || 0).catch(() => 0);
-      if (len > 400) break;
-      await page.waitForTimeout(1500);
+      if (len > 400 || (len > 0 && len === prev)) break;
+      prev = len;
+      await page.waitForTimeout(500);
     }
   };
 
@@ -468,23 +471,8 @@ export async function runAgent(opts: RunOptions): Promise<void> {
     return { x, y, vp, box };
   };
 
-  try {
-    // 1. Session --------------------------------------------------------------------
-    const start = step("Connecting to the browser");
-    session = await sessions.open(chatId, ownerId);
-    session.running = true;
-    session.replay = [];
-    session.emitStatus();
-    await session.startCast();
-    start.done(session.isActive() ? `Continuing on ${host(session.active().url())}` : "New browser session");
-    const voice = await agentVoice(ownerId).catch(() => "");
-    const system = `${SYSTEM_PROMPT}\n\nASSISTANT'S VOICE (for the done answer):\n${voice}`;
-
-    // 2. Plan -----------------------------------------------------------------------
-    emit({ type: "status", text: "Planning…" });
-    const planStep = step("Planning the steps");
-    const startObs = session.isActive() ? await observe(session, false) : null;
-    const planRaw = await ask(
+  const makePlan = (startObs: Observation | null) =>
+    ask(
       [
         {
           role: "system",
@@ -504,6 +492,28 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       ],
       800
     );
+
+  try {
+    // 1. Session --------------------------------------------------------------------
+    const start = step("Connecting to the browser");
+    // Plan while the browser connects (a fresh session has nothing to look at yet).
+    const liveBefore = sessions.get(chatId);
+    let planJob: Promise<string> | null = liveBefore?.isActive() ? null : makePlan(null);
+    planJob?.catch(() => {});
+    session = await sessions.open(chatId, ownerId);
+    session.running = true;
+    session.replay = [];
+    session.emitStatus();
+    await session.startCast();
+    start.done(session.isActive() ? `Continuing on ${host(session.active().url())}` : "New browser session");
+    const voice = await agentVoice(ownerId).catch(() => "");
+    const system = `${SYSTEM_PROMPT}\n\nASSISTANT'S VOICE (for the done answer):\n${voice}`;
+
+    // 2. Plan -----------------------------------------------------------------------
+    emit({ type: "status", text: "Planning…" });
+    const planStep = step("Planning the steps");
+    if (!planJob) planJob = makePlan(session.isActive() ? await observe(session, false) : null);
+    const planRaw = await planJob;
     const plan = (parseJson<{ steps?: string[] }>(planRaw)?.steps || []).filter((x) => typeof x === "string").slice(0, 8);
     if (plan.length) {
       emit({ type: "plan", steps: plan });
