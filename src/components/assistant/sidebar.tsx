@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { MessageSquare, PanelLeftClose, Settings2, SquarePen, Trash2 } from "lucide-react";
+import { PanelLeftClose, Settings2, SquarePen, Trash2 } from "lucide-react";
 import { FoxMark } from "./fox-mark";
 import type { ChatSummary } from "./lib";
 
@@ -43,50 +43,50 @@ export function Sidebar({
   const [confirming, setConfirming] = useState<string | null>(null);
 
   return (
-    <nav aria-label="Chats" className="flex h-full w-full flex-col border-r border-[var(--sk-line)] bg-[var(--sk-panel)]">
-      <div className="flex h-13 shrink-0 items-center gap-2.5 border-b border-[var(--sk-line)] px-3.5">
-        <FoxMark size={24} title="Senko" />
-        <span className="sk-display text-[17px] font-semibold tracking-tight text-[var(--sk-text)]">Senko</span>
+    <nav aria-label="Chats" className="sk-sidebar flex h-full w-full flex-col border-r border-[var(--sk-line)]">
+      <div className="flex h-11 shrink-0 items-center gap-2 px-3">
+        <FoxMark size={25} title="Senko" />
+        <span className="sk-display text-[14.5px] font-semibold tracking-tight text-[var(--sk-text)]">Senko</span>
         <button
           type="button"
           onClick={onClose}
-          className="sk-btn ml-auto h-8 w-8 rounded-lg text-[var(--sk-muted)] hover:text-[var(--sk-text)]"
+          className="sk-btn ml-auto h-7 w-7 rounded-md text-[var(--sk-muted)] hover:text-[var(--sk-text)]"
           aria-label="Hide sidebar"
           title="Hide sidebar"
         >
-          <PanelLeftClose size={16} />
+          <PanelLeftClose size={14} />
         </button>
       </div>
 
-      <div className="px-3 pb-2 pt-2.5">
+      <div className="px-2 pb-1.5">
         <button
           type="button"
           onClick={onNew}
-          className="sk-btn h-9 w-full justify-start gap-2 rounded-lg border border-[var(--sk-line)] bg-[var(--sk-solid)] px-3 text-[13px] font-medium text-[var(--sk-text)] shadow-2xs hover:border-[var(--sk-accent-line)] hover:bg-[var(--sk-raised)]"
+          className="sk-btn h-8 w-full justify-start gap-2 rounded-lg px-2.5 text-[12.5px] font-medium text-[var(--sk-text)] hover:bg-[var(--sk-hover)]"
         >
-          <SquarePen size={14} className="text-[var(--sk-accent-ink)]" aria-hidden />
+          <SquarePen size={13} className="text-[var(--sk-accent-ink)]" aria-hidden />
           New chat
-          <kbd className="ml-auto hidden rounded border border-[var(--sk-line)] bg-[var(--sk-hover)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--sk-faint)] lg:inline">
+          <kbd className="ml-auto hidden font-mono text-[9.5px] text-[var(--sk-faint)] lg:inline">
             Ctrl ⇧ O
           </kbd>
         </button>
       </div>
 
-      <div className="sk-scroll min-h-0 flex-1 overflow-y-auto px-2.5 pb-3">
+      <div className="sk-scroll min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         {loading && !chats.length ? (
-          <div className="space-y-1.5 px-1 pt-3" aria-hidden>
+          <div className="space-y-1 px-1 pt-2" aria-hidden>
             {[0, 1, 2].map((i) => (
-              <div key={i} className="sk-skel h-8 rounded-lg" />
+              <div key={i} className="sk-skel h-7 rounded-md" />
             ))}
           </div>
         ) : !chats.length ? (
-          <p className="px-2.5 pt-4 text-[12.5px] leading-relaxed text-[var(--sk-faint)]">
-            Your conversations will show up here, on every device you link.
+          <p className="px-2.5 pt-3 text-[11.5px] leading-relaxed text-[var(--sk-faint)]">
+            Your conversations will appear here across linked devices.
           </p>
         ) : (
           groupChats(chats).map((g) => (
-            <div key={g.label} className="mt-4 first:mt-2">
-              <h3 className="px-2.5 pb-1.5 text-[11px] font-medium text-[var(--sk-faint)]">{g.label}</h3>
+            <div key={g.label} className="mt-3 first:mt-1.5">
+              <h3 className="px-2.5 pb-1 text-[10px] font-medium uppercase tracking-wider text-[var(--sk-faint)]">{g.label}</h3>
               <ul className="space-y-0.5">
                 {g.items.map((c) => {
                   const active = c.id === activeId;
@@ -97,13 +97,12 @@ export function Sidebar({
                         type="button"
                         onClick={() => onSelect(c.id)}
                         aria-current={active ? "page" : undefined}
-                        className={`flex h-8.5 w-full items-center gap-2 rounded-lg pl-2.5 pr-8 text-left text-[13px] transition-colors ${
+                        className={`relative flex h-7.5 w-full items-center rounded-md pl-3 pr-7 text-left text-[12.5px] transition-colors ${
                           active
-                            ? "bg-[var(--sk-raised)] font-medium text-[var(--sk-text)] shadow-2xs"
+                            ? "bg-[var(--sk-hover)] font-medium text-[var(--sk-text)] before:absolute before:bottom-1.5 before:left-0.5 before:top-1.5 before:w-[2px] before:rounded-full before:bg-[var(--sk-accent)]"
                             : "text-[var(--sk-muted)] hover:bg-[var(--sk-hover)] hover:text-[var(--sk-text)]"
                         }`}
                       >
-                        <MessageSquare size={13.5} className={`shrink-0 ${active ? "text-[var(--sk-accent-ink)]" : "opacity-50"}`} aria-hidden />
                         <span className="truncate">{c.title}</span>
                       </button>
                       <button
@@ -118,7 +117,7 @@ export function Sidebar({
                           }
                         }}
                         onBlur={() => setConfirming((v) => (v === c.id ? null : v))}
-                        className={`absolute right-1 top-1/2 flex h-6.5 -translate-y-1/2 items-center justify-center rounded-md px-1.5 text-[11px] font-medium transition ${
+                        className={`absolute right-1 top-1/2 flex h-6 -translate-y-1/2 items-center justify-center rounded px-1.5 text-[10.5px] font-medium transition ${
                           asking
                             ? "bg-[var(--sk-danger-soft)] text-[var(--sk-danger)] opacity-100"
                             : "text-[var(--sk-faint)] opacity-100 hover:text-[var(--sk-danger)] sm:opacity-0 sm:focus-visible:opacity-100 sm:group-hover/item:opacity-100"
@@ -126,7 +125,7 @@ export function Sidebar({
                         aria-label={asking ? `Confirm delete “${c.title}”` : `Delete “${c.title}”`}
                         title={asking ? "Click again to delete" : "Delete"}
                       >
-                        {asking ? "Delete?" : <Trash2 size={12.5} />}
+                        {asking ? "Delete?" : <Trash2 size={11.5} />}
                       </button>
                     </li>
                   );
@@ -137,13 +136,13 @@ export function Sidebar({
         )}
       </div>
 
-      <div className="border-t border-[var(--sk-line)] p-2.5">
+      <div className="p-2">
         <button
           type="button"
           onClick={onSettings}
-          className="sk-btn h-9 w-full justify-start gap-2.5 rounded-lg px-2.5 text-[13px] text-[var(--sk-muted)] hover:text-[var(--sk-text)]"
+          className="sk-btn h-8 w-full justify-start gap-2 rounded-lg px-2.5 text-[12.5px] text-[var(--sk-muted)] hover:text-[var(--sk-text)]"
         >
-          <Settings2 size={15} aria-hidden /> Settings
+          <Settings2 size={13.5} aria-hidden /> Settings
         </button>
       </div>
     </nav>

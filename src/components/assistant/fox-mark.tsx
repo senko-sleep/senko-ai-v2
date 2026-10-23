@@ -1,7 +1,7 @@
 import Image from "next/image";
 
 /** Senko's generated pixel-anime fox spirit. Decorative unless a title is given. */
-export function FoxMark({ size = 24, title, className = "" }: { size?: number; title?: string; className?: string }) {
+export function FoxMark({ size = 25, title, className = "" }: { size?: number; title?: string; className?: string }) {
   return (
     <Image
       src="/senko-fox.png"

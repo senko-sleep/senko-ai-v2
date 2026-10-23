@@ -25,6 +25,11 @@ export interface StoredMessage {
   createdAt: string;
 }
 
+export interface TruncateTarget {
+  messageId?: string;
+  index?: number;
+}
+
 export async function listChats(ownerId: string) {
   return q<{ id: string; title: string; updated_at: string }>(
     "SELECT id, title, updated_at FROM chats WHERE owner_id = $1 ORDER BY updated_at DESC LIMIT 500",
@@ -86,6 +91,34 @@ export async function updateMessage(id: string, content: string, meta: MessageMe
     await q("UPDATE messages SET content = $2, meta = $3, image_ids = $4 WHERE id = $1", [id, content, JSON.stringify(meta), JSON.stringify(imageIds)]);
   } else {
     await q("UPDATE messages SET content = $2, meta = $3 WHERE id = $1", [id, content, JSON.stringify(meta)]);
+  }
+}
+
+/**
+ * Rewind a chat to just before a given message so editing a user message
+ * deletes that message and every subsequent turn in the conversation.
+ */
+export async function truncateMessagesFrom(chatId: string, target: TruncateTarget) {
+  let targetSeq: number | string | undefined;
+  if (target.messageId) {
+    const row = await q1<{ seq: number | string }>("SELECT seq FROM messages WHERE chat_id = $1 AND id = $2", [chatId, target.messageId]);
+    if (row) targetSeq = row.seq;
+  }
+  if (targetSeq === undefined && typeof target.index === "number" && target.index >= 0) {
+    const rows = await q<{ seq: number | string }>(
+      `SELECT seq FROM (
+         SELECT seq FROM messages WHERE chat_id = $1 ORDER BY seq DESC LIMIT 400
+       ) t ORDER BY seq ASC`,
+      [chatId]
+    );
+    if (rows[target.index]) targetSeq = rows[target.index].seq;
+  }
+  if (targetSeq !== undefined) {
+    await q("DELETE FROM messages WHERE chat_id = $1 AND seq >= $2", [chatId, targetSeq]);
+    const remaining = await q1<{ c: number | string }>("SELECT COUNT(*) AS c FROM messages WHERE chat_id = $1", [chatId]);
+    if (remaining && Number(remaining.c) === 0) {
+      await q("UPDATE chats SET title = 'New chat', updated_at = now() WHERE id = $1", [chatId]);
+    }
   }
 }
 

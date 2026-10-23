@@ -53,4 +53,23 @@ describe("identity + linking", { timeout: 30_000 }, () => {
     const chat = await q1<{ owner_id: string }>("SELECT owner_id FROM chats WHERE id = 'c_phone'");
     expect(chat?.owner_id).toBe(pc.ownerId);
   });
+
+  it("rewinds chat history from an edited user message onward", async () => {
+    const { createChat, addMessage, getMessages, truncateMessagesFrom } = await import("@/lib/server/chats");
+    const chat = await createChat("o_edit_test", "First topic");
+    const m1 = await addMessage(chat.id, "user", "First question");
+    await addMessage(chat.id, "assistant", "First answer");
+    const m3 = await addMessage(chat.id, "user", "Second question");
+    await addMessage(chat.id, "assistant", "Second answer");
+    await addMessage(chat.id, "user", "Third question");
+    await addMessage(chat.id, "assistant", "Third answer");
+
+    await truncateMessagesFrom(chat.id, { messageId: m3, index: 2 });
+    const afterMidEdit = await getMessages(chat.id);
+    expect(afterMidEdit.map((m) => m.content)).toEqual(["First question", "First answer"]);
+
+    await truncateMessagesFrom(chat.id, { messageId: m1, index: 0 });
+    const afterFirstEdit = await getMessages(chat.id);
+    expect(afterFirstEdit).toHaveLength(0);
+  });
 });

@@ -42,7 +42,7 @@ export function Composer({
     const t = inputRef.current;
     if (!t) return;
     t.style.height = "0px";
-    t.style.height = `${Math.min(t.scrollHeight, 200)}px`;
+    t.style.height = `${Math.min(Math.max(t.scrollHeight, 28), 160)}px`;
   }, [value, inputRef]);
 
   const uploading = attachments.some((a) => !a.id && !a.error);
@@ -68,108 +68,106 @@ export function Composer({
         const files = [...e.dataTransfer.files].filter((f) => f.type.startsWith("image/"));
         if (files.length) onAddFiles(files);
       }}
-      className={`relative rounded-2xl border bg-[var(--sk-solid)] p-1.5 shadow-sm transition-colors duration-150 focus-within:border-[var(--sk-accent-line)] ${
-        dragging ? "border-[var(--sk-accent)]" : "border-[var(--sk-line)]"
+      className={`sk-composer relative rounded-2xl px-2.5 py-1.5 ${
+        dragging ? "border-[var(--sk-accent)]" : ""
       }`}
     >
       {attachments.length > 0 && (
-        <ul className="flex flex-wrap gap-2 px-2 pb-1 pt-1.5" aria-label="Attached images">
+        <ul className="flex flex-wrap gap-1.5 pb-1.5 pt-1" aria-label="Attached images">
           {attachments.map((a) => (
             <li key={a.key} className="sk-pop group relative">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={a.preview}
                 alt="Attached image"
-                className={`h-14 w-14 rounded-lg border object-cover ${a.error ? "border-[var(--sk-danger)] opacity-50" : "border-[var(--sk-line)]"}`}
+                className={`h-11 w-11 rounded-lg border object-cover ${a.error ? "border-[var(--sk-danger)] opacity-50" : "border-[var(--sk-line)]"}`}
               />
               {!a.id && !a.error && (
-                <span className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/40">
-                  <Loader2 size={15} className="sk-spin text-white" aria-label="Uploading" />
+                <span className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/50">
+                  <Loader2 size={13} className="sk-spin text-white" aria-label="Uploading" />
                 </span>
               )}
               <button
                 type="button"
                 onClick={() => onRemoveAttachment(a.key)}
-                className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-[var(--sk-line)] bg-[var(--sk-solid)] text-[var(--sk-muted)] shadow transition hover:text-[var(--sk-text)]"
+                className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full border border-[var(--sk-line)] bg-[var(--sk-bg)] text-[var(--sk-muted)] transition hover:text-[var(--sk-text)]"
                 aria-label="Remove image"
                 title={a.error || "Remove"}
               >
-                <X size={11} />
+                <X size={10} />
               </button>
             </li>
           ))}
         </ul>
       )}
 
-      <textarea
-        ref={inputRef}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-            e.preventDefault();
-            if (canSend) onSubmit();
-          }
-        }}
-        onPaste={(e) => {
-          const files = [...e.clipboardData.files].filter((f) => f.type.startsWith("image/"));
-          if (files.length) {
-            e.preventDefault();
-            onAddFiles(files);
-          }
-        }}
-        rows={1}
-        placeholder={mode === "agent" ? "Describe a browser task for Senko…" : "Message Senko…"}
-        aria-label="Message"
-        className="sk-scroll block max-h-[200px] min-h-[40px] w-full resize-none bg-transparent px-3 pb-1 pt-2 text-[14.5px] leading-relaxed text-[var(--sk-text)] outline-none placeholder:text-[var(--sk-faint)] focus-visible:shadow-none"
-      />
+      <div className="flex items-end gap-1.5">
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          multiple
+          hidden
+          onChange={(e) => {
+            const files = [...(e.target.files || [])];
+            if (files.length) onAddFiles(files);
+            e.target.value = "";
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => fileRef.current?.click()}
+          className="sk-btn h-7 w-7 shrink-0 rounded-lg text-[var(--sk-muted)] hover:text-[var(--sk-text)]"
+          aria-label="Attach images"
+          title="Attach images (or paste / drop them)"
+        >
+          <ImagePlus size={15} />
+        </button>
 
-      <div className="flex items-center justify-between gap-2 px-1.5 pb-0.5 pt-0.5">
-        <div className="flex items-center gap-1">
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*"
-            multiple
-            hidden
-            onChange={(e) => {
-              const files = [...(e.target.files || [])];
-              if (files.length) onAddFiles(files);
-              e.target.value = "";
-            }}
-          />
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            className="sk-btn h-8 w-8 rounded-lg text-[var(--sk-muted)] hover:text-[var(--sk-text)]"
-            aria-label="Attach images"
-            title="Attach images (or paste / drop them)"
-          >
-            <ImagePlus size={16} />
-          </button>
-        </div>
+        <textarea
+          ref={inputRef}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              if (canSend) onSubmit();
+            }
+          }}
+          onPaste={(e) => {
+            const files = [...e.clipboardData.files].filter((f) => f.type.startsWith("image/"));
+            if (files.length) {
+              e.preventDefault();
+              onAddFiles(files);
+            }
+          }}
+          rows={1}
+          placeholder={mode === "agent" ? "Describe a browser task for Senko…" : "Message Senko…"}
+          aria-label="Message"
+          className="sk-scroll block max-h-[160px] min-h-[28px] flex-1 resize-none bg-transparent py-1 text-[13.5px] leading-snug text-[var(--sk-text)] outline-none placeholder:text-[var(--sk-faint)] focus-visible:shadow-none"
+        />
 
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1.5">
           {footer}
           {busy ? (
             <button
               type="button"
               onClick={onStop}
-              className="sk-btn h-8 w-8 rounded-lg bg-[var(--sk-text)] text-[var(--sk-bg)] hover:bg-[var(--sk-text)] hover:opacity-90"
+              className="sk-btn h-7 w-7 rounded-lg bg-[var(--sk-text)] text-[var(--sk-bg)] hover:bg-[var(--sk-text)] hover:opacity-90"
               aria-label="Stop"
               title="Stop"
             >
-              <Square size={12} fill="currentColor" />
+              <Square size={10} fill="currentColor" />
             </button>
           ) : (
             <button
               type="submit"
               disabled={!canSend}
-              className="sk-btn sk-primary h-8 w-8 rounded-lg"
+              className="sk-btn sk-primary h-7 w-7 rounded-lg"
               aria-label="Send"
               title="Send (Enter)"
             >
-              <ArrowUp size={16} strokeWidth={2.4} />
+              <ArrowUp size={14} strokeWidth={2.5} />
             </button>
           )}
         </div>

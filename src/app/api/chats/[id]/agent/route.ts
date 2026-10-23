@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { addMessage, getMessages, maybeTitle, requireChat, updateMessage, type MessageMeta } from "@/lib/server/chats";
+import { addMessage, getMessages, maybeTitle, requireChat, truncateMessagesFrom, updateMessage, type MessageMeta, type TruncateTarget } from "@/lib/server/chats";
 import { errorResponse, HttpError, identify } from "@/lib/server/identity";
 import { absorbMemories } from "@/lib/server/persona";
 import { finishRun, registerRun, runAgent, takePausedGoal, type RunEvent } from "@/lib/agent/runner";
@@ -11,14 +11,14 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 3600;
 
 /**
- * POST { goal, provider?, imageIds?, resume? } -> SSE of RunEvent.
+ * POST { goal, provider?, imageIds?, resume?, truncateFrom? } -> SSE of RunEvent.
  * Saves the request as a user message and the outcome as an assistant message.
  * resume: true continues a goal that was paused when you took control.
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   let who;
   let chatId: string;
-  let body: { goal?: string; provider?: string; imageIds?: string[]; resume?: boolean };
+  let body: { goal?: string; provider?: string; imageIds?: string[]; resume?: boolean; truncateFrom?: TruncateTarget };
   try {
     who = await identify(req);
     chatId = (await params).id;
@@ -38,6 +38,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   if (!goal) return errorResponse(new HttpError(400, "Tell the agent what to do."));
 
+  if (body.truncateFrom && typeof body.truncateFrom === "object") {
+    await truncateMessagesFrom(chatId, body.truncateFrom);
+  }
+
   const history = await getMessages(chatId, 12);
   const context = history
     .filter((m) => m.content.trim())
@@ -45,8 +49,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .map((m) => `${m.role}: ${m.content.slice(0, 400)}`)
     .join("\n");
 
+  let userMessageId: string | undefined;
   if (!body.resume) {
-    await addMessage(chatId, "user", goal, (body.imageIds || []).slice(0, 10));
+    userMessageId = await addMessage(chatId, "user", goal, (body.imageIds || []).slice(0, 10));
     await maybeTitle(chatId, goal);
   }
   const trail: { label: string; url?: string }[] = [];
@@ -65,7 +70,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let open = true;
-      const send = (e: RunEvent | { type: "start"; messageId: string }) => {
+      const send = (e: RunEvent | { type: "start"; messageId: string; userMessageId?: string }) => {
         if (!open) return;
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(e)}\n\n`));
@@ -81,7 +86,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           open = false;
         }
       }, 15_000);
-      send({ type: "start", messageId: replyId });
+      send({ type: "start", messageId: replyId, userMessageId });
 
       let content = "";
       const imageIds: string[] = [];

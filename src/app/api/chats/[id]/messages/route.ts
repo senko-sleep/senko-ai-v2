@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { addMessage, maybeTitle, requireChat } from "@/lib/server/chats";
+import { addMessage, maybeTitle, requireChat, truncateMessagesFrom, type TruncateTarget } from "@/lib/server/chats";
 import { errorResponse, HttpError, identify } from "@/lib/server/identity";
 import { reply } from "@/lib/server/reply";
 
@@ -8,9 +8,10 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 800;
 
 /**
- * POST { content, imageIds?, provider?, record? }
+ * POST { content, imageIds?, provider?, record?, truncateFrom? }
  *  - normal: saves your message, streams the AI reply word by word (SSE), saves the reply.
  *  - record: { content, actions } just saves a reply the app produced itself (quick browser commands).
+ *  - truncateFrom: { messageId?, index? } rewinds chat history from that message onward before saving.
  * SSE events: start {userMessageId, assistantMessageId, provider, providerLabel, model}
  *             delta {text} | done {message} | error {error, assistantMessageId}
  */
@@ -22,6 +23,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     imageIds?: string[];
     provider?: string;
     record?: { content: string; actions?: { url: string; label: string }[] };
+    truncateFrom?: TruncateTarget;
   };
   try {
     who = await identify(req);
@@ -35,6 +37,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const content = String(body.content || "").slice(0, 100_000);
   const imageIds = Array.isArray(body.imageIds) ? body.imageIds.filter((x) => typeof x === "string").slice(0, 20) : [];
   if (!content.trim() && !imageIds.length) return errorResponse(new HttpError(400, "Message is empty."));
+
+  if (body.truncateFrom && typeof body.truncateFrom === "object") {
+    await truncateMessagesFrom(chatId, body.truncateFrom);
+  }
 
   if (body.record) {
     const userMessageId = await addMessage(chatId, "user", content, imageIds);

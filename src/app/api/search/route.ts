@@ -144,7 +144,7 @@ const HEADERS: Record<string, string> = {
 async function fetchGoogle(query: string): Promise<{ engine: string; results: SearchResult[] } | null> {
   try {
     const res = await fetch(
-      `https://www.google.com/search?q=${encodeURIComponent(query)}&hl=en&num=15`,
+      `https://www.google.com/search?q=${encodeURIComponent(query)}&hl=en&num=15&safe=off`,
       { headers: { ...HEADERS, Referer: "https://www.google.com/" }, signal: AbortSignal.timeout(10000) }
     );
     if (!res.ok) return null;
@@ -157,8 +157,8 @@ async function fetchGoogle(query: string): Promise<{ engine: string; results: Se
 
 async function fetchDDG(query: string): Promise<{ engine: string; results: SearchResult[] } | null> {
   const urls = [
-    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
-    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`,
+    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}&kp=-2`,
+    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}&kp=-2`,
   ];
   for (const url of urls) {
     try {
@@ -178,7 +178,7 @@ async function fetchDDG(query: string): Promise<{ engine: string; results: Searc
 async function fetchBing(query: string): Promise<{ engine: string; results: SearchResult[] } | null> {
   try {
     const res = await fetch(
-      `https://www.bing.com/search?q=${encodeURIComponent(query)}`,
+      `https://www.bing.com/search?q=${encodeURIComponent(query)}&safeSearch=off`,
       { headers: { ...HEADERS, Referer: "https://www.bing.com/" }, signal: AbortSignal.timeout(10000) }
     );
     if (!res.ok) return null;

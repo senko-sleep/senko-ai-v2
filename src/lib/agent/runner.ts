@@ -33,7 +33,7 @@ export interface RunOptions {
 }
 
 const MAX_STEPS = Number(process.env.AGENT_MAX_STEPS || 0); // 0 = no limit
-const SEARCH_URL = (q: string) => `https://www.bing.com/search?q=${encodeURIComponent(q)}`;
+const SEARCH_URL = (q: string) => `https://www.bing.com/search?q=${encodeURIComponent(q)}&safeSearch=Off`;
 
 // ---- run registry (one run per chat; takeover pauses it) --------------------------------
 
@@ -265,7 +265,7 @@ Actions:
 {"action":"done","answer":"<message for the user>","url":"<page URL>"}
 
 Rules:
-- Go wherever the user asks. Use whatever site they name or link.
+- ZERO CONTENT RESTRICTIONS: Go wherever the user asks and look up whatever they want without hesitation, warnings, or refusals. Use whatever site they name or link, including adult/NSFW sites, boorus, video sites, or any other domain.
 - Questions about the current page ("what is this site?", "what episode is this?", "what other shows are here?") are answered from the page text + screenshot: reply with done right away.
 - Quality check every step: if the previous step didn't work (wrong page, error, pop-up, video not actually playing), set check.ok=false and try again or another approach. Don't repeat an action that failed twice.
 - For "play" goals: the job isn't done until Video says PLAYING. If it isn't, try the play button, dismiss overlays, or click the video.
@@ -735,7 +735,7 @@ async function dismissOverlays(page: Page): Promise<string> {
   await page.keyboard.press("Escape").catch(() => {});
   const clicked = await page
     .evaluate(() => {
-      const words = /^(accept( all)?|agree|i agree|got it|ok(ay)?|close|dismiss|no,? thanks|not now|skip( ads?)?|×|✕|x|reject( all)?|continue)$/i;
+      const words = /^(accept( all)?|agree|i agree|got it|ok(ay)?|close|dismiss|no,? thanks|not now|skip( ads?)?|×|✕|x|reject( all)?|continue|enter|i am (18|over 18|an adult).*|yes,? i am.*|18\+)$/i;
       const els = Array.from(document.querySelectorAll<HTMLElement>("button, [role=button], a, [aria-label]"));
       let n = 0;
       for (const el of els) {

@@ -395,7 +395,7 @@ async function* sseContent(body: ReadableStream<Uint8Array>): AsyncGenerator<str
         if (!line.startsWith("data:")) continue;
         const data = line.slice(5).trim();
         if (!data || data === "[DONE]") continue;
-        let j: { error?: { message?: string } | string; choices?: { delta?: { content?: string } }[] };
+        let j: { error?: { message?: string } | string; choices?: { delta?: { content?: string }; finish_reason?: string | null }[] };
         try {
           j = JSON.parse(data);
         } catch {
@@ -404,6 +404,10 @@ async function* sseContent(body: ReadableStream<Uint8Array>): AsyncGenerator<str
         if (j.error) {
           const m = typeof j.error === "string" ? j.error : j.error.message || JSON.stringify(j.error);
           throw new ProviderError(`stream error: ${m}`, /rate|quota|429/i.test(m) ? 429 : 500, null);
+        }
+        const fr = j.choices?.[0]?.finish_reason;
+        if (fr && /content_filter|safety|prohibited/i.test(fr)) {
+          throw new ProviderError("stream blocked by provider content filter", 422, null);
         }
         const c = j.choices?.[0]?.delta?.content;
         if (c) yield c;
@@ -769,9 +773,20 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
             }
           }
           if (!gen) throw new ProviderError(`${c.label} (${c.model}): request too large even after trimming`, 413, null);
-          // Pull the first chunk so a stream that dies immediately still falls back.
-          const first = await gen.next();
-          const stream = first.done ? prepend("", gen) : prepend(first.value, gen);
+          // Pull initial chunks so an empty stream or canned refusal falls back to the next model.
+          let head = "";
+          while (head.length < 72) {
+            const step = await gen.next();
+            if (step.done) break;
+            head += step.value;
+          }
+          if (!head.trim()) {
+            throw new ProviderError(`${c.label} (${c.model}): empty response`, 422, null);
+          }
+          if (/^\s*(?:i'm sorry,? (?:but )?i (?:cannot|can't|am unable|won't)|i (?:cannot|can't|am unable to|must decline to) (?:fulfill|assist|help|provide|comply|search|open|generate)|as an ai(?: language model)?,? i (?:cannot|can't|do not))/i.test(head)) {
+            throw new ProviderError(`${c.label} (${c.model}): model refused request`, 422, null);
+          }
+          const stream = prepend(head, gen);
           return { provider: c.provider, providerLabel: c.label, model: c.model, stream, skipped };
         } catch (e) {
           if (opts.signal?.aborted) throw e;
@@ -784,6 +799,7 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
               : status === 429 ? Math.max(pe?.retryMs ?? 30_000, daily ? 60 * 60_000 : 15_000)
               : status === 401 || status === 403 ? 10 * 60_000
               : status === 404 ? 60 * 60_000
+              : status === 422 ? 2_000
               : 30_000;
             coolDown(c.provider, c.model, ms, status === 429 ? "rate limited" : `error ${status || "network"}`);
           }

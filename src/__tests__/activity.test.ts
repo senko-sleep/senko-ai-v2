@@ -43,11 +43,26 @@ describe('activity source links', () => {
   it('renders images with captions and source links in the reply', () => {
     const html = renderToStaticMarkup(createElement(MessageBubble, { msg: {
       id: 'reply', role: 'assistant', content: '![Character design](https://images.example.org/anya.png)\n\n[Source page](https://example.org/anya)',
+      provider: 'Groq · qwen/qwen3.6-27b',
       agent: { goal: 'Find character images', status: 'done', trail: ['Finished'], url: 'https://example.org/anya' },
     } }));
     expect(html).toContain('src="https://images.example.org/anya.png"');
     expect(html).toContain('sk-message-image');
     expect(html).toContain('Character design</span>');
     expect(html).toContain('href="https://example.org/anya"');
+    // Visited 1 website and Agent finished / provider share the same <summary> row
+    const summaryMatch = /<summary[^>]*>([\s\S]*?)<\/summary>/.exec(html);
+    expect(summaryMatch?.[1]).toContain('Visited 1 website');
+    expect(summaryMatch?.[1]).toContain('Agent finished');
+    expect(summaryMatch?.[1]).toContain('Groq · qwen/qwen3.6-27b');
+  });
+
+  it('renders an edit button on user messages when onEdit is supplied', () => {
+    const html = renderToStaticMarkup(createElement(MessageBubble, {
+      msg: { id: 'u1', role: 'user', content: 'Original prompt' },
+      onEdit: () => {},
+    }));
+    expect(html).toContain('aria-label="Edit message"');
+    expect(html).toContain('Original prompt');
   });
 });

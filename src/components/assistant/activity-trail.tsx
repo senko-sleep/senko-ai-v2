@@ -1,43 +1,62 @@
+import type { ReactNode } from "react";
 import { ChevronDown, ExternalLink, Globe2 } from "lucide-react";
 import { activitySources, websiteUrl, type TrailEntry } from "./activity";
 
 function SiteIcon({ host }: { host: string }) {
   return (
     // eslint-disable-next-line @next/next/no-img-element
-    <img src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=32`} alt="" referrerPolicy="no-referrer" className="h-3.5 w-3.5 shrink-0 rounded-sm" />
+    <img src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=32`} alt="" referrerPolicy="no-referrer" className="h-3 w-3 shrink-0 rounded-xs opacity-85" />
   );
 }
 
-export function AgentTrail({ trail = [], finalUrl, running }: { trail?: TrailEntry[]; finalUrl?: string; running?: boolean }) {
+export function AgentTrail({
+  trail = [],
+  finalUrl,
+  running,
+  meta,
+}: {
+  trail?: TrailEntry[];
+  finalUrl?: string;
+  running?: boolean;
+  meta?: ReactNode;
+}) {
   const sources = activitySources(trail, finalUrl);
   const hosts = [...new Set(sources.map((s) => s.host))];
   if (!trail.length && !sources.length) return null;
   return (
-    <details className="group/trail max-w-full text-xs text-[var(--sk-muted)]">
-      <summary className="inline-flex w-fit cursor-pointer list-none items-center gap-2 rounded-lg border border-[var(--sk-line)] bg-[var(--sk-solid)] px-2.5 py-1 text-[12px] font-medium text-[var(--sk-muted)] transition-colors hover:border-[var(--sk-accent-line)] hover:text-[var(--sk-text)] [&::-webkit-details-marker]:hidden">
-        <span className="flex items-center gap-1" aria-hidden>
-          {hosts.slice(0, 3).map((host) => (
-            <SiteIcon key={host} host={host} />
-          ))}
-          {!hosts.length && <Globe2 size={13} />}
+    <details className="group/trail max-w-full text-[11.5px] text-[var(--sk-muted)]">
+      <summary className="inline-flex max-w-full flex-wrap items-center gap-x-2.5 gap-y-1 py-0.5 text-[11.5px] list-none [&::-webkit-details-marker]:hidden">
+        <span className="inline-flex cursor-pointer items-center gap-1.5 font-medium text-[var(--sk-muted)] transition-colors hover:text-[var(--sk-text)]">
+          <span className="flex items-center gap-1" aria-hidden>
+            {hosts.slice(0, 3).map((host) => (
+              <SiteIcon key={host} host={host} />
+            ))}
+            {!hosts.length && <Globe2 size={12} className="text-[var(--sk-accent-ink)]" />}
+          </span>
+          <span>{hosts.length ? `${running ? "Browsing" : "Visited"} ${hosts.length} ${hosts.length === 1 ? "website" : "websites"}` : `${trail.length} steps`}</span>
+          <ChevronDown size={11.5} className="text-[var(--sk-faint)] transition-transform group-open/trail:rotate-180" aria-hidden />
         </span>
-        <span>{hosts.length ? `${running ? "Browsing" : "Visited"} ${hosts.length} ${hosts.length === 1 ? "website" : "websites"}` : `${trail.length} steps`}</span>
-        <ChevronDown size={12} className="transition-transform group-open/trail:rotate-180" aria-hidden />
+        {meta && (
+          <span
+            className="inline-flex items-center gap-1.5 text-[11px] font-normal text-[var(--sk-faint)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {meta}
+          </span>
+        )}
       </summary>
-      <div className="mt-2 space-y-3 rounded-xl border border-[var(--sk-line)] bg-[var(--sk-solid)]/60 p-3">
+      <div className="mt-1.5 space-y-2.5 border-l border-[var(--sk-line)] pl-3">
         {sources.length > 0 && (
           <div>
-            <p className="mb-1.5 text-[11px] font-medium text-[var(--sk-text)]">Websites visited</p>
-            <ul className="space-y-1.5">
+            <p className="mb-1 text-[10.5px] font-medium uppercase tracking-wider text-[var(--sk-faint)]">Websites visited</p>
+            <ul className="space-y-1">
               {sources.map((source) => (
                 <li key={source.url}>
-                  <a href={source.url} target="_blank" rel="noopener noreferrer" className="flex min-w-0 items-start gap-2 hover:text-[var(--sk-text)]">
+                  <a href={source.url} target="_blank" rel="noopener noreferrer" className="flex min-w-0 items-center gap-2 py-0.5 hover:text-[var(--sk-text)]">
                     <SiteIcon host={source.host} />
-                    <span className="min-w-0 flex-1">
-                      <span className="underline decoration-[var(--sk-line)] underline-offset-2">{source.host}</span>
-                      <span className="mt-0.5 block truncate text-[11px] text-[var(--sk-faint)]">{source.url}</span>
-                    </span>
-                    <ExternalLink size={11} className="mt-0.5 shrink-0 opacity-60" aria-hidden />
+                    <span className="shrink-0 underline decoration-[var(--sk-line)] underline-offset-2">{source.host}</span>
+                    <span className="min-w-0 flex-1 truncate text-[10.5px] text-[var(--sk-faint)]">{source.url}</span>
+                    <ExternalLink size={10.5} className="shrink-0 opacity-50" aria-hidden />
                   </a>
                 </li>
               ))}
@@ -46,15 +65,15 @@ export function AgentTrail({ trail = [], finalUrl, running }: { trail?: TrailEnt
         )}
         {trail.length > 0 && (
           <div>
-            <p className="mb-1.5 text-[11px] font-medium text-[var(--sk-text)]">Steps taken</p>
-            <ol className="ml-1 space-y-1.5 border-l border-[var(--sk-line)] pl-3">
+            <p className="mb-1 text-[10.5px] font-medium uppercase tracking-wider text-[var(--sk-faint)]">Steps taken</p>
+            <ol className="space-y-1">
               {trail.map((entry, index) => {
                 const item = typeof entry === "string" ? { label: entry } : entry;
                 const url = websiteUrl(item.url);
                 return (
-                  <li key={index} className="break-words">
+                  <li key={index} className="break-words text-[var(--sk-muted)]">
                     {url ? (
-                      <a href={url} target="_blank" rel="noopener noreferrer" className="hover:underline">
+                      <a href={url} target="_blank" rel="noopener noreferrer" className="hover:text-[var(--sk-text)] hover:underline">
                         {item.label}
                       </a>
                     ) : (
