@@ -24,6 +24,7 @@
     "@novnc/novnc": "1.7.0",
     "@types/js-yaml": "^4.0.9",
     "@types/leaflet": "^1.9.21",
+    "@vercel/sandbox": "^3.9.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "compromise": "^14.14.5",

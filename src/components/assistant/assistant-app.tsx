@@ -313,6 +313,7 @@ export default function AssistantApp() {
     if (!chatId || browserOpening) return;
     setBrowserOpening(true);
     try {
+      await API.ensureAgentHost();
       if (!sessionAvailable && !browser.running) {
         const response = await fetch(`/api/sessions/${chatId}`, {
           method: "POST",
@@ -654,6 +655,13 @@ export default function AssistantApp() {
       let serverReplyId = "";
 
       try {
+        // On Vercel the browser runs on an on-demand computer: wake it first (instant if up).
+        const slow = setTimeout(() => setBrowser((b) => ({ ...b, status: "Starting the agent computer…" })), 800);
+        try {
+          await API.ensureAgentHost();
+        } finally {
+          clearTimeout(slow);
+        }
         const res = await fetch(`/api/chats/${chatId}/agent`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },

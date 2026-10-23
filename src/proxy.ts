@@ -6,14 +6,32 @@ import { AUTH_COOKIE, accessKey, verifyDeviceToken } from "@/lib/auth-token";
 // the access-key screen when the API says 401.
 const PUBLIC_API = new Set(["/api/health", "/api/access", "/api/link/claim", "/api/me"]);
 
-export async function proxy(req: NextRequest) {
-  if (!accessKey()) return NextResponse.next();
-  const path = req.nextUrl.pathname;
-  if (!path.startsWith("/api/") || PUBLIC_API.has(path)) return NextResponse.next();
+// Calls that need the real browser. With AGENT_HOST=sandbox they go to the agent
+// computer (a Vercel Sandbox running this same app); see src/lib/server/agent-host.ts.
+const AGENT_PATH = /^\/api\/(chats\/[^/]+\/agent(\/.*)?|sessions\/.+)$/;
 
-  const deviceId = await verifyDeviceToken(req.cookies.get(AUTH_COOKIE)?.value);
-  if (deviceId) return NextResponse.next();
-  return NextResponse.json({ error: "Enter your access key on this device first.", needsKey: true }, { status: 401 });
+async function forwardToAgentHost(req: NextRequest): Promise<NextResponse | null> {
+  if (process.env.AGENT_HOST !== "sandbox" || !AGENT_PATH.test(req.nextUrl.pathname)) return null;
+  const { currentHost } = await import("@/lib/server/agent-host");
+  const host = await currentHost().catch(() => null);
+  if (!host) {
+    return NextResponse.json(
+      { error: "The agent computer is asleep. Starting it…", needsHost: true },
+      { status: 503, headers: { "Retry-After": "2" } }
+    );
+  }
+  return NextResponse.rewrite(new URL(req.nextUrl.pathname + req.nextUrl.search, host.url));
+}
+
+export async function proxy(req: NextRequest) {
+  const path = req.nextUrl.pathname;
+  if (accessKey() && path.startsWith("/api/") && !PUBLIC_API.has(path)) {
+    const deviceId = await verifyDeviceToken(req.cookies.get(AUTH_COOKIE)?.value);
+    if (!deviceId) {
+      return NextResponse.json({ error: "Enter your access key on this device first.", needsKey: true }, { status: 401 });
+    }
+  }
+  return (await forwardToAgentHost(req)) ?? NextResponse.next();
 }
 
 export const config = {

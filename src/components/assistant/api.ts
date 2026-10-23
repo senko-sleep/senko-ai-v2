@@ -124,3 +124,24 @@ async function shrink(file: File, max = 1600): Promise<string> {
     URL.revokeObjectURL(url);
   }
 }
+
+let hostReadyUntil = 0;
+let hostWaking: Promise<void> | null = null;
+/**
+ * On Vercel the agent's browser runs on a separate on-demand computer. Wake it (or confirm
+ * it's up) before agent work. Instant when it's already running or not needed.
+ */
+export function ensureAgentHost(): Promise<void> {
+  if (Date.now() < hostReadyUntil) return Promise.resolve();
+  if (!hostWaking) {
+    hostWaking = (async () => {
+      const res = await fetch("/api/agent-host", { method: "POST" });
+      if (!res.ok) throw new Error(await errorFromResponse(res));
+      const j = (await res.json()) as { mode: string; expiresAt?: number };
+      hostReadyUntil = j.mode === "direct" ? Date.now() + 3600_000 : Math.min(Date.now() + 60_000, (j.expiresAt || 0) - 5 * 60_000);
+    })().finally(() => {
+      hostWaking = null;
+    });
+  }
+  return hostWaking;
+}

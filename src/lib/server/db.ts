@@ -76,6 +76,11 @@ CREATE TABLE IF NOT EXISTS screenshots (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS screenshots_chat_idx ON screenshots (chat_id, seq);
+CREATE TABLE IF NOT EXISTS app_kv (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS memories (
   owner_id TEXT NOT NULL,
   key TEXT NOT NULL,

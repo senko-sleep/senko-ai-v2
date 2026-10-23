@@ -7,7 +7,8 @@ const agentBackend = (process.env.AGENT_BACKEND_URL || "").trim().replace(/\/+$/
 const nextConfig = {
   reactCompiler: true,
   async rewrites() {
-    if (!agentBackend) return [];
+    // AGENT_HOST=sandbox routes agent calls itself (src/proxy.ts), to a Vercel Sandbox.
+    if (!agentBackend || process.env.AGENT_HOST === "sandbox") return [];
     return {
       beforeFiles: [
         { source: "/api/chats/:id/agent", destination: `${agentBackend}/api/chats/:id/agent` },
@@ -17,7 +18,7 @@ const nextConfig = {
     };
   },
   // Playwright ships native binaries; load it from node_modules at runtime instead of bundling it.
-  serverExternalPackages: ["playwright", "playwright-core", "pg", "@electric-sql/pglite"],
+  serverExternalPackages: ["playwright", "playwright-core", "pg", "@electric-sql/pglite", "@vercel/sandbox"],
   turbopack: {
     rules: {
       "*.txt": {
