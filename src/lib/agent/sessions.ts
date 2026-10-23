@@ -48,7 +48,7 @@ const MAX_LIVE = Math.max(1, Number(process.env.MAX_LIVE_SESSIONS || (isLowMemor
 const LOW_MEMORY_MB = Number(process.env.LOW_MEMORY_MB || (isLowMemoryHost() ? 80 : 250));
 // Live view frame rate. 30 keeps video watchable; Chrome only sends frames when the page
 // changes, so a still page costs almost nothing. LIVE_QUALITY trades sharpness for bandwidth.
-const FPS = Math.min(60, Math.max(1, Number(process.env.LIVE_FPS || (isLowMemoryHost() ? 12 : 30))));
+const FPS = Math.min(60, Math.max(1, Number(process.env.LIVE_FPS || 30)));
 const QUALITY = Math.min(95, Math.max(20, Number(process.env.LIVE_QUALITY || (isLowMemoryHost() ? 50 : 60))));
 // Live view size relative to the real screen. Smaller frames encode much faster on weak CPUs.
 const SCALE = Math.min(1, Math.max(0.3, Number(process.env.LIVE_SCALE || (isLowMemoryHost() ? 0.75 : 1))));
