@@ -20,6 +20,17 @@ export interface Msg {
   imageIds?: string[];
   /** Senko's mood line for this reply. */
   mood?: string;
+  /** Images scraped from many engines for an image request (first batch). */
+  scrapedImages?: ScrapedImage[];
+  /** Query the gallery uses to load more images. */
+  imageQuery?: string;
+}
+
+export interface ScrapedImage {
+  url: string;
+  alt?: string;
+  source?: string;
+  engine?: string;
 }
 
 export interface ChatSummary {
@@ -42,6 +53,8 @@ export interface StoredMessage {
     agent?: { goal: string; status: string; trail?: ({ label: string; url?: string } | string)[]; url?: string };
     interrupted?: boolean;
     mood?: string;
+    scrapedImages?: ScrapedImage[];
+    imageQuery?: string;
   };
 }
 
@@ -60,6 +73,8 @@ export function fromStored(m: StoredMessage): Msg {
     actions: meta.actions,
     suggestAgent: meta.suggestAgent,
     mood: meta.mood || legacyMood || undefined,
+    scrapedImages: meta.scrapedImages?.length ? meta.scrapedImages : undefined,
+    imageQuery: meta.imageQuery || undefined,
     provider: meta.providerLabel ? `${meta.providerLabel}${meta.model ? ` · ${meta.model}` : ""}` : undefined,
     agent: meta.agent
       ? {
@@ -160,8 +175,9 @@ export function networkError(e: unknown): string {
 
 export const AGENT_TAG_RE = /\[\[\s*agent\s*\]\]/gi;
 const MEMORY_TAG_RE = /\[(?:MEMORY|STATUS):[^\]\n]*\]?/gi;
+const IMAGES_TAG_RE = /\[\[\s*images?\s*:[^\]\n]*(?:\]\]?)?/gi;
 
-/** Hide tags the server strips anyway ([[agent]], [MEMORY:..]) while a reply is still streaming. */
+/** Hide tags the server strips anyway ([[agent]], [[images: ..]], [MEMORY:..]) while a reply is still streaming. */
 export function stripLiveTags(text: string): string {
-  return text.replace(AGENT_TAG_RE, "").replace(MEMORY_TAG_RE, "");
+  return text.replace(AGENT_TAG_RE, "").replace(MEMORY_TAG_RE, "").replace(IMAGES_TAG_RE, "");
 }

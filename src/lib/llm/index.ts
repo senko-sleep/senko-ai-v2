@@ -36,6 +36,13 @@ export interface LlmOptions {
   compactSystem?: string;
   /** Tests only: pretend these providers fail. */
   simulateFail?: string[];
+  /**
+   * When every provider is rate-limited, wait up to this long (total) for the first one to
+   * free up instead of failing. Default 30s; background agents can afford longer.
+   */
+  maxWaitMs?: number;
+  /** Called before waiting out a rate limit (e.g. to show "waiting ~20s…"). */
+  onWait?: (ms: number) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,7 +147,7 @@ async function cached<T>(key: string, ttlMs: number, fn: () => Promise<T>): Prom
   return value;
 }
 
-const cooldowns = new Map<string, { until: number; reason: string }>();
+const cooldowns = new Map<string, { until: number; reason: string; retryable: boolean }>();
 function coolKey(provider: string, model: string) {
   return `${provider}|${model}`;
 }
@@ -148,8 +155,8 @@ function isCooling(provider: string, model: string) {
   const c = cooldowns.get(coolKey(provider, model));
   return c && c.until > Date.now() ? c : null;
 }
-function coolDown(provider: string, model: string, ms: number, reason: string) {
-  cooldowns.set(coolKey(provider, model), { until: Date.now() + ms, reason });
+function coolDown(provider: string, model: string, ms: number, reason: string, retryable = false) {
+  cooldowns.set(coolKey(provider, model), { until: Date.now() + ms, reason, retryable });
 }
 
 class ProviderError extends Error {
@@ -579,8 +586,9 @@ const PROVIDERS: Provider[] = [
     key: () => env("GEMINI_API_KEY") || env("GOOGLE_API_KEY"),
     envModel: () => env("GEMINI_MODEL"),
     envVisionModel: () => env("GEMINI_MODEL"),
-    preferred: ["gemini-3.8-flash", "gemini-3-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
-    preferredVision: ["gemini-3.8-flash", "gemini-3-flash", "gemini-2.5-flash"],
+    // Newer API keys can't use the 2.5 models (404), so try the current previews first.
+    preferred: ["gemini-3.8-flash", "gemini-3-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+    preferredVision: ["gemini-3.8-flash", "gemini-3-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-flash"],
     // Prefer stable "flash" models: they have the most generous free limits.
     filter: (m) => isGeminiChat(m.id) && /flash/.test(m.id),
     isVision: (m) => isGeminiChat(m.id),
@@ -718,6 +726,7 @@ function friendly(e: unknown): string {
     const who = e.message.match(/^(.*?\))(?=:)/)?.[1] || e.message.split(": ")[0];
     if (e.status === 429) return `${who}: rate limit reached${e.retryMs ? ` (free again in ~${Math.ceil(e.retryMs / 1000)}s)` : ""}`;
     if (e.status === 401 || e.status === 403) return `${who}: API key rejected`;
+    if (e.status === 402) return `${who}: out of credit`;
   }
   return e instanceof Error ? e.message : String(e);
 }
@@ -730,8 +739,13 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
   const needVision = messages.some((m) => m.images?.length);
   const errors: string[] = [];
   const skipped: string[] = [];
+  const deadline = Date.now() + (opts.maxWaitMs ?? 30_000);
 
-  for (let round = 0; round < 2; round++) {
+  for (let round = 0; round < 6; round++) {
+    // Each round reports fresh reasons (retry times change between rounds).
+    errors.length = 0;
+    skipped.length = 0;
+    /** Soonest moment a rate-limited / temporarily failing model should be usable again. */
     let soonest = Infinity;
     for (const p of orderedProviders(opts.provider)) {
       if (!p.configured()) continue;
@@ -746,8 +760,8 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
         if (needVision && !c.vision) continue;
         const cool = isCooling(c.provider, c.model);
         if (cool) {
-          soonest = Math.min(soonest, cool.until - Date.now());
-          if (round === 0) skipped.push(`${c.label} (${c.model}): ${cool.reason}`);
+          if (cool.retryable) soonest = Math.min(soonest, cool.until - Date.now());
+          skipped.push(`${c.label} (${c.model}): ${cool.reason}`);
           continue;
         }
         try {
@@ -797,11 +811,15 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
             const ms =
               isTooLarge(e) ? 5_000 // not the provider's fault; a smaller request may work right away
               : status === 429 ? Math.max(pe?.retryMs ?? 30_000, daily ? 60 * 60_000 : 15_000)
+              : status === 402 ? 60 * 60_000 // out of credit
               : status === 401 || status === 403 ? 10 * 60_000
               : status === 404 ? 60 * 60_000
               : status === 422 ? 2_000
               : 30_000;
-            coolDown(c.provider, c.model, ms, status === 429 ? "rate limited" : `error ${status || "network"}`);
+            // Worth waiting for: rate limits, network blips and server errors (not refusals/bad keys).
+            const retryable = status === 429 || status === 0 || status >= 500;
+            coolDown(c.provider, c.model, ms, status === 429 ? "rate limited" : `error ${status || "network"}`, retryable);
+            if (retryable) soonest = Math.min(soonest, ms);
           }
           const msg = friendly(e);
           console.warn(`[llm] ${msg}`);
@@ -810,9 +828,14 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
         }
       }
     }
-    // Everything is cooling down briefly: wait for the first to free up, once.
-    if (round === 0 && soonest < 25_000 && errors.length === 0) {
-      await sleep(soonest + 250, opts.signal);
+    // Everything is rate-limited for now: wait for the first model to free up (within the
+    // caller's patience) and try again, instead of failing the whole request.
+    const wait = soonest + 500;
+    if (Number.isFinite(soonest) && Date.now() + wait <= deadline && !opts.signal?.aborted) {
+      console.warn(`[llm] all providers busy, waiting ${Math.ceil(wait / 1000)}s for the next free one`);
+      opts.onWait?.(wait);
+      await sleep(wait, opts.signal);
+      if (opts.signal?.aborted) throw new Error("Aborted");
       continue;
     }
     break;

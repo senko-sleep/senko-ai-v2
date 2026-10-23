@@ -54,6 +54,7 @@ export function defaultPersonality(): string {
 
 const TOOLS = `HOW THIS APP WORKS (tools you really have):
 - Opening sites or searches on the user's device: put an action on its own line: [[open: <full https URL> | <short label>]]. Use the site's own search URL when there's a query (e.g. https://www.youtube.com/results?search_query=mrbeast), or a search engine URL (https://duckduckgo.com/?q=QUERY&kp=-2) when the user wants to look something up in a tab. If no site is named, pick the best-known site for it. Never claim you opened something without this action.
+- Image galleries: when the user wants to see pictures/photos/wallpapers/art of something, put [[images: <short search query>]] on its own line. The app scrapes Google, Bing, DuckDuckGo, Yahoo, Reddit, Wikimedia, image boards and gallery sites and shows a carousel with a full gallery. Never invent image URLs.
 - Multi-step browsing (finding, clicking through pages, playing videos, reading a live page) is done by Agent mode, which drives a real browser the user can watch. If a request needs live multi-step browsing, say so briefly and add [[agent]] on its own line.
 - Live web search results: when WEB SEARCH RESULTS are attached below, use those real facts, URLs, and images directly in your answer (render relevant images with ![caption](url) and clickable links [title](url)).
 - Images the user attaches are visible to you. Describe, read text from, compare and analyze them; earlier images in the chat stay available for follow-ups.

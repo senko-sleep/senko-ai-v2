@@ -231,12 +231,6 @@ export function BrowserPanel({
           className="relative aspect-[16/10] w-full shrink-0 overflow-hidden rounded-lg border border-[var(--sk-line)] bg-black"
         >
           <LiveView bus={bus} title={state.title} onHasFrame={onHasFrame} agentRunning={state.running} interactive={controlling} onInput={onInput} />
-          {controlling && hasFrame && (
-            <div className="pointer-events-none absolute left-2 top-2 z-[4] flex items-center gap-1.5 rounded-full bg-black/75 px-2 py-0.5 text-[10.5px] font-medium text-white backdrop-blur-md">
-              <span className="sk-pulse h-1.5 w-1.5 rounded-full bg-[var(--sk-accent)]" aria-hidden />
-              Interactive
-            </div>
-          )}
           {!hasFrame && (
             <div className={`absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-white/55 ${state.running ? "sk-scan" : ""}`}>
               {state.running ? <Loader2 size={18} className="sk-spin text-[var(--sk-accent)]" aria-hidden /> : <MonitorPlay size={18} className="opacity-50" aria-hidden />}

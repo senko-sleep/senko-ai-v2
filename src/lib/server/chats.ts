@@ -14,6 +14,10 @@ export interface MessageMeta {
   interrupted?: boolean;
   /** Senko's mood line for this reply (from the persona's status tag). */
   mood?: string;
+  /** First batch of images scraped across engines for an image request in Chat mode. */
+  scrapedImages?: { url: string; alt?: string; source?: string; engine?: string }[];
+  /** Search query used for scrapedImages (the gallery fetches more pages with it). */
+  imageQuery?: string;
 }
 
 export interface StoredMessage {

@@ -491,8 +491,12 @@ export default function AssistantApp() {
             providerLabel?: string;
             model?: string;
             userMessageId?: string;
+            query?: string;
+            images?: ScrapedImage[];
           };
-          if (e.type === "start") {
+          if (e.type === "images" && e.images?.length) {
+            patch(replyId, (m) => ({ ...m, scrapedImages: e.images, imageQuery: e.query }));
+          } else if (e.type === "start") {
             if (opts?.userId && e.userMessageId) {
               patch(opts.userId, (m) => ({ ...m, id: e.userMessageId! }));
             }

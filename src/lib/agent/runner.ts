@@ -360,8 +360,16 @@ export async function runAgent(opts: RunOptions): Promise<void> {
   };
 
   const ask = async (messages: LlmMessage[], maxTokens = 1500) => {
+    // Agent runs take many AI calls in a row, which quickly hits free-tier per-minute limits.
+    // Wait for a model to free up (up to 90s) instead of failing the whole task.
+    const onWait = (ms: number) => {
+      const text = `AI is rate-limited, waiting ~${Math.ceil(ms / 1000)}s…`;
+      emit({ type: "status", text });
+      session?.log(text, "warn");
+    };
+    const llmOpts = { provider, signal, json: true, temperature: 0.2, maxTokens, simulateFail, maxWaitMs: 90_000, onWait };
     try {
-      const r = await complete(messages, { provider, signal, json: true, temperature: 0.2, maxTokens, simulateFail });
+      const r = await complete(messages, llmOpts);
       lastProvider = { provider: r.providerLabel, model: r.model };
       return r.text;
     } catch (e) {
@@ -372,7 +380,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
         session?.log("No image-capable AI model available right now, so steps are checked from page text only.", "warn");
         const r = await complete(
           messages.map((m) => ({ ...m, images: undefined })),
-          { provider, signal, json: true, temperature: 0.2, maxTokens, simulateFail }
+          llmOpts
         );
         lastProvider = { provider: r.providerLabel, model: r.model };
         return r.text;
