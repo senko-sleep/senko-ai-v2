@@ -31,6 +31,10 @@ if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is missing from .en
 
 const { Sandbox } = await import("@vercel/sandbox");
 const pg = (await import("pg")).default;
+const { VERCEL_TOKEN, VERCEL_TEAM_ID, VERCEL_PROJECT_ID } = process.env;
+const credentials = VERCEL_TOKEN && VERCEL_TEAM_ID && VERCEL_PROJECT_ID
+  ? { token: VERCEL_TOKEN, teamId: VERCEL_TEAM_ID, projectId: VERCEL_PROJECT_ID }
+  : {};
 
 const APP = "/vercel/sandbox/app";
 const BROWSERS = "/vercel/sandbox/ms-playwright";
@@ -49,7 +53,7 @@ log(`code: ${sha} (${(tarball.length / 1024 / 1024).toFixed(1)} MB)`);
 let sb;
 for (const vcpus of [4, 2]) {
   try {
-    sb = await Sandbox.create({ runtime: "node24", resources: { vcpus }, timeout: 40 * 60_000 });
+    sb = await Sandbox.create({ ...credentials, runtime: "node24", resources: { vcpus }, timeout: 40 * 60_000 });
     log(`sandbox up (${vcpus} vCPU)`);
     break;
   } catch (e) {

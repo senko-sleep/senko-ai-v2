@@ -96,6 +96,11 @@ function hostEnv(): Record<string, string> {
     if (/_URL$/.test(k) && k !== "DATABASE_URL" && /localhost|127\.0\.0\.1/.test(v)) continue;
     out[k] = v;
   }
+  // On Wasmer, DATABASE_URL may be Wasmer's own internal database; the sandbox needs the shared Neon one.
+  if (process.env.WASMER_APP_ID) {
+    const shared = process.env.SENKO_DATABASE_URL || process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
+    if (shared) out.DATABASE_URL = shared;
+  }
   return out;
 }
 

@@ -3,6 +3,7 @@
 import type { NextRequest } from "next/server";
 import { AUTH_COOKIE, DEVICE_COOKIE, DEVICE_ID_RE, accessKey, signDevice, verifyDeviceToken } from "@/lib/auth-token";
 import { newId, q, q1 } from "./db";
+import { forwardAgentRequest } from "./agent-forward";
 
 export interface Identity {
   deviceId: string;
@@ -56,6 +57,8 @@ export function route<Ctx>(
 ): (req: NextRequest, ctx: Ctx) => Promise<Response> {
   return async (req, ctx) => {
     try {
+      const forwarded = await forwardAgentRequest(req);
+      if (forwarded) return forwarded;
       const who = await identify(req);
       return await handler(req, who, ctx);
     } catch (e) {

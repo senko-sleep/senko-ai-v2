@@ -5,6 +5,7 @@ import { absorbMemories } from "@/lib/server/persona";
 import { finishRun, registerRun, takePausedGoal, type RunEvent } from "@/lib/agent/runner";
 import { runLayered } from "@/lib/agent/layers";
 import { sessions } from "@/lib/agent/sessions";
+import { forwardAgentRequest } from "@/lib/server/agent-forward";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,6 +18,8 @@ export const maxDuration = 300;
  * resume: true continues a goal that was paused when you took control.
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const forwarded = await forwardAgentRequest(req);
+  if (forwarded) return forwarded;
   let who;
   let chatId: string;
   let body: { goal?: string; provider?: string; imageIds?: string[]; resume?: boolean; truncateFrom?: TruncateTarget };

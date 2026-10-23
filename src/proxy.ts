@@ -40,7 +40,11 @@ export async function proxy(req: NextRequest) {
       return NextResponse.json({ error: "Enter your access key on this device first.", needsKey: true }, { status: 401 });
     }
   }
-  return (await forwardToAgentHost(req)) ?? NextResponse.next();
+  const forwarded = await forwardToAgentHost(req);
+  if (forwarded) return forwarded;
+  const response = NextResponse.next();
+  response.headers.set("x-senko-proxy", "1");
+  return response;
 }
 
 export const config = {

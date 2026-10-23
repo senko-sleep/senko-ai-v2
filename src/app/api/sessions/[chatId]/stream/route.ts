@@ -2,6 +2,7 @@ import { requireChat } from "@/lib/server/chats";
 import { errorResponse, identify } from "@/lib/server/identity";
 import { sessions, type BusEvent } from "@/lib/agent/sessions";
 import type { NextRequest } from "next/server";
+import { forwardAgentRequest } from "@/lib/server/agent-forward";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,6 +11,8 @@ export const maxDuration = 300;
 // GET (SSE) -> live view: frames, cursor, tabs/status, steps, logs, screenshots.
 // ?restore=1 reopens a saved session (after a restart or eviction) before streaming.
 export async function GET(req: NextRequest, { params }: { params: Promise<{ chatId: string }> }) {
+  const forwarded = await forwardAgentRequest(req);
+  if (forwarded) return forwarded;
   let s;
   try {
     const who = await identify(req);

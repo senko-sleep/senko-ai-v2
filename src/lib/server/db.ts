@@ -144,7 +144,12 @@ async function createPglite(): Promise<Driver> {
 const g = globalThis as unknown as { __db?: Promise<Driver> };
 
 async function init(): Promise<Driver> {
-  const url = process.env.DATABASE_URL?.trim();
+  // Wasmer's managed database injects its own DATABASE_URL, which can point at
+  // an internal host even when this app uses the shared Neon database. Prefer
+  // the explicitly configured Neon URL on Wasmer so all hosts see the same data.
+  const url = (process.env.WASMER_APP_ID
+    ? process.env.SENKO_DATABASE_URL || process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL
+    : process.env.DATABASE_URL)?.trim();
   if (!url && process.env.NODE_ENV === "production" && process.env.DATA_DIR !== ":memory:") {
     console.warn(
       "[db] DATABASE_URL is not set: using the embedded database. It needs a lot of RAM (small hosts like Render free crash) " +
