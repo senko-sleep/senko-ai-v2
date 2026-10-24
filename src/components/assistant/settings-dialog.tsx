@@ -125,7 +125,7 @@ export function SettingsDialog({
             </Row>
 
             <div>
-              <Row icon={<Moon size={14} />} title="Appearance" desc="Pitch black with crimson halo, daylight, or follow your device." />
+              <Row icon={<Moon size={14} />} title="Appearance" desc="Warm ember dark, daylight, or follow your device." />
               <div role="radiogroup" aria-label="Theme" className="-mt-1 grid grid-cols-3 gap-1.5 pb-3 pl-8.5">
                 {(
                   [

@@ -81,3 +81,34 @@ export function parseMediaCommand(goal: string): MediaOp | null {
   if (/^(exit|leave)/.test(w)) return "exit_fullscreen";
   return "fullscreen";
 }
+
+export type ImageSearchIntent = { query: string; engine: "google" | "bing"; simple: boolean };
+
+const VERBS = String.raw`(?:search(?:\s+up)?|look\s+up|look\s+for|find|show(?:\s+me)?|get(?:\s+me)?|pull\s+up|bring\s+up|give\s+me)`;
+const IMG = String.raw`(?:images?|pictures?|pics?|photos?|wallpapers?|gifs?)`;
+
+/**
+ * "google images eevee", "search for eevee pics", "find me pictures of red foxes on bing":
+ * the user wants IMAGE results, not ordinary web results. Returns the query and engine
+ * (Google unless they name Bing), and whether the search is the whole request.
+ */
+export function imageSearchIntent(goal: string): ImageSearchIntent | null {
+  let g = goal.trim().replace(/\s+/g, " ").replace(/[.!?]+$/, "").replace(/^(?:please|pls|can you|could you|would you|hey senko,?)\s+/i, "");
+  const engine: "google" | "bing" = /\bbing\b/i.test(g) && !/\bgoogle\b/i.test(g) ? "bing" : "google";
+  // "and click the second one", "then download it": more than a search.
+  const tail = /\s+(?:and|then)\s+(.+)$/i.exec(g);
+  if (tail) g = g.slice(0, tail.index);
+  g = g.replace(/\s+(?:on|using|in|with|via)\s+(?:google|bing)(?:\s+images?)?$/i, "").replace(/\s+for me$/i, "");
+  let query: string | undefined;
+  const m1 = new RegExp(String.raw`^(?:${VERBS}\s+)?(?:on\s+)?(?:google|bing)\s+images?\s+(?:for\s+|of\s+)?(.+)$`, "i").exec(g);
+  const m2 = new RegExp(String.raw`^(?:${VERBS}|image\s+search)\s+(?:me\s+)?(?:for\s+)?(?:some\s+|a\s+few\s+|an?\s+)?${IMG}\s+(?:of|for|about|with)\s+(.+)$`, "i").exec(g);
+  const m3 = new RegExp(String.raw`^${VERBS}\s+(?:me\s+)?(?:for\s+)?(?:some\s+)?(.+?)\s+(${IMG})$`, "i").exec(g);
+  const m4 = /^image\s+search\s+(?:for\s+)?(.+)$/i.exec(g);
+  if (m1) query = m1[1];
+  else if (m2) query = m2[1];
+  else if (m3) query = /^(wallpapers?|gifs?)$/i.test(m3[2]) ? `${m3[1]} ${m3[2]}` : m3[1];
+  else if (m4) query = m4[1];
+  query = query?.replace(/^(?:for|of)\s+/i, "").replace(/^["'“]|["'”]$/g, "").trim();
+  if (!query || query.length > 120) return null;
+  return { query, engine, simple: !tail };
+}

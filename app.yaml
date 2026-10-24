@@ -1,0 +1,31 @@
+kind: wasmer.io/App.v0
+owner: senko-sleep
+name: senko-ai
+app_id: da_RpXImtBU1AxL
+package: .
+capabilities:
+  database:
+    engine: postgres
+enableDatabase: true
+annotations:
+  anybuild.run/provider: node
+  anybuild.run/version: 0.33.0
+  wasmer.io/version: 7.5.0
+  anybuild.run/config:
+    commands:
+      start: node .next-bundle/server.mjs
+    edgejs_enable: true
+    edgejs_precompile: true
+    name: out
+    node_build_command: npx -y next-bundle@1.0.0 --build-command 'npm run build'
+    node_framework: next
+    node_install_inputs:
+      - package.json
+    node_package_manager: npm
+    node_package_name: senko-ai
+    node_remove_native_binaries: true
+    node_server: node
+    npm_version: "11"
+    services:
+      - engine: postgres
+        name: database

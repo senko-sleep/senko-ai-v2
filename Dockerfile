@@ -20,7 +20,7 @@ ENV NODE_ENV=production \
     PORT=3000
 EXPOSE 3000
 
-# Hosts like Render/Railway pass their own $PORT.
+# Container hosts pass their own $PORT.
 # Run Next directly (npx would keep an extra npm process in memory). The heap cap leaves
 # room for Chrome on small instances; raise it with NODE_OPTIONS on bigger plans.
 ENV NODE_OPTIONS=--max-old-space-size=320

@@ -1,0 +1,4 @@
+timeout=240000
+browserless failed: browserType.connectOverCDP: WebSocket error: wss://production-sfo.browserless.io/ 400 Bad Request
+timeout=600000
+browserless failed: browserType.connectOverCDP: WebSocket error: wss://production-sfo.browserless.io/ 400 Bad Request

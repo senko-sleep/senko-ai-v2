@@ -5,7 +5,7 @@
 // available) plus a direct check of any <video> element.
 import type { Page } from "playwright";
 import { complete, headroom, LlmBusyError, type ImagePart, type LlmMessage, type LlmOptions } from "@/lib/llm";
-import { compactSources, historyLine, isSimpleGoal, parseMediaCommand, shortUrl, type SourcePage } from "./context";
+import { compactSources, historyLine, imageSearchIntent, isSimpleGoal, parseMediaCommand, shortUrl, type SourcePage } from "./context";
 import { checkpointLease, clearCheckpoint, saveCheckpoint, type Checkpoint } from "./checkpoint";
 import { sessions, type BrowserSession } from "./sessions";
 import { isPrivateUrl } from "./safety";
@@ -15,6 +15,9 @@ import { stashImage, listStash, clearStash, stashStats } from "./image-store";
 import { makeCollage } from "./collage";
 import type { PageSnap } from "./http-session";
 import { describeRequirements, requirementsComplete, reviewRequirements, taskRequirements, updateRequirements } from "./requirements";
+import { hadEffect, observeDom, pointAndClick, settlePage, watchNavigation, type DomObservation, type ObservedElement, type PageState } from "./interaction";
+import { fingerprintKey, hostOf, hostsInGoal, learnSearchUrl, loadHostMemory, memoryHints, preferredMethod, recordElement, recordRoute, recordUrlOutcome, type MemoryRow } from "./nav-memory";
+import { StrategyMonitor } from "./strategy";
 
 export type RunEvent =
   | { type: "status"; text: string }
@@ -65,6 +68,31 @@ function fmtWait(ms: number) {
 
 const MAX_STEPS = Number(process.env.AGENT_MAX_STEPS || 0); // 0 = no limit
 const SEARCH_URL = (q: string) => `https://www.bing.com/search?q=${encodeURIComponent(q)}&safeSearch=Off`;
+const IMAGE_SEARCH_URL = {
+  google: (q: string) => `https://www.google.com/search?q=${encodeURIComponent(q)}&udm=2&safe=off`,
+  bing: (q: string) => `https://www.bing.com/images/search?q=${encodeURIComponent(q)}&adlt=off`,
+};
+
+/**
+ * Open image results directly (no typing into a search box). Google often answers automated
+ * browsers with a captcha; that is reported plainly and Bing Images is opened instead.
+ */
+async function imageSearch(p: Page, query: string, engine: "google" | "bing"): Promise<{ ok: boolean; result: string }> {
+  await p.goto(IMAGE_SEARCH_URL[engine](query), { waitUntil: "domcontentloaded", timeout: 45_000 });
+  if (engine === "google") {
+    if (/consent\.google\./.test(p.url())) {
+      await p.getByRole("button", { name: /reject all|accept all/i }).first().click({ timeout: 4000 }).catch(() => {});
+      await p.waitForURL(/google\.[a-z.]+\/search/, { timeout: 8000 }).catch(() => {});
+    }
+    const text = await p.evaluate(() => document.body?.innerText.slice(0, 2000) || "").catch(() => "");
+    if (/\/sorry\//.test(p.url()) || /unusual traffic|not a robot|recaptcha/i.test(text)) {
+      await p.goto(IMAGE_SEARCH_URL.bing(query), { waitUntil: "domcontentloaded", timeout: 45_000 });
+      return { ok: true, result: `Google blocked the automated search with a captcha, so I opened Bing Images for "${query}" instead. Say so in the answer.` };
+    }
+  }
+  const count = await p.evaluate(() => [...document.images].filter((i) => i.naturalWidth > 60 || i.width > 60).length).catch(() => 0);
+  return { ok: true, result: `Opened ${engine === "google" ? "Google" : "Bing"} Images for "${query}"${count ? ` (${count} images on screen)` : ""}.` };
+}
 
 // ---- run registry (one run per chat; takeover pauses it) --------------------------------
 
@@ -110,13 +138,7 @@ export function isRunning(chatId: string) {
 
 // ---- page observation ------------------------------------------------------------------
 
-interface Element {
-  id: number;
-  tag: string;
-  type: string;
-  text: string;
-  href: string;
-}
+
 interface VideoState {
   present: boolean;
   playing: boolean;
@@ -132,66 +154,34 @@ interface VideoState {
 interface Observation {
   url: string;
   title: string;
-  elements: Element[];
+  elements: ObservedElement[];
   images: { url: string; alt: string; col: number; row: number }[];
   text: string;
+  /** Page text outside the viewport (start of the page), when it adds something. */
+  pageText?: string;
   atBottom: boolean;
   tabs: string;
   video: VideoState | null;
   /** Live state of a graphing app on the page (Desmos expressions + errors), if any. */
   app?: string | null;
   screenshot?: Buffer;
+  /** Viewport size in CSS px, for coordinate clicks. */
+  viewport?: { width: number; height: number };
+  /** Overlay / loading / scroll position, measured in the page. */
+  state?: PageState;
+  more?: DomObservation["more"];
 }
 
-const OBSERVE_SCRIPT = () => {
-  document.querySelectorAll("[data-agent-id]").forEach((e) => e.removeAttribute("data-agent-id"));
-  const nodes = Array.from(
-    document.querySelectorAll<HTMLElement>(
-      'a[href], button, input:not([type=hidden]), textarea, select, video, [role=button], [role=link], [role=tab], [role=menuitem], [role=option], [role=checkbox], [role=switch], [onclick], [aria-label][tabindex]'
-    )
-  );
-  const out: { id: number; tag: string; type: string; text: string; href: string }[] = [];
-  const seen = new Set<string>();
-  let id = 0;
-  for (const el of nodes) {
-    const r = el.getBoundingClientRect();
-    if (r.width < 4 || r.height < 4) continue;
-    if (r.bottom < 0 || r.top > window.innerHeight * 1.3 || r.right < 0 || r.left > window.innerWidth) continue;
-    const st = getComputedStyle(el);
-    if (st.visibility === "hidden" || st.display === "none" || Number(st.opacity) === 0) continue;
-    const input = el as HTMLInputElement;
-    let text = (el.getAttribute("aria-label") || el.innerText || input.value || input.placeholder || el.title || el.getAttribute("alt") || "")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (!text) text = (el.querySelector("img[alt]") as HTMLImageElement | null)?.alt?.trim() || "";
-    const tag = el.tagName.toLowerCase();
-    const isField = tag === "input" || tag === "textarea" || tag === "select" || tag === "video";
-    if (!text && !isField) continue;
-    const href = (el as HTMLAnchorElement).href || "";
-    const key = `${text}|${href}`;
-    if (!isField && seen.has(key)) continue;
-    seen.add(key);
-    id++;
-    el.setAttribute("data-agent-id", String(id));
-    out.push({ id, tag, type: input.type || "", text: text.slice(0, 90), href: href.slice(0, 4096) });
-    if (out.length >= 60) break;
-  }
-  const body = (document.body?.innerText || "").replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n").trim();
-  const atBottom = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 20;
-  const images = Array.from(document.images).filter((img) => {
-    const rect = img.getBoundingClientRect();
-    return img.complete && img.naturalWidth >= 80 && img.naturalHeight >= 60 && rect.width >= 60 && rect.height >= 40
-      && rect.bottom > 0 && rect.top < window.innerHeight * 1.5 && rect.right > 0 && rect.left < window.innerWidth
-      && getComputedStyle(img).visibility !== 'hidden' && /^https?:\/\//.test(img.currentSrc || img.src);
-  }).slice(0, 24).map((img) => {
-    const rect = img.getBoundingClientRect();
-    const cols = 4, rows = 4;
-    const col = Math.min(cols - 1, Math.floor(rect.left / (window.innerWidth / cols)));
-    const row = Math.min(rows - 1, Math.floor(rect.top / (window.innerHeight / rows)));
-    return { url: img.currentSrc || img.src, alt: (img.alt || img.title || '').slice(0, 160), col, row };
-  });
-  return { elements: out, images, text: body.slice(0, 1500), atBottom };
-};
+const EMPTY_DOM: DomObservation = { elements: [], images: [], text: "", atBottom: false };
+
+/**
+ * What the page looks like structurally: its controls and their state. Live text (clocks,
+ * viewer counts, video time) is left out, so a ticking page doesn't look "changed".
+ */
+function observationStateKey(o: Pick<Observation, "url" | "title" | "elements" | "images" | "atBottom"> | null) {
+  if (!o) return "blank";
+  return JSON.stringify([o.url, o.title, o.atBottom, o.elements.map((e) => [e.tag, e.text, e.href, e.ctx, e.flags, e.off, e.covered]), o.images.map((i) => i.url)]);
+}
 
 /** Directly check the main <video>: is it really playing (time advancing, has frames, no error)? */
 export async function videoState(page: Page): Promise<VideoState | null> {
@@ -201,6 +191,11 @@ export async function videoState(page: Page): Promise<VideoState | null> {
       const v = vids.sort((a, b) => b.clientWidth * b.clientHeight - a.clientWidth * a.clientHeight)[0];
       if (!v || v.clientWidth < 50) return null;
       const err = v.error ? `media error ${v.error.code}${v.error.message ? `: ${v.error.message}` : ""}` : "";
+      // The previous reading (from an earlier step) often proves playback without waiting.
+      const w = window as unknown as { __senkoVid?: { t: number; at: number; src: string } };
+      const prev = w.__senkoVid;
+      const now = performance.now();
+      w.__senkoVid = { t: v.currentTime, at: now, src: v.currentSrc };
       return {
         t: v.currentTime,
         paused: v.paused,
@@ -210,12 +205,18 @@ export async function videoState(page: Page): Promise<VideoState | null> {
         error: err,
         muted: v.muted,
         fullscreen: !!document.fullscreenElement,
+        advanced: prev && prev.src === v.currentSrc && now - prev.at > 400 && now - prev.at < 60_000 ? v.currentTime - prev.t : null,
+        elapsed: prev ? (now - prev.at) / 1000 : 0,
       };
     });
   const a = await read().catch(() => null);
   if (!a) return null;
   if (a.paused) {
     return { present: true, playing: false, paused: true, currentTime: a.t, duration: a.duration, width: a.width, readyState: a.readyState, error: a.error, muted: a.muted, fullscreen: a.fullscreen };
+  }
+  // Advanced by about the time that passed (not a jump from seeking): it is playing.
+  if (a.advanced != null && a.advanced > 0.3 && a.advanced <= a.elapsed * 2.5 + 0.5 && a.width > 0 && !a.error) {
+    return { present: true, playing: true, paused: false, currentTime: a.t, duration: a.duration, width: a.width, readyState: a.readyState, error: a.error, muted: a.muted, fullscreen: a.fullscreen };
   }
   await page.waitForTimeout(1200);
   const b = (await read().catch(() => null)) || a;
@@ -283,40 +284,59 @@ async function desmosEdit(page: Page, op: string, expressions: string[]): Promis
   };
 }
 
+function formatElement(e: ObservedElement): string {
+  const kind = e.tag === "a" ? "link" : e.tag === "input" ? `input${e.type ? `:${e.type}` : ""}` : e.tag;
+  let href = "";
+  if (e.href && !e.href.startsWith("javascript:")) {
+    try {
+      const u = new URL(e.href);
+      if (u.protocol === "https:" || u.protocol === "http:") href = ` -> ${shortUrl(u.href)}`;
+    } catch {
+      /* ignore */
+    }
+  }
+  const notes = [
+    e.ctx ? `(in: ${e.ctx})` : "",
+    e.off ? `[off-screen ${e.off}]` : e.x !== undefined ? `@${e.x},${e.y}` : "",
+    ...(e.flags || []),
+    e.covered ? `COVERED by ${e.covered}` : "",
+  ].filter(Boolean);
+  return `[${e.id}] ${kind} "${e.text}"${href}${notes.length ? ` ${notes.join(" ")}` : ""}`;
+}
+
 function formatObservation(o: Observation): string {
-  const els = o.elements
-    .map((e) => {
-      const kind = e.tag === "a" ? "link" : e.tag === "input" ? `input${e.type ? `:${e.type}` : ""}` : e.tag;
-      let href = "";
-      if (e.href && !e.href.startsWith("javascript:")) {
-        try {
-          const u = new URL(e.href);
-          if (u.protocol === 'https:' || u.protocol === 'http:') href = ` -> ${shortUrl(u.href)}`;
-        } catch {
-          /* ignore */
-        }
-      }
-      return `[${e.id}] ${kind} "${e.text}"${href}`;
-    })
-    .join("\n");
+  const left = (o.more?.onScreen || 0) + (o.more?.offScreen || 0);
+  const els =
+    o.elements.map(formatElement).join("\n") +
+    (left ? `\n(+${left} more not listed${o.more?.onScreen ? `, ${o.more.onScreen} of them on screen, mostly site navigation` : ""})` : "");
+  const st = o.state;
+  const where = st && st.scrollH > st.vh + 40 ? `, scrolled ${Math.round(((st.scrollY + st.vh) / st.scrollH) * 100)}% down` : "";
   return [
     `URL: ${o.url}`,
     `Title: ${o.title}`,
     `Tabs: ${o.tabs}`,
+    o.viewport ? `Viewport: ${o.viewport.width}x${o.viewport.height} CSS px${where}` : "",
+    st?.overlay ? `OVERLAY on top of the page: ${st.overlay} (deal with it or use dismiss before clicking things under it)` : "",
+    st?.loading ? "Page state: still LOADING (spinner/busy area visible)" : "",
     describeVideo(o.video),
     o.app ? `Desmos expressions on this page (this is the truth about what is graphed):\n${o.app}` : "",
-    `Interactive elements:\n${els || "(none visible)"}`,
+    `Interactive elements (@x,y = center in the viewport; off-screen ones can be clicked directly, they scroll into view):\n${els || "(none visible)"}`,
     `Visible images (use exact URLs; col/row = approx grid position 0-3 from top-left):\n${o.images.map((img, i) => `  [img${i}] col=${img.col} row=${img.row} alt="${img.alt}" url=${img.url}`).join("\n") || "(none)"}`,
-    `Visible text (truncated):\n${o.text.slice(0, 1200)}${o.atBottom ? "\n(end of page)" : ""}`,
-  ].join("\n");
+    `Visible text (on screen now):\n${o.text.slice(0, 1400)}${o.atBottom ? "\n(end of page)" : ""}`,
+    o.pageText ? `Other page text (top of the page, off screen):\n${o.pageText.slice(0, 900)}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 // ---- actions ---------------------------------------------------------------------------
 
 type Action =
   | { action: "search"; query: string }
+  | { action: "image_search"; query: string; engine?: "google" | "bing" }
   | { action: "goto"; url: string }
-  | { action: "click"; id: number }
+  | { action: "click"; id?: number; x?: number; y?: number }
+  | { action: "hover"; id: number }
   | { action: "type"; id?: number; text: string; submit?: boolean }
   | { action: "press"; key: string }
   | { action: "scroll"; direction?: "up" | "down" }
@@ -346,8 +366,11 @@ Reply with ONE JSON object and nothing else:
 
 Actions:
 {"action":"search","query":"..."}                     web search (Bing). Use it when the user didn't name a site, then pick the best match.
+{"action":"image_search","query":"...","engine":"google"} IMAGE results (Google Images, or "bing"). Use whenever the user wants pictures/images/pics/photos/wallpapers/gifs of something, never a plain web search. Opens the image grid directly.
 {"action":"goto","url":"https://..."}                 open a URL (any site the user names or pastes)
-{"action":"click","id":12}                            click element [12]
+{"action":"click","id":12}                            click element [12] (also works for [off-screen] elements: it scrolls them into view first)
+{"action":"hover","id":7}                             move the pointer onto [7] without clicking (menus that open on hover)
+{"action":"click","x":640,"y":400}                    click a point in the viewport (CSS px, 0,0 = top-left; size is in the observation). Only for spots with no element id: canvases, maps, "the middle of the page".
 {"action":"type","id":5,"text":"...","submit":true}   type into a field; submit presses Enter. Works on any editor (math boxes, code editors, rich text): non-form fields get real keystrokes. Omit id to type into whatever is focused now. "\\n" in text presses Enter.
 {"action":"press","key":"Escape"}                     press a key (Escape, Enter, ArrowRight, Space, f, ...)
 {"action":"scroll","direction":"down"}                or "up"
@@ -377,7 +400,9 @@ Rules:
 - DESMOS: use the desmos action (LaTeX) instead of clicking and typing. Desmos 3D (https://www.desmos.com/3d) handles 3D: implicit surfaces like x^2+y^2+z^2=4, parametric surfaces (x(u,v),y(u,v),z(u,v)) with u,v in 0..1, restrictions in braces, sliders, lists and recursive functions (e.g. M(p,c,n)=\left\{n=0:p,B(M(p,c,n-1))+c\right\} on points). Fractals work as point clouds: build a grid with [(a,b,c) for a=G,b=G,c=G] (lists max 10,000 items, so ~21 values per axis) and keep the points that stay bounded. Function names must be 2+ letters or a capital letter (r, t, x, y, z are reserved). Ambitious requests (fractals, animations) are worth a real attempt: build the best version you can (a simpler or approximate one beats none), check the reported errors, fix them, and explain any limitation in your answer.
 - NEVER claim something is on the page, graphed, deleted or done unless the current page state or screenshot shows it. Never say a task is impossible without having tried it.
 - EDITORS & MATH TOOLS (GeoGebra, code editors, docs): click the box, then type the way a person types on a keyboard, not LaTeX. In Desmos/MathQuill: "^" starts an exponent and "/" starts a fraction (press ArrowRight to leave them), type "<=" for ≤, "sqrt" for √, "pi" for π, and limit a shape with braces (a square face in 3D: z=0{-1<=x<=1}{-1<=y<=1}); type several expressions in one go separated by "\\n" (each Enter makes a new line) with submit:false. Desmos has a real 3D calculator at https://www.desmos.com/3d (use it for anything 3D). Check the screenshot after typing and fix mistakes.
-- Only use element ids from the CURRENT list. Scroll if what you need isn't listed. Links ending in "…" are shortened: click the element instead of using goto with them.
+- Only use element ids from the CURRENT list. Scroll if what you need isn't listed. Elements are annotated: (in: ...) = the item/card it belongs to (use it to pick the right one of several identical buttons), @x,y = position, [off-screen below/above] = click it directly (no need to scroll first), new = just appeared (an opened menu/popup), COVERED by ... = something is on top of it.
+- Take the shortest path: one decisive action per step, no exploratory clicks or scrolling when the target is already listed. Use a remembered search URL or route from "Site memory" instead of clicking through the site. Never click elements that are unrelated to the goal.
+- Results tell you what happened: "no visible change" means the click probably missed or did nothing, so pick a different element or approach instead of repeating it. Elements marked AVOID in site memory failed before. Links ending in "…" are shortened: click the element instead of using goto with them.
 - When the user says "first option", "first result", "first image", "first one" in the context of a search results page or image grid, they mean the first visible item in that grid/list — click it.
 - IMAGE RECOGNITION: When the user asks to click a specific image by visual description (e.g. the one where she's drinking, the crying gif, the one with peanuts), use examine_images with the user's own description; it finds the image on screen and clicks it. Never guess visually. If it finds no match, scroll down and run it again.
 - Only state facts you saw during this task. Never guess URLs for specific episodes; click your way there.
@@ -420,10 +445,14 @@ function describe(a: Action, obs: Observation | null): string {
   switch (a.action) {
     case "search":
       return `Searching “${a.query}”`;
+    case "image_search":
+      return `Searching ${a.engine === "bing" ? "Bing" : "Google"} Images for “${a.query}”`;
     case "goto":
       return `Opening ${host(a.url)}`;
     case "click":
-      return `Clicking ${name}`;
+      return el || a.id !== undefined ? `Clicking ${name}` : `Clicking at (${Math.round(Number(a.x))}, ${Math.round(Number(a.y))})`;
+    case "hover":
+      return `Pointing at ${name}`;
     case "type":
       return `Typing “${String(a.text).slice(0, 40)}”`;
     case "press":
@@ -492,21 +521,29 @@ export async function runAgent(opts: RunOptions): Promise<void> {
   const QUOTA_WAIT_TOTAL = Number(process.env.AGENT_QUOTA_WAIT_TOTAL_MS || 20 * 60_000);
   let quotaWaited = 0;
 
+  // The tab can close (or the session end) while a background step update is still due.
+  const curUrl = () => {
+    try {
+      return session?.active().url();
+    } catch {
+      return undefined;
+    }
+  };
   const step = (label: string) => {
     const id = ++stepId;
     const at = Date.now();
-    emit({ type: "step", id, label, status: "running", url: session?.active().url() });
-    session?.emit({ type: "step", id, label, status: "running", url: session.active().url(), at });
+    emit({ type: "step", id, label, status: "running", url: curUrl() });
+    session?.emit({ type: "step", id, label, status: "running", url: curUrl(), at });
     return {
       done: (detail?: string, shotId?: string) => {
         if (aborted()) return;
-        emit({ type: "step", id, label, status: "done", detail, url: session?.active().url() });
-        session?.emit({ type: "step", id, label, status: "done", detail, url: session.active().url(), at: Date.now(), shotId });
+        emit({ type: "step", id, label, status: "done", detail, url: curUrl() });
+        session?.emit({ type: "step", id, label, status: "done", detail, url: curUrl(), at: Date.now(), shotId });
       },
       fail: (detail: string, shotId?: string) => {
         if (aborted()) return;
-        emit({ type: "step", id, label, status: "error", detail, url: session?.active().url() });
-        session?.emit({ type: "step", id, label, status: "error", detail, url: session.active().url(), at: Date.now(), shotId });
+        emit({ type: "step", id, label, status: "error", detail, url: curUrl() });
+        session?.emit({ type: "step", id, label, status: "error", detail, url: curUrl(), at: Date.now(), shotId });
       },
     };
   };
@@ -578,50 +615,66 @@ export async function runAgent(opts: RunOptions): Promise<void> {
     }
   };
 
-  const settle = async (page: Page) => {
-    await page.waitForLoadState("domcontentloaded", { timeout: 20_000 }).catch(() => {});
-    await page.waitForLoadState("networkidle", { timeout: 1_500 }).catch(() => {});
+  /** Wait for the page to finish reacting to an action (no fixed sleeps). */
+  const settle = async (page: Page, navigated: boolean) => {
+    await settlePage(page, { navigated, signal });
+    if (!navigated) return;
     for (let i = 0; i < 6 && !aborted(); i++) {
       const title = await page.title().catch(() => "");
       if (!/just a moment|checking your browser|attention required|verify you are human/i.test(title)) break;
       if (i === 0) emit({ type: "status", text: "Waiting for a security check…" });
       await page.waitForTimeout(2000);
+      await settlePage(page, { navigated: true, signal });
     }
-    // Pages that render their text late: wait while the text is still growing, not on short pages that are done.
+    // A fresh page that renders its text late: wait while the text is still growing.
     let prev = -1;
-    for (let i = 0; i < 6 && !aborted(); i++) {
+    for (let i = 0; i < 4 && !aborted(); i++) {
       const len = await page.evaluate(() => document.body?.innerText.length || 0).catch(() => 0);
       if (len > 400 || (len > 0 && len === prev)) break;
       prev = len;
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(400);
     }
   };
 
-  const observe = async (s: BrowserSession, withShot: boolean): Promise<Observation> => {
+  /**
+   * Look at the page: DOM, tabs, video and app state in parallel (one round trip each), then a
+   * screenshot only if `wantShot` says the step needs one for this page state.
+   */
+  const observe = async (s: BrowserSession, wantShot: boolean | ((stateKey: string) => boolean)): Promise<Observation> => {
     const p = s.active();
-    const r = await p.evaluate(OBSERVE_SCRIPT).catch(async () => {
-      await p.waitForTimeout(1000);
-      return p.evaluate(OBSERVE_SCRIPT).catch(() => ({ elements: [], images: [], text: "", atBottom: false }));
+    const dom = observeDom(p).catch(async () => {
+      await p.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {});
+      return observeDom(p).catch(() => EMPTY_DOM);
     });
-    const tabs = (await s.tabs()).map((t) => `${t.index + 1}. ${t.title.slice(0, 50)}${t.active ? " (active)" : ""}`).join(" | ");
-    const video = await videoState(p);
-    const screenshot = withShot ? await s.screenshot(55).catch(() => undefined) : undefined;
-    const app = await desmosState(p);
-    return { url: p.url(), title: await p.title().catch(() => ""), tabs, video, app, screenshot, ...r };
+    const [r, tabList, video, app, title] = await Promise.all([dom, s.tabs(), videoState(p), desmosState(p), p.title().catch(() => "")]);
+    const tabs = tabList.map((t) => `${t.index + 1}. ${t.title.slice(0, 50)}${t.active ? " (active)" : ""}`).join(" | ");
+    const base: Observation = {
+      ...EMPTY_DOM,
+      ...r,
+      url: p.url(),
+      title,
+      tabs,
+      video,
+      app,
+      viewport: r.state ? { width: r.state.vw, height: r.state.vh } : s.viewport(),
+    };
+    const shot = typeof wantShot === "function" ? wantShot(`${observationStateKey(base)}|${base.text.slice(0, 600)}|${base.state?.scrollY ?? 0}`) : wantShot;
+    if (shot) base.screenshot = await s.screenshot(55).catch(() => undefined);
+    return base;
   };
 
-  /** Announce the action target without delaying browser execution for the overlay. */
-  const pointAt = async (s: BrowserSession, sel: string) => {
-    signal.throwIfAborted();
-    const box = await s.active().locator(sel).first().boundingBox().catch(() => null);
-    signal.throwIfAborted();
-    if (!box) return null;
-    const vp = s.viewport();
-    const x = box.x + box.width / 2;
-    const y = box.y + box.height / 2;
-    s.emit({ type: "cursor", x, y, kind: "move", box: { x: box.x, y: box.y, w: box.width, h: box.height }, width: vp.width, height: vp.height });
-    return { x, y, vp, box };
+  // Site memory: what worked before on the sites this task touches (validated per page).
+  const goalHosts = hostsInGoal(goal);
+  let memRows: MemoryRow[] = [];
+  const siteMemory = async (obs: Observation | null): Promise<string> => {
+    const hosts = obs ? [hostOf(obs.url)] : goalHosts;
+    const loaded = await Promise.all(hosts.filter(Boolean).map(async (h) => ({ h, rows: await loadHostMemory(ownerId, h) })));
+    memRows = loaded.flatMap((x) => x.rows);
+    return loaded.map(({ h, rows }) => memoryHints(rows, { host: h, elements: obs?.elements || [], goal })).filter(Boolean).join("\n\n");
   };
+  // Notices loops, dead targets and wasted steps (in memory, no extra AI calls).
+  const strategy = new StrategyMonitor();
+  const taskStart = Date.now();
 
   const makePlan = (startObs: Observation | null) =>
     ask(
@@ -653,7 +706,8 @@ export async function runAgent(opts: RunOptions): Promise<void> {
     // Plan while the browser connects (a fresh session has nothing to look at yet).
     const liveBefore = sessions.get(chatId);
     // A resumed task keeps its plan; a short goal or single action needs none (saves a call).
-    const needPlan = !ck && !isSimpleGoal(goal);
+    const imageIntent = ck ? null : imageSearchIntent(goal);
+    const needPlan = !ck && !isSimpleGoal(goal) && !imageIntent?.simple;
     let planJob: Promise<string> | null = !needPlan || liveBefore?.isActive() ? null : makePlan(null);
     planJob?.catch(() => {});
     session = await sessions.open(chatId, ownerId);
@@ -689,6 +743,17 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       actionsTaken++;
     }
 
+    // 2b. "Google Images eevee": open the image results straight away (no AI call needed).
+    if (imageIntent) {
+      const action = { action: "image_search" as const, query: imageIntent.query, engine: imageIntent.engine };
+      const st = step(describe(action, null));
+      const r = await imageSearch(session.active(), imageIntent.query, imageIntent.engine).catch((e) => ({ ok: false, result: `Failed: ${friendlyError(e)}` }));
+      if (r.ok) st.done(r.result);
+      else st.fail(r.result);
+      history.push(historyLine(history.length + 1, action, r.result));
+      actionsTaken++;
+    }
+
     // 3. Plan -----------------------------------------------------------------------
     if (ck) {
       session.log(`Resuming the task from step ${history.length + 1}${ck.reason ? ` (it stopped because: ${ck.reason})` : ""}.`);
@@ -714,6 +779,8 @@ export async function runAgent(opts: RunOptions): Promise<void> {
     // 4. Act ------------------------------------------------------------------------
     let lastKey = "";
     let repeats = 0;
+    const lastActionAttempt: { current: { key: string; state: string } | null } = { current: null };
+    const repeatSensitiveActions = new Set<Action["action"]>(["click", "type", "press", "dismiss", "media", "goto", "search", "image_search", "back", "examine_images"]);
     let parseFailures = 0;
     let failedInRow = 0;
     // A screenshot makes the step need a vision model, the scarcest (most rate-limited) kind.
@@ -723,6 +790,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       /\b(images?|pictures?|photos?|pics?|gifs?|videos?|watch|play|colou?rs?|green|red|blue|pink|yellow|purple|orange|black|white|looks?|see|screenshot|icons?|logos?|thumbnails?|wallpapers?|memes?)\b/i.test(goal);
     let lastOk = true;
     let sinceShot = 99;
+    let lastShotKey = "";
     let completionChecks = 0;
 
     for (let i = 0; MAX_STEPS === 0 || i < MAX_STEPS; i++) {
@@ -738,9 +806,18 @@ export async function runAgent(opts: RunOptions): Promise<void> {
         const room = await headroom(true).catch(() => 1);
         if (room < (visualGoal ? 0.15 : 0.3)) withShot = false;
       }
-      sinceShot = withShot ? 0 : sinceShot + 1;
-      const obs = blank ? null : await observe(s, withShot);
+      // The same page state the model already saw in a screenshot needs no second one
+      // (after a successful step); a changed or failed state always gets a fresh look.
+      const memoryJob = siteMemory(null).catch(() => "");
+      const obs = blank ? null : await observe(s, (k) => withShot && !(lastOk && k === lastShotKey));
+      if (obs?.screenshot) lastShotKey = `${observationStateKey(obs)}|${obs.text.slice(0, 600)}|${obs.state?.scrollY ?? 0}`;
+      sinceShot = obs?.screenshot ? 0 : sinceShot + 1;
       if (obs) visitedSources.set(obs.url, { title: obs.title, images: obs.images });
+      const memory = obs ? await siteMemory(obs).catch(() => "") : await memoryJob;
+      if (obs) strategy.observe(`${observationStateKey(obs)}|${obs.app || ""}|${obs.text.slice(0, 600).replace(/\d+/g, "#")}`);
+      const stuckWhy = strategy.stuck();
+      if (stuckWhy) throw new AgentPause(`${stuckWhy}, so I stopped instead of going in circles. Take control to help, or press Resume to let me try a different way.`, "stuck");
+      const advice = strategy.advice();
 
       emit({ type: "status", text: "Thinking…" });
       const stash = stashStats(chatId);
@@ -753,6 +830,8 @@ export async function runAgent(opts: RunOptions): Promise<void> {
         stash.count > 0 ? `STASH (${stash.count}/${process.env.AGENT_STASH_MAX ?? 20} images, expires in ~30min):\n${stash.images.map((img) => `  ${img.id} — ${img.alt || img.url} (${(img.bytes / 1024).toFixed(0)} KB)`).join("\n")}` : "STASH: empty",
         visitedSources.size > (obs ? 1 : 0) ? `Pages seen earlier in this task (for your final answer's links and images):\n${compactSources(visitedSources, obs?.url)}` : "",
         repeats >= 2 ? "WARNING: you are repeating the same action. Try a different approach, or finish with done and explain." : "",
+        memory,
+        advice,
         obs ? `Current page:\n${formatObservation(obs)}${obs.screenshot ? "\n(Screenshot of the current page attached.)" : ""}` : "Current page: blank tab (start with search or goto).",
       ]
         .filter(Boolean)
@@ -774,7 +853,64 @@ export async function runAgent(opts: RunOptions): Promise<void> {
         continue;
       }
       parseFailures = 0;
+      let upgradedFrom = "";
+
+      // A guessed coordinate that lands on a listed element becomes a click on that element:
+      // it is re-found and checked before pressing, so a layout change can't misdirect it.
+      if (d.action === "click" && (d.id === undefined || d.id === null || String(d.id) === "") && obs && Number.isFinite(Number(d.x)) && Number.isFinite(Number(d.y))) {
+        const px = Number(d.x), py = Number(d.y);
+        const under = obs.elements
+          .filter((e) => !e.off && e.x !== undefined && e.w && e.h && Math.abs(px - e.x) <= e.w / 2 && Math.abs(py - (e.y as number)) <= e.h / 2)
+          .sort((a, b) => (a.w! * a.h!) - (b.w! * b.h!))[0];
+        if (under) {
+          (d as { id?: number }).id = under.id;
+          upgradedFrom = `(${Math.round(px)}, ${Math.round(py)})`;
+        }
+      }
+      const key = JSON.stringify({ ...d, thought: undefined, check: undefined, requirements: undefined });
+      const stateKey = observationStateKey(obs);
+      // The page may navigate or switch tabs while the model is thinking: never apply an
+      // action to a different page than the one it saw. In-page changes are fine: element
+      // actions find their target again by fingerprint and check it before acting.
+      if (obs) {
+        const currentPage = s.active();
+        if (currentPage !== page || currentPage.url() !== obs.url) {
+          history.push(`${n}. Skipped ${d.action}: the page navigated or the tab changed while I was thinking. I am looking at the new page first.`);
+          lastOk = false;
+          continue;
+        }
+        // A bare coordinate has nothing to re-find: the page must still be where it was.
+        if (d.action === "click" && (d.id === undefined || d.id === null || String(d.id) === "") && obs.state) {
+          const y = await currentPage.evaluate(() => Math.round(scrollY)).catch(() => null);
+          if (y !== obs.state.scrollY) {
+            history.push(`${n}. Skipped the coordinate click: the page scrolled since I looked. Taking a fresh look.`);
+            lastOk = false;
+            continue;
+          }
+        }
+      }
+
+      // A repeated state-changing decision on an unchanged page is stale input,
+      // not a second click/type request. Force a screenshot and another decision.
+      if (repeatSensitiveActions.has(d.action) && lastActionAttempt.current?.key === key && lastActionAttempt.current.state === stateKey) {
+        history.push(`${n}. Skipped duplicate ${describe(d, obs)}: that action was already sent and the page has not changed. Recheck the current screenshot and choose the next step.`);
+        lastOk = false;
+        continue;
+      }
       if (obs) requirements = updateRequirements(requirements, (d as unknown as { requirements?: unknown }).requirements);
+      const targetEl = "id" in d && d.id !== undefined && d.id !== null ? obs?.elements.find((e) => e.id === Number(d.id)) : undefined;
+      const targetKey =
+        targetEl?.fp ? `el:${fingerprintKey(targetEl.fp)}` :
+        d.action === "goto" ? `goto:${d.url}` :
+        d.action === "search" || d.action === "image_search" ? `search:${String(d.query).toLowerCase()}` :
+        d.action === "press" ? `press:${d.key}@${obs?.url || ""}` : undefined;
+      const targetLabel = targetEl ? `[${targetEl.id}] "${targetEl.text.slice(0, 40)}"` : d.action === "goto" ? `goto ${d.url}` : d.action;
+      const deadWhy = ["click", "type", "hover", "goto", "search", "image_search", "press"].includes(d.action) ? strategy.blocked(targetKey) : null;
+      if (deadWhy) {
+        history.push(`${n}. Blocked ${describe(d, obs)}: ${deadWhy}. Pick a different element or method.`);
+        lastOk = false;
+        continue;
+      }
 
       // Quality check of the previous step, as judged by the model.
       if (d.check && history.length) {
@@ -788,7 +924,6 @@ export async function runAgent(opts: RunOptions): Promise<void> {
         }
       }
 
-      const key = JSON.stringify({ ...d, thought: undefined, check: undefined, requirements: undefined });
       repeats = key === lastKey ? repeats + 1 : 0;
       lastKey = key;
       // Going in circles burns quota without progress: stop and ask instead of looping forever.
@@ -816,6 +951,8 @@ export async function runAgent(opts: RunOptions): Promise<void> {
           history.push(`${n}. Completion rejected: ${describeRequirements(missing)}. Complete or verify these requirements before answering.`);
           continue;
         }
+        // Remember where this request ended, so the same request can go straight there next time.
+        if (!blank && obs && !isPrivateUrl(obs.url)) recordRoute(ownerId, goal, obs.url, { actions: actionsTaken, ms: Date.now() - taskStart }, memRows);
         const fin = step("Finished");
         const shotId = await s.recordShot("Final result");
         fin.done(undefined, shotId);
@@ -834,13 +971,26 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       const st = step(describe(d, obs));
       let result = "";
       let ok = true;
+      const p = s.active();
+      const urlBefore = p.url();
+      const nav = watchNavigation(p);
+      let clicked: { id: number; check: Extract<Awaited<ReturnType<typeof pointAndClick>>, { ok: true }>["check"]; el?: ObservedElement; method: string } | null = null;
+      let typedQuery: { text: string; fp: NonNullable<ObservedElement["fp"]> } | null = null;
+      let scrolled: "up" | "down" | null = null;
+      let effect = true;
+      const actionStart = Date.now();
       try {
-        const p = s.active();
         switch (d.action) {
           case "search":
             await p.goto(SEARCH_URL(String(d.query)), { waitUntil: "domcontentloaded", timeout: 45_000 });
             result = `Searched "${d.query}"`;
             break;
+          case "image_search": {
+            const r = await imageSearch(p, String(d.query), d.engine === "bing" ? "bing" : "google");
+            ok = r.ok;
+            result = r.result;
+            break;
+          }
           case "goto": {
             const url = /^[a-z]+:\/\//i.test(d.url) ? d.url : `https://${d.url}`;
             if (isPrivateUrl(url)) {
@@ -852,43 +1002,60 @@ export async function runAgent(opts: RunOptions): Promise<void> {
             const code = resp?.status() || 0;
             result = code >= 400 ? `Loaded ${host(p.url())} but the server answered HTTP ${code}` : `Opened ${host(p.url())}`;
             if (code >= 400) ok = false;
+            recordUrlOutcome(ownerId, memRows, url, ok, ok ? undefined : `HTTP ${code}`);
             break;
           }
           case "click": {
-            const sel = `[data-agent-id="${Number(d.id)}"]`;
-            if ((await p.locator(sel).count()) === 0) {
-              ok = false;
-              result = `Element ${d.id} isn't on the page anymore.`;
+            const hasId = d.id !== undefined && d.id !== null && String(d.id) !== "";
+            if (!hasId && Number.isFinite(Number(d.x)) && Number.isFinite(Number(d.y))) {
+              const vp = obs?.viewport || s.viewport();
+              const x = Math.min(vp.width - 1, Math.max(0, Number(d.x)));
+              const y = Math.min(vp.height - 1, Math.max(0, Number(d.y)));
+              s.emit({ type: "cursor", x, y, kind: "move", box: null, width: vp.width, height: vp.height });
+              await p.mouse.move(x, y);
+              s.emit({ type: "cursor", x, y, kind: "click", box: null, width: vp.width, height: vp.height });
+              await p.mouse.down();
+              await p.mouse.up();
+              result = `Clicked the point (${Math.round(x)}, ${Math.round(y)})`;
               break;
             }
-            await p.locator(sel).first().scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
-            const at = await pointAt(s, sel);
-            if (at) {
-              s.emit({ type: "cursor", x: at.x, y: at.y, kind: "click", box: null, width: at.vp.width, height: at.vp.height });
-              await p.mouse.click(at.x, at.y);
-            } else {
-              throw new Error("The target is not visible. Observe the page again before clicking.");
+            if (!hasId) {
+              ok = false;
+              result = "click needs an element id from the list, or x and y viewport coordinates.";
+              break;
             }
             const el = obs?.elements.find((e) => e.id === Number(d.id));
-            result = `Clicked ${el ? `"${el.text.slice(0, 50)}"` : d.id}`;
+            const out = await pointAndClick(p, s, { id: Number(d.id), fp: el?.fp ?? null }, { signal, dismiss: closeBlockingOverlay, prefer: preferredMethod(memRows, el?.fp) ?? undefined });
+            if (!out.ok) {
+              ok = false;
+              result = `Couldn't click ${el ? `"${el.text.slice(0, 50)}"` : d.id}: ${out.reason}`;
+              if (el?.fp && out.covered) recordElement(ownerId, obs!.url, el.fp, false, { error: `covered by ${out.covered}` });
+              break;
+            }
+            clicked = { id: Number(d.id), check: out.check, el, method: out.method };
+            result = `Clicked ${el ? `"${el.text.slice(0, 50)}"` : d.id}${out.method !== "pointer" ? ` (${out.method})` : ""}${upgradedFrom ? ` — your coordinates ${upgradedFrom} were on this element, so I clicked it as a checked element instead` : ""}`;
+            break;
+          }
+          case "hover": {
+            const el = obs?.elements.find((e) => e.id === Number(d.id));
+            const out = await pointAndClick(p, s, { id: Number(d.id), fp: el?.fp ?? null }, { signal, hoverOnly: true });
+            ok = out.ok;
+            result = out.ok ? `Pointing at ${el ? `"${el.text.slice(0, 50)}"` : d.id}` : `Couldn't point at ${d.id}: ${out.reason}`;
             break;
           }
           case "type": {
             const text = String(d.text ?? "");
             const hasId = d.id !== undefined && d.id !== null && String(d.id) !== "";
-            const sel = `[data-agent-id="${Number(d.id)}"]`;
-            if (hasId && (await p.locator(sel).count()) === 0) {
-              ok = false;
-              result = `Element ${d.id} isn't on the page anymore.`;
-              break;
-            }
+            const target = hasId ? obs?.elements.find((e) => e.id === Number(d.id)) : undefined;
             let how = "";
             if (hasId) {
-              const at = await pointAt(s, sel);
-              if (at) s.emit({ type: "cursor", x: at.x, y: at.y, kind: "click", box: null, width: at.vp.width, height: at.vp.height });
-              const el = p.locator(sel).first();
-              if (at) await p.mouse.click(at.x, at.y);
-              else throw new Error("The field is not visible. Observe the page again before typing.");
+              const out = await pointAndClick(p, s, { id: Number(d.id), fp: target?.fp ?? null }, { signal, dismiss: closeBlockingOverlay });
+              if (!out.ok) {
+                ok = false;
+                result = `Couldn't reach the field ${target ? `"${target.text.slice(0, 50)}"` : d.id}: ${out.reason}`;
+                break;
+              }
+              const el = p.locator(`[data-agent-id="${Number(d.id)}"]`).first();
               // Plain form fields: fill() is instant and replaces what's there. Anything else
               // (Desmos/MathQuill, code editors, canvas apps) only listens to real keystrokes.
               const isField = await el
@@ -915,6 +1082,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
             // away (and removes the field) doesn't wait 30s for it.
             signal.throwIfAborted();
             if (d.submit !== false) await p.keyboard.press("Enter");
+            if (d.submit !== false && target?.fp && target.type !== "password") typedQuery = { text, fp: target.fp };
             result = how === "keys" ? `Typed "${text}" as keystrokes (check the screenshot that it landed right)` : `Typed "${text}"`;
             break;
           }
@@ -922,10 +1090,18 @@ export async function runAgent(opts: RunOptions): Promise<void> {
             await p.keyboard.press(String(d.key));
             result = `Pressed ${d.key}`;
             break;
-          case "scroll":
-            await p.mouse.wheel(0, d.direction === "up" ? -650 : 650);
-            result = `Scrolled ${d.direction === "up" ? "up" : "down"}`;
+          case "scroll": {
+            // Wheel over the middle of the page (not over a sidebar or menu the pointer was left on).
+            const vp = obs?.viewport || s.viewport();
+            const cx = Math.round(vp.width / 2);
+            const cy = Math.round(vp.height / 2);
+            s.emit({ type: "cursor", x: cx, y: cy, kind: "move", box: null, width: vp.width, height: vp.height });
+            await p.mouse.move(cx, cy);
+            await p.mouse.wheel(0, Math.round(vp.height * 0.8) * (d.direction === "up" ? -1 : 1));
+            scrolled = d.direction === "up" ? "up" : "down";
+            result = `Scrolled ${scrolled}`;
             break;
+          }
           case "back":
             await p.goBack({ timeout: 15_000 }).catch(() => {});
             result = "Went back";
@@ -1100,13 +1276,15 @@ export async function runAgent(opts: RunOptions): Promise<void> {
               break;
             }
             // Click its visible center with the cursor, so you see exactly what was picked.
-            const vp = s.viewport();
+            const vp = obs?.viewport || s.viewport();
             const x = Math.min(vp.width - 2, Math.max(2, m.x + m.w / 2));
             const y = Math.min(vp.height - 2, Math.max(2, m.y + m.h / 2));
             s.emit({ type: "cursor", x, y, kind: "move", box: { x: m.x, y: m.y, w: m.w, h: m.h }, width: vp.width, height: vp.height });
+            await p.mouse.move(x, y);
             s.emit({ type: "cursor", x, y, kind: "click", box: null, width: vp.width, height: vp.height });
             signal.throwIfAborted();
-            await p.mouse.click(x, y);
+            await p.mouse.down();
+            await p.mouse.up();
             result = `Clicked image ${m.n}${m.alt ? ` ("${m.alt}")` : ""}, the best match for "${desc}".${why}`;
             break;
           }
@@ -1114,14 +1292,49 @@ export async function runAgent(opts: RunOptions): Promise<void> {
             ok = false;
             result = `Unknown action "${(d as { action: string }).action}"`;
         }
-        if (!["wait", "screenshot", "switch_tab", "close_tab", "fetch_image", "make_collage", "clear_stash"].includes(d.action) && !(d.action === "examine_images" && (d.click === false || !ok))) await settle(s.active());
+        if (!["wait", "screenshot", "switch_tab", "close_tab", "fetch_image", "make_collage", "clear_stash"].includes(d.action) && !(d.action === "examine_images" && (d.click === false || !ok))) {
+          const active = s.active();
+          let navigated = nav.started || active !== p || active.url() !== urlBefore || ["goto", "search", "image_search", "back", "new_tab"].includes(d.action);
+          await settle(active, navigated);
+          // A link/submit whose response is still in flight: wait for the new page, not the old one.
+          if (nav.started && active.url() === urlBefore && !["goto", "search", "image_search", "back"].includes(d.action)) {
+            await active.waitForURL((u) => u.href !== urlBefore, { timeout: 10_000, waitUntil: "domcontentloaded" }).catch(() => {});
+            if (active.url() !== urlBefore) {
+              navigated = true;
+              await settle(active, true);
+            }
+          }
+          if (clicked) {
+            // Did the page react? A click that changed nothing usually missed or was ignored.
+            effect = navigated || (await hadEffect(active, clicked.id, clicked.check, urlBefore));
+            if (!effect) result += " — but nothing visibly changed on the page (no navigation, no new content, no state change)";
+            if (clicked.el?.fp && obs) recordElement(ownerId, urlBefore, clicked.el.fp, effect, { method: clicked.method, error: effect ? undefined : "no visible effect", goal, ms: Date.now() - actionStart });
+          }
+          if (typedQuery) {
+            if (navigated) {
+              const template = learnSearchUrl(ownerId, urlBefore, active.url(), typedQuery.text);
+              if (template) session.log(`Learned the search URL for ${hostOf(template)}.`);
+            }
+            if (obs) recordElement(ownerId, urlBefore, typedQuery.fp, true, { method: "type" });
+          }
+          if (scrolled) {
+            const pos = await active.evaluate(() => [Math.round(scrollY), innerHeight, document.documentElement.scrollHeight]).catch(() => null);
+            if (pos && obs?.state && pos[0] === obs.state.scrollY) effect = false;
+            if (pos && obs?.state && pos[0] === obs.state.scrollY) result += scrolled === "down" ? " — the page didn't move (already at the end, or only an inner panel scrolls)" : " — the page didn't move (already at the top)";
+            else if (pos) result += ` (now ${Math.min(100, Math.round(((pos[0] + pos[1]) / pos[2]) * 100))}% down the page)`;
+          }
+        }
       } catch (e) {
         if (aborted()) break;
         ok = false;
         result = `Failed: ${friendlyError(e)}`;
+      } finally {
+        nav.stop();
       }
+      strategy.record({ action: d.action, target: targetKey, label: targetLabel, ok, effect, why: ok ? (effect ? undefined : "no visible effect") : result.slice(0, 80), ms: Date.now() - actionStart });
       if (aborted()) break;
       lastOk = ok;
+      lastActionAttempt.current = repeatSensitiveActions.has(d.action) ? { key, state: stateKey } : null;
       actionsTaken++;
       failedInRow = ok ? 0 : failedInRow + 1;
       // The timeline screenshot is saved in the background so the next step starts right away.
@@ -1247,4 +1460,38 @@ async function dismissOverlays(page: Page): Promise<string> {
     })
     .catch(() => 0);
   return clicked ? `Closed ${clicked} overlay button${clicked > 1 ? "s" : ""}` : "Pressed Escape (no obvious overlay buttons found)";
+}
+
+/**
+ * Used when a click target turns out to be covered: close the cover the way a person would
+ * (Escape, then a close / reject / accept button inside a banner or dialog). It never clicks
+ * age gates or "continue" buttons on its own; those are left to the model's judgement.
+ */
+async function closeBlockingOverlay(page: Page): Promise<string> {
+  await page.keyboard.press("Escape").catch(() => {});
+  const label = await page
+    .evaluate(() => {
+      const order = [/^(close|dismiss|×|✕|x|no,? thanks|not now|maybe later)$/i, /^reject( all)?$|^decline$|^only (necessary|essential)/i, /^(accept( all)?( cookies)?|agree|i agree|got it|ok(ay)?|allow( all)?)$/i];
+      const layer = (el: Element) => {
+        for (let a: Element | null = el; a && a !== document.body; a = a.parentElement) {
+          if (a.matches('[role=dialog], [role=alertdialog], [aria-modal=true], dialog, [class*=cookie], [id*=cookie], [class*=consent], [id*=consent], [class*=banner], [class*=modal], [class*=popup]')) return true;
+          if (getComputedStyle(a).position === "fixed" || getComputedStyle(a).position === "sticky") return true;
+        }
+        return false;
+      };
+      const buttons = Array.from(document.querySelectorAll<HTMLElement>("button, [role=button], a, [aria-label]")).filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < innerHeight && layer(el);
+      });
+      for (const re of order) {
+        const hit = buttons.find((el) => re.test((el.getAttribute("aria-label") || el.innerText || "").trim()));
+        if (hit) {
+          hit.click();
+          return (hit.getAttribute("aria-label") || hit.innerText || "").trim().slice(0, 40);
+        }
+      }
+      return "";
+    })
+    .catch(() => "");
+  return label ? `Closed an overlay ("${label}")` : "Pressed Escape";
 }

@@ -1,0 +1,8 @@
+timeout=3600000
+browserless failed: browserType.connectOverCDP: WebSocket error: wss://production-sfo.browserless.io/ 400 Bad Request
+timeout=120000
+browserless ok 156.0.8078.4 Santa Clara California US
+timeout=900000
+browserless failed: browserType.connectOverCDP: WebSocket error: wss://production-sfo.browserless.io/ 400 Bad Request
+timeout=300000
+browserless failed: browserType.connectOverCDP: WebSocket error: wss://production-sfo.browserless.io/ 400 Bad Request

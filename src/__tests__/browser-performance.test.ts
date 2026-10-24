@@ -87,6 +87,21 @@ describe("live stream backpressure", () => {
     await reader.cancel();
   });
 
+  it("keeps executed cursor waypoints in order before the click", async () => {
+    type E = { type: string; id?: number; kind?: string };
+    let emit!: (e: E) => void;
+    const stream = createLiveStream<E>(fn => { emit = fn; return () => {}; }, new AbortController().signal);
+    emit({ type: "cursor", kind: "move", id: 1 });
+    emit({ type: "cursor", kind: "move", id: 2 });
+    emit({ type: "cursor", kind: "click", id: 3 });
+    emit({ type: "frame", id: 4 });
+    const reader = stream.getReader();
+    const received = [];
+    for (let i = 0; i < 4; i++) received.push(JSON.parse(new TextDecoder().decode((await reader.read()).value).slice(6)));
+    expect(received.map(e => e.id)).toEqual([1, 2, 3, 4]);
+    await reader.cancel();
+  });
+
   it("disconnects a stalled viewer with too much reliable history", async () => {
     let emit!: (e: { type: string }) => void;
     const unsubscribe = vi.fn();
@@ -98,15 +113,25 @@ describe("live stream backpressure", () => {
 });
 
 describe("ordered input batching", () => {
-  it("sends a burst in two round trips while preserving every key", async () => {
-    const first = deferred<void>();
-    const send = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue(undefined);
+  it("batches a typing burst into one round trip while preserving every key", async () => {
+    vi.useFakeTimers();
+    const send = vi.fn().mockResolvedValue(undefined);
     const channel = createInputChannel(send, vi.fn());
     for (const key of "abcdefghijklmnopqrst") channel.push({ type: "key", key });
+    expect(send).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(8);
     expect(send).toHaveBeenCalledOnce();
-    first.resolve(); await settle();
-    expect(send).toHaveBeenCalledTimes(2);
     expect(send.mock.calls.flatMap(([events]) => events).map(e => e.key).join("")).toBe("abcdefghijklmnopqrst");
+    channel.dispose();
+  });
+
+  it("keeps pointer actions immediate", async () => {
+    vi.useFakeTimers();
+    const send = vi.fn().mockResolvedValue(undefined);
+    const channel = createInputChannel(send, vi.fn());
+    channel.push({ type: "click", x: 12, y: 24 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledWith([{ type: "click", x: 12, y: 24 }], expect.any(AbortSignal));
     channel.dispose();
   });
 
@@ -123,6 +148,7 @@ describe("ordered input batching", () => {
     const send = vi.fn(() => first.promise);
     const channel = createInputChannel(send, vi.fn());
     channel.push({ type: "key", key: "a" }); channel.push({ type: "key", key: "b" });
+    await new Promise(resolve => setTimeout(resolve, 8));
     channel.dispose(); first.resolve(); await settle();
     expect(send).toHaveBeenCalledOnce();
     expect((send.mock.calls[0] as unknown as [unknown, AbortSignal])[1].aborted).toBe(true);
@@ -132,7 +158,8 @@ describe("ordered input batching", () => {
     const error = vi.fn();
     const send = vi.fn().mockRejectedValue(new Error("response lost"));
     const channel = createInputChannel(send, error);
-    channel.push({ type: "key", key: "a" }); channel.push({ type: "key", key: "b" }); await settle();
+    channel.push({ type: "key", key: "a" }); channel.push({ type: "key", key: "b" });
+    await new Promise(resolve => setTimeout(resolve, 8)); await settle();
     expect(send).toHaveBeenCalledOnce(); expect(error).toHaveBeenCalledOnce();
   });
 

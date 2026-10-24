@@ -6,9 +6,9 @@
 // - Broadcasts live-view frames, cursor moves, steps and logs to subscribers.
 // - The only automatic shutdowns are real resource limits (MAX_LIVE_SESSIONS / low memory);
 //   evicted sessions are saved first and restore when you come back, and the UI is told why.
-import type { BrowserContext, CDPSession, Page } from "playwright";
+import type { BrowserContext, CDPSession, Frame, Page } from "playwright";
 import { randomUUID } from "node:crypto";
-import { SCREEN, browserMode, browserProxy, desktopUserAgent, freeMemoryMB, getBrowser, isHeaded, isLowMemoryHost } from "./browser";
+import { SCREEN, browserMode, browserProxy, desktopUserAgent, freeMemoryMB, getBrowser, isHeaded, isLowMemoryHost, releaseManagedBrowserSession, selectBrowserbaseLivePage } from "./browser";
 import { isAdHost, isPrivateUrl } from "./safety";
 import { json, newId, q, q1, toBuffer } from "@/lib/server/db";
 import { INPUT_PROTOCOL_VERSION, type BrowserInput } from "@/lib/live-input";
@@ -31,7 +31,13 @@ export type BusEvent =
   | { type: "log"; text: string; level: "info" | "warn" | "error"; at: number }
   | { type: "plan"; steps: string[] }
   | { type: "step"; id: number; label: string; status: "running" | "done" | "error"; detail?: string; url?: string; at: number; shotId?: string }
-  | { type: "shot"; id: string; label: string; at: number };
+  | { type: "shot"; id: string; label: string; at: number }
+  /** Sound from the active tab: Opus/WebM chunks of the playing media element (seq 0 starts a stream). */
+  | { type: "audio"; id: string; seq?: number; data?: string; end?: boolean }
+  /** The CSS cursor the page shows under your mouse (hand over links, I-beam over text). */
+  | { type: "pointer"; cursor: string };
+
+type AudioMessage = { id: string; seq?: number; data?: string; end?: boolean };
 
 export interface LiveInfo {
   inputProtocol: number;
@@ -49,14 +55,29 @@ interface SavedTab {
   videoTime?: number;
 }
 
-const MAX_LIVE = Math.max(1, Number(process.env.MAX_LIVE_SESSIONS || (isLowMemoryHost() ? 1 : 3)));
+interface SavedSession {
+  storage?: unknown;
+  tabs?: SavedTab[];
+  activeIndex?: number;
+  browserbaseSessionId?: string;
+}
+
+// Managed browser plans often cap concurrent sessions. Keep one live chat session
+// by default when any cloud provider is configured; paid users can raise the limit.
+const HAS_MANAGED_BROWSER = !!(process.env.BROWSERBASE_API_KEY || process.env.BROWSERLESS_TOKEN || process.env.STEEL_API_KEY);
+const MAX_LIVE = Math.max(1, Number(process.env.MAX_LIVE_SESSIONS || (HAS_MANAGED_BROWSER || isLowMemoryHost() ? 1 : 3)));
 const LOW_MEMORY_MB = Number(process.env.LOW_MEMORY_MB || (isLowMemoryHost() ? 80 : 250));
 // A ceiling, not a timer that delays every captured frame. Viewers advertise their
 // display rate; Chrome remains change-driven. Small hosts retain a conservative cap.
-const FPS = Math.min(240, Math.max(1, Number(process.env.LIVE_FPS) || (isLowMemoryHost() ? 30 : 120)));
-const QUALITY = Math.min(95, Math.max(20, Number(process.env.LIVE_QUALITY || (isLowMemoryHost() ? 50 : 60))));
+// The small-host limits only matter when Chromium encodes frames on THIS machine. A cloud
+// browser (Browserbase/Steel/Browserless) encodes them itself; this server just relays them.
+const LOCAL_CHANNELS = new Set(["custom", "chrome", "msedge", "chromium", "chromium-headless-shell"]);
+const encodesHere = () => { const c = browserMode()?.channel; return !c || LOCAL_CHANNELS.has(c); };
+const smallHost = () => isLowMemoryHost() && encodesHere();
+const FPS_CAP = () => Math.min(240, Math.max(1, Number(process.env.LIVE_FPS) || (smallHost() ? 30 : 120)));
+const QUALITY = () => Math.min(95, Math.max(20, Number(process.env.LIVE_QUALITY || (smallHost() ? 50 : 60))));
 // Live view size relative to the real screen. Smaller frames encode much faster on weak CPUs.
-const SCALE = Math.min(1, Math.max(0.3, Number(process.env.LIVE_SCALE || (isLowMemoryHost() ? 0.75 : 1))));
+const SCALE = () => Math.min(1, Math.max(0.3, Number(process.env.LIVE_SCALE || (smallHost() ? 0.75 : 1))));
 
 export function liveInfo(): LiveInfo {
   const m = browserMode();
@@ -80,6 +101,94 @@ const INIT_SCRIPT = () => {
     },
     true
   );
+};
+
+// Runs in every frame: records the sound of the playing, audible media element as
+// Opus/WebM and hands it to the server (__senkoAudio), which forwards the active tab's
+// sound to viewers. A headless browser has no speakers, so this is how video sound
+// reaches you. Cross-origin media without CORS can't be captured (browser rule).
+const AUDIO_SCRIPT = () => {
+  type Rec = { el: HTMLMediaElement; rec: MediaRecorder; id: string };
+  const w = window as unknown as { __senkoAudioHooked?: boolean; __senkoAudio?: (m: unknown) => void; __senkoAudioRestart?: () => void };
+  if (w.__senkoAudioHooked || typeof MediaRecorder === "undefined") return;
+  w.__senkoAudioHooked = true;
+  const MIME = "audio/webm;codecs=opus";
+  let current: Rec | null = null;
+  const send = (m: unknown) => { try { void w.__senkoAudio?.(m); } catch { /* binding not ready */ } };
+  const stop = () => {
+    const c = current;
+    if (!c) return;
+    current = null;
+    try { if (c.rec.state !== "inactive") c.rec.stop(); } catch { /* already stopped */ }
+    send({ id: c.id, end: true });
+  };
+  const audible = (el: HTMLMediaElement) => !el.paused && !el.muted && el.volume > 0;
+  const start = (el: HTMLMediaElement) => {
+    if (current?.el === el || !audible(el) || !MediaRecorder.isTypeSupported(MIME)) return;
+    let stream: MediaStream;
+    try {
+      stream = (el as HTMLMediaElement & { captureStream(): MediaStream }).captureStream();
+    } catch {
+      return; // cross-origin media
+    }
+    const begin = () => {
+      const tracks = stream.getAudioTracks();
+      if (!tracks.length || current?.el === el) return !!tracks.length;
+      stop();
+      const rec = new MediaRecorder(new MediaStream(tracks), { mimeType: MIME, audioBitsPerSecond: 128_000 });
+      const id = Math.random().toString(36).slice(2, 10);
+      let n = 0;
+      rec.ondataavailable = async (e) => {
+        if (!e.data.size) return;
+        const seq = n++;
+        const bytes = new Uint8Array(await e.data.arrayBuffer());
+        let bin = "";
+        for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+        send({ id, seq, data: btoa(bin) });
+      };
+      rec.start(100);
+      current = { el, rec, id };
+      return true;
+    };
+    if (!begin()) stream.addEventListener("addtrack", () => void begin(), { once: true });
+  };
+  w.__senkoAudioRestart = () => {
+    const el = current?.el;
+    if (el) { stop(); start(el); }
+  };
+  const media = (e: Event) => (e.target instanceof HTMLMediaElement ? e.target : null);
+  document.addEventListener("playing", (e) => { const el = media(e); if (el) start(el); }, true);
+  document.addEventListener("volumechange", (e) => {
+    const el = media(e);
+    if (!el) return;
+    if (audible(el)) start(el);
+    else if (current?.el === el) stop();
+  }, true);
+  for (const type of ["pause", "ended", "emptied"]) {
+    document.addEventListener(type, (e) => { if (current && media(e) === current.el) stop(); }, true);
+  }
+};
+
+// Runs in every frame: reports the page's cursor under the mouse, so the live view can
+// show the same pointer a local browser would.
+const POINTER_SCRIPT = () => {
+  const w = window as unknown as { __senkoPointerHooked?: boolean; __senkoCursor?: (c: string) => void };
+  if (w.__senkoPointerHooked) return;
+  w.__senkoPointerHooked = true;
+  let last = "";
+  document.addEventListener("mousemove", (e) => {
+    const el = e.target instanceof Element ? e.target : null;
+    if (!el) return;
+    let c = getComputedStyle(el).cursor.split(",").pop()!.trim();
+    if (c === "auto") {
+      const editable = el.closest("input:not([type=button]):not([type=submit]):not([type=checkbox]):not([type=radio]):not([type=range]),textarea,[contenteditable=''],[contenteditable=true]");
+      c = editable ? "text" : "default";
+    }
+    if (c !== last) {
+      last = c;
+      try { void w.__senkoCursor?.(c); } catch { /* binding not ready */ }
+    }
+  }, { capture: true, passive: true });
 };
 
 export class BrowserSession {
@@ -111,6 +220,7 @@ export class BrowserSession {
   private inputTask: Promise<void> = Promise.resolve();
   private queuedInputs = 0;
   private controlGeneration = 0;
+  private browserbaseSessionId?: string;
   get controlVersion() { return this.controlGeneration; }
   private heldButtons = new Map<"left" | "right" | "middle", Page>();
   /** Steps/plan of the current or last agent run, replayed to new subscribers. */
@@ -123,12 +233,25 @@ export class BrowserSession {
 
   // ---- lifecycle -------------------------------------------------------------
 
-  async start(saved: { storage?: unknown; tabs?: SavedTab[]; activeIndex?: number } | null) {
+  async start(saved: SavedSession | null) {
     this.status = saved ? "restoring" : "active";
     this.emitStatus();
-    const browser = await getBrowser();
+    const browser = await getBrowser(saved?.browserbaseSessionId);
+    this.browserbaseSessionId = browserMode()?.channel === "Browserbase" ? browserMode()?.sessionId : undefined;
+    browser.on("disconnected", () => {
+      if (this.status === "closed" || this.status === "suspended") return;
+      this.status = "suspended";
+      this.emitStatus();
+      void this.persist().catch(() => {});
+    });
+    const reconnecting = !!saved?.browserbaseSessionId && browserMode()?.sessionId === saved.browserbaseSessionId;
+    const existingContexts = reconnecting ? browser.contexts() : [];
+    const matchingSavedUrls = new Set((saved?.tabs || []).map((tab) => tab.url));
+    const existingContext = reconnecting
+      ? existingContexts.find((context) => context.pages().some((page) => matchingSavedUrls.has(page.url()))) || existingContexts.find((context) => context.pages().length > 0)
+      : undefined;
     const headed = isHeaded();
-    this.context = await browser.newContext({
+    this.context = existingContext || await browser.newContext({
       viewport: headed ? null : SCREEN,
       userAgent: desktopUserAgent(browser),
       locale: "en-US",
@@ -137,10 +260,36 @@ export class BrowserSession {
       proxy: browserProxy(),
       storageState: saved?.storage ? (saved.storage as never) : undefined,
     });
+    const remoteSessionId = this.browserbaseSessionId;
+    if (remoteSessionId) {
+      await q(
+        `INSERT INTO browser_sessions (chat_id, owner_id, status, storage, tabs, updated_at)
+         VALUES ($1, $2, 'restoring', $3, $4, now())
+         ON CONFLICT (chat_id) DO UPDATE SET status = 'restoring', tabs = EXCLUDED.tabs, updated_at = now()`,
+        [this.chatId, this.ownerId, saved?.storage ? JSON.stringify(saved.storage) : null, JSON.stringify({ tabs: saved?.tabs || [], activeIndex: saved?.activeIndex || 0, browserbaseSessionId: remoteSessionId })]
+      );
+    }
+    if (reconnecting) {
+      // Reattach to the existing cloud Chrome after a Wasmer worker restart.
+      // Keep its live tabs instead of replaying stale URLs into a second context.
+      this.pages = this.context.pages();
+      for (const page of this.pages) this.adopt(page);
+    }
     // Playwright waits 30s by default; a stuck click/press should fail fast so the agent moves on.
     // Page loads pass their own longer timeouts.
     this.context.setDefaultTimeout(10_000);
+    if (reconnecting) await this.context.unrouteAll({ behavior: "wait" }).catch(() => {});
     await this.context.addInitScript(INIT_SCRIPT);
+    await this.context
+      .exposeBinding("__senkoAudio", (source, m: AudioMessage) => this.onAudio(source.page, source.frame, m))
+      .catch(() => { /* already exposed on a reattached context */ });
+    await this.context.addInitScript(AUDIO_SCRIPT);
+    await this.context
+      .exposeBinding("__senkoCursor", (source, cursor: string) => {
+        if (source.page === this.pages[this.activeIndex] && typeof cursor === "string" && cursor.length < 40) this.emit({ type: "pointer", cursor });
+      })
+      .catch(() => {});
+    await this.context.addInitScript(POINTER_SCRIPT);
     await this.context.route("**/*", (route) => {
       const url = route.request().url();
       let host = "";
@@ -159,7 +308,10 @@ export class BrowserSession {
     this.context.on("page", (p) => void this.onNewPage(p));
 
     const tabs = saved?.tabs?.filter((t) => t.url && t.url !== "about:blank") || [];
-    if (tabs.length) {
+    if (reconnecting && this.pages.length) {
+      this.activeIndex = Math.min(saved?.activeIndex ?? 0, this.pages.length - 1);
+      await this.pages[this.activeIndex]?.bringToFront().catch(() => {});
+    } else if (tabs.length) {
       this.log(`Restoring ${tabs.length} tab${tabs.length > 1 ? "s" : ""} from the saved session…`);
       for (const t of tabs) {
         const p = await this.newTabInternal();
@@ -181,6 +333,7 @@ export class BrowserSession {
       await this.newTabInternal();
     }
     this.status = "active";
+    await selectBrowserbaseLivePage(this.active().url());
     await this.persist();
     this.saveTimer = setInterval(() => void this.persist().catch(() => {}), 60_000);
     this.emitStatus();
@@ -198,6 +351,7 @@ export class BrowserSession {
 
   private adopt(p: Page) {
     this.pages.push(p);
+    if (this.viewportOverride) void p.setViewportSize(this.viewportOverride).catch(() => {});
     p.on("close", () => {
       const i = this.pages.indexOf(p);
       if (i === -1) return;
@@ -251,6 +405,7 @@ export class BrowserSession {
     await this.stopCast();
     await this.context?.close().catch(() => {});
     if (reason === "closed") {
+      await releaseManagedBrowserSession(this.browserbaseSessionId);
       await q("UPDATE browser_sessions SET status = 'closed', storage = NULL, tabs = '[]', updated_at = now() WHERE chat_id = $1", [this.chatId]);
     } else {
       await q("UPDATE browser_sessions SET status = 'suspended', updated_at = now() WHERE chat_id = $1", [this.chatId]);
@@ -284,6 +439,7 @@ export class BrowserSession {
     const p = await this.newTabInternal();
     if (url) await p.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
     await p.bringToFront().catch(() => {});
+    await selectBrowserbaseLivePage(p.url());
     await this.startCast();
     this.emitStatus();
     return p;
@@ -293,6 +449,7 @@ export class BrowserSession {
     if (index < 0 || index >= this.pages.length) throw new Error(`There is no tab ${index + 1} (${this.pages.length} open).`);
     this.activeIndex = index;
     await this.active().bringToFront().catch(() => {});
+    await selectBrowserbaseLivePage(this.active().url());
     await this.startCast();
     this.emitStatus();
   }
@@ -331,15 +488,15 @@ export class BrowserSession {
       `INSERT INTO browser_sessions (chat_id, owner_id, status, storage, tabs, updated_at)
        VALUES ($1, $2, $3, $4, $5, now())
        ON CONFLICT (chat_id) DO UPDATE SET status = EXCLUDED.status, storage = EXCLUDED.storage, tabs = EXCLUDED.tabs, updated_at = now()`,
-      [this.chatId, this.ownerId, this.status === "restoring" ? "active" : this.status, storage ? JSON.stringify(storage) : null, JSON.stringify({ tabs, activeIndex: this.activeIndex })]
+      [this.chatId, this.ownerId, this.status === "restoring" ? "active" : this.status, storage ? JSON.stringify(storage) : null, JSON.stringify({ tabs, activeIndex: this.activeIndex, browserbaseSessionId: this.browserbaseSessionId })]
     );
   }
 
   // ---- events / live view ----------------------------------------------------------
 
-  subscribe(fn: (e: BusEvent) => void, refreshRate = FPS): () => void {
+  subscribe(fn: (e: BusEvent) => void, refreshRate = FPS_CAP()): () => void {
     this.subs.add(fn);
-    this.viewerRates.set(fn, Math.min(FPS, Math.max(1, Number.isFinite(refreshRate) ? refreshRate : FPS)));
+    this.viewerRates.set(fn, Math.min(FPS_CAP(), Math.max(1, Number.isFinite(refreshRate) ? refreshRate : FPS_CAP())));
     void this.tabs().then((tabs) => { if (this.subs.has(fn)) fn({ type: "status", status: this.status, tabs, takeover: this.takeover, live: liveInfo(), running: this.running, control: this.controlVersion, epoch: this.viewEpoch, sessionId: this.sessionId }); });
     for (const l of this.logs.slice(-20)) fn(l);
     for (const e of this.replay) fn(e);
@@ -347,6 +504,8 @@ export class BrowserSession {
     // Show the agent's cursor where it was last, so it never "disappears" on reconnect.
     if (this.lastCursor) fn(this.lastCursor);
     if (this.status === "active") void this.startCast();
+    // A new viewer needs the stream header, so playing media restarts its recording.
+    if (this.audio) this.restartAudio();
     return () => {
       this.subs.delete(fn);
       this.viewerRates.delete(fn);
@@ -388,6 +547,40 @@ export class BrowserSession {
     );
   }
 
+  // ---- sound ------------------------------------------------------------------------------
+
+  private audio: { id: string; frame: Frame } | null = null;
+
+  private onAudio(page: Page, frame: Frame, m: AudioMessage) {
+    if (!m || typeof m.id !== "string") return;
+    if (m.end) {
+      if (this.audio?.id === m.id) {
+        this.audio = null;
+        this.emit({ type: "audio", id: m.id, end: true });
+      }
+      return;
+    }
+    if (page !== this.pages[this.activeIndex] || typeof m.data !== "string" || !this.subs.size) return;
+    if (m.seq === 0) this.audio = { id: m.id, frame };
+    if (this.audio?.id !== m.id) return;
+    this.emit({ type: "audio", id: m.id, seq: m.seq, data: m.data });
+  }
+
+  /** Start the sound stream over (a fresh header), e.g. for a viewer that just joined or a tab switch. */
+  private restartAudio(page = this.pages[this.activeIndex]) {
+    if (!page) return;
+    if (this.audio) {
+      this.emit({ type: "audio", id: this.audio.id, end: true });
+      this.audio = null;
+    }
+    // Sound is optional: it must never interrupt the picture or input.
+    try {
+      for (const frame of page.frames()) {
+        void frame.evaluate(() => (window as unknown as { __senkoAudioRestart?: () => void }).__senkoAudioRestart?.()).catch(() => {});
+      }
+    } catch { /* page closing */ }
+  }
+
   /** Coordinates queued for the previous document must never reach the next one. */
   private resetView() {
     this.controlGeneration++;
@@ -398,6 +591,18 @@ export class BrowserSession {
     this.emit({ type: "reset", epoch: ++this.viewEpoch });
   }
 
+  private viewportOverride: { width: number; height: number } | null = null;
+
+  /** Size the real page to the viewer's panel, so sites lay out for the space you see. */
+  async setViewport(width: number, height: number) {
+    if (isHeaded()) return; // a headed browser is sized by its window
+    const size = { width: Math.round(Math.min(2560, Math.max(320, width))), height: Math.round(Math.min(1600, Math.max(240, height))) };
+    const cur = this.viewportOverride;
+    if (cur && cur.width === size.width && cur.height === size.height) return;
+    this.viewportOverride = size;
+    await Promise.all(this.pages.map((p) => p.setViewportSize(size).catch(() => {})));
+  }
+
   /** Viewport size of the active page in CSS pixels. */
   viewport() {
     return this.pages[this.activeIndex]?.viewportSize() || SCREEN;
@@ -406,6 +611,8 @@ export class BrowserSession {
   async startCast() {
     const p = this.pages[this.activeIndex];
     if (!p || !this.subs.size) return;
+    // Always stream the active tab ourselves, including on managed browsers: an embedded
+    // provider debugger page shows its own chrome and tab picker, not this tab or the cursor.
     if (this.castPage === p && this.cdp) return;
     const generation = ++this.castGeneration;
     const task = this.castTask.catch(() => {}).then(async () => {
@@ -431,6 +638,8 @@ export class BrowserSession {
       if (generation !== this.castGeneration || !this.subs.size) { await this.detachCast(); return; }
       const epoch = ++this.viewEpoch;
       this.emit({ type: "reset", epoch });
+      // The sound follows the tab you're looking at.
+      this.restartAudio(p);
       const cast = cdp;
       const publisher = createFramePublisher<Extract<BusEvent, { type: "frame" }>>(frame => {
         if (this.cdp !== cast || frame.epoch !== this.viewEpoch) return;
@@ -446,9 +655,10 @@ export class BrowserSession {
       });
       await cdp.send("Page.startScreencast", {
         format: "jpeg",
-        quality: QUALITY,
-        maxWidth: Math.round(SCREEN.width * SCALE),
-        maxHeight: Math.round(SCREEN.height * SCALE),
+        quality: QUALITY(),
+        // A ceiling, not a fixed size: frames match the page, which follows the panel.
+        maxWidth: Math.round(Math.max(SCREEN.width, 2560) * SCALE()),
+        maxHeight: Math.round(Math.max(SCREEN.height, 1600) * SCALE()),
         everyNthFrame: 1,
       });
     } catch {
@@ -659,7 +869,7 @@ class SessionManager {
     if (this.starting.has(chatId)) return { status: "restoring", tabs: [] };
     const row = await q1<{ status: string; tabs: unknown }>("SELECT status, tabs FROM browser_sessions WHERE chat_id = $1", [chatId]);
     if (!row || row.status === "closed") return { status: "closed", tabs: [] };
-    const saved = json<{ tabs?: SavedTab[] }>(row.tabs, {});
+    const saved = json<SavedSession>(row.tabs, {});
     // Saved but not in memory (server restarted, or evicted for memory): it restores on next use.
     return {
       status: "suspended",
@@ -685,7 +895,7 @@ class SessionManager {
         : await q1<{ status: string; storage: unknown; tabs: unknown }>("SELECT status, storage, tabs FROM browser_sessions WHERE chat_id = $1 AND owner_id = $2", [chatId, ownerId]);
       const saved =
         row && row.status !== "closed"
-          ? { storage: json(row.storage, null), ...json<{ tabs?: SavedTab[]; activeIndex?: number }>(row.tabs, {}) }
+          ? { storage: json(row.storage, null), ...json<SavedSession>(row.tabs, {}) }
           : null;
       const s = new BrowserSession(chatId, ownerId);
       this.live.set(chatId, s);

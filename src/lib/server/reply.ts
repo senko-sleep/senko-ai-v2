@@ -43,7 +43,7 @@ async function scrapeForChat(query: string): Promise<ScrapedImage[]> {
 
 export async function reply(o: ReplyOptions): Promise<StoredMessage> {
   const userMessageId = await addMessage(o.chatId, "user", o.content, o.imageIds || []);
-  await maybeTitle(o.chatId, o.content || "Image");
+  await maybeTitle(o.chatId, o.content || "Image", o.provider);
   const assistantMessageId = newId("m_");
 
   let text = "";

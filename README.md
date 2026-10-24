@@ -27,23 +27,26 @@ npm run dev:next                  # http://localhost:3000
 | --- | --- | --- | --- |
 | Ollama, `qwen3:4b-instruct` | Free | None | Runs on your PC. Fine for chat; slow on CPU-only machines and weaker at Agent mode. Bigger models (e.g. `qwen3:8b`) need more RAM. |
 | Groq (`GROQ_API_KEY`) | Free tier | Tokens per minute and per day | Fast and strong. Best choice for Agent mode on a hosted site. The app waits and retries automatically when it hits a short rate limit. |
+| SambaNova (`SAMBANOVA_API_KEY`) | Provider plan | Automatically discovers available models; optionally pin one with `SAMBANOVA_MODEL`. |
+| Cloudflare Workers AI (`CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN`) | Workers AI plan | Uses Cloudflare's OpenAI-compatible endpoint; select a model with `CLOUDFLARE_MODEL`. |
 | OpenRouter / DeepSeek / any OpenAI-compatible API | Pay as you go | Your budget | Set the matching key in `.env.local`. |
 
 With `LLM_PROVIDER=auto` (default) the app tries Ollama first, then each cloud key you've set. It looks up each provider's current model list, so retired model names don't break chat.
 
 ## Host it online (works from any device)
 
-The repo contains a `Dockerfile` (Next.js + Playwright Chromium in one container), a `render.yaml`, and a `railway.json`.
+The app can run on Wasmer Edge with Browserbase providing the cloud Chromium used by Agent mode. The `Dockerfile` remains available for other Node hosts and local container use.
 
 1. Push this repo to GitHub.
-2. Pick a host:
-   - **Railway** (recommended, about $5/month, enough RAM for the browser): New Project → Deploy from GitHub repo. It detects the Dockerfile automatically.
-   - **Render**: New → Blueprint → choose the repo. The free plan (512 MB, sleeps after 15 minutes idle) is enough for chat; Agent mode's browser may run out of memory there, in which case switch the service to a paid plan with 2 GB.
-3. Set these environment variables on the host:
+2. Deploy the app to Wasmer Edge using `app.yaml`.
+3. Set these secrets on the Wasmer app:
    - `APP_PASSWORD`: **always set this.** The site then asks for it (any username), so strangers can't use your keys or your agent.
    - `GROQ_API_KEY`: free at https://console.groq.com/keys. A hosted server can't run Ollama, so it needs a cloud key.
+   - `BROWSERBASE_API_KEY`: runs Agent mode in Browserbase's cloud Chrome. The API key identifies the project; no project ID is needed.
+   - Optional browser failovers: `BROWSERLESS_TOKEN` then `STEEL_API_KEY`. Agent mode tries those in order if Browserbase cannot start a browser.
    - Optional: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, or `OLLAMA_URL` pointing to an Ollama server that is reachable from the internet.
-4. Open the URL the host gives you on any device.
+   - Optional: `LLM7_API_KEY` adds LLM7 to the AI provider options, using its `default` model unless `LLM7_MODEL` is set.
+4. For SambaNova, also set `SAMBANOVA_API_KEY`. For Cloudflare Workers AI, set both `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` with Workers AI access. Open the URL the host gives you on any device.
 
 ## How it works
 

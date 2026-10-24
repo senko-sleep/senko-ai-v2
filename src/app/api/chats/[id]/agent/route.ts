@@ -65,7 +65,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   let userMessageId: string | undefined;
   if (!body.resume) {
     userMessageId = await addMessage(chatId, "user", goal, (body.imageIds || []).slice(0, 10));
-    await maybeTitle(chatId, goal);
+    await maybeTitle(chatId, goal, body.provider);
   }
   const trail: { label: string; url?: string }[] = [];
   const meta: MessageMeta = { agent: { goal, status: "running", trail } };

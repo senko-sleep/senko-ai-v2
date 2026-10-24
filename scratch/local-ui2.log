@@ -1,0 +1,20 @@
+[1.6s] PASS provider selection available 6 usable; picked gemini
+[24.3s] PASS agent task finished 
+[24.3s] PASS no embedded third-party browser frame 
+[24.3s] PASS live frames arrived 1077 frames
+[24.3s] PASS AI pointer visible with bot name during task Senko · Gemini
+[28.4s] PASS live view frame rate on animated page 54.3 fps
+[28.4s] PASS real page sized to the panel (fills it, no letterbox) frame 895x960, panel 895x960
+[28.4s] PASS AI pointer stays visible after the task 1
+[28.4s] PASS you have control after the task View only button shown = controlling
+[29.0s] PASS address bar navigation 
+[32.8s] PASS typing + Enter in a real site's search box https://duckduckgo.com/?ia=web&origin=funnel_home_website&t=h_&we_feature_name=search-from-homepage&we_started_at=10-41-57_003&q=red+fox+facts
+[36.9s] PASS scrolling moves the real page 
+[37.9s] PASS page cursor mirrored while hovering 4 cursor changes
+[57.0s] FAIL take control during a task pauses the agent 
+[66.2s] PASS H.264 MP4 video plays in the live browser fps 7.7
+[67.5s] PASS page audio streamed to the panel 50 audio chunks
+[67.5s] PASS panel actually plays the page's sound playing at 0.45s
+[70.5s] PASS sound control appears (and stays) 
+[75.4s] PASS switching control modes repeatedly without errors 
+[75.4s] {"passed":false,"failures":["take control during a task pauses the agent"]}

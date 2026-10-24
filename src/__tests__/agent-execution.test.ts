@@ -9,18 +9,31 @@ vi.mock("@/lib/server/chats", () => ({ saveImage: vi.fn() }));
 vi.mock("@/lib/server/db", () => ({ q: vi.fn(), q1: vi.fn(), newId: () => "test" }));
 import { runAgent, type RunEvent } from "@/lib/agent/runner";
 
-function fixture() {
+function fixture(clickable = false) {
   let url = "https://fixture.test/start";
+  const target = { count: vi.fn(async () => clickable ? 1 : 0), first: () => ({
+    scrollIntoViewIfNeeded: vi.fn(async () => {}),
+    boundingBox: vi.fn(async () => ({ x: 100, y: 80, width: 40, height: 30 })),
+  }) };
   const page = { url: () => url, title: async () => "Task fixture", waitForLoadState: async () => {}, waitForTimeout: async () => {},
     goto: vi.fn(async (next: string) => { url = next; return { status: () => 200 }; }),
-    evaluate: vi.fn(async (fn: () => unknown) => {
-      const source = String(fn);
-      if (source.includes("data-agent-id")) return { elements: [], images: [], text: url.endsWith("result") ? "Code: KIWI-4217" : "Start page", atBottom: false };
-      if (source.includes("innerText.length")) return 600;
+    locator: vi.fn(() => target),
+    mouse: { move: vi.fn(async () => {}), down: vi.fn(async () => {}), up: vi.fn(async () => {}), click: vi.fn(async () => {}), wheel: vi.fn(async () => {}) },
+    on: vi.fn(), off: vi.fn(), mainFrame: () => ({}), waitForURL: async () => {},
+    evaluate: vi.fn(async (fn: () => unknown, arg?: { cmd?: string }) => {
+      const fp = { tag: "button", text: "Continue", href: "", role: "", ctx: "", nth: 0 };
+      switch (arg?.cmd) {
+        case "observe": return { elements: clickable ? [{ id: 1, tag: "button", type: "button", text: "Continue", href: "", fp }] : [], images: [], text: url.endsWith("result") ? "Code: KIWI-4217" : "Start page", atBottom: false };
+        case "resolve": return clickable ? { status: "ok", x: 120, y: 95, box: { x: 100, y: 80, w: 40, h: 30 }, vw: 1280, vh: 800, how: "id", scrolled: false } : { status: "missing" };
+        case "verify": return { ok: true, mark: 0, url, scrollY: 0, focus: "", value: "" };
+        case "settle": return { quiet: true, ms: 0 };
+        case "effect": return false;
+      }
+      if (String(fn).includes("innerText.length")) return 600;
       return null;
     }),
   };
-  const session = { pages: [page], active: () => page, isActive: () => true, beginAgent: vi.fn(), endAgent: vi.fn(), startCast: async () => {}, emitStatus: vi.fn(), emit: vi.fn(),
+  const session = { pages: [page], active: () => page, isActive: () => true, viewport: () => ({ width: 1280, height: 800 }), beginAgent: vi.fn(), endAgent: vi.fn(), startCast: async () => {}, emitStatus: vi.fn(), emit: vi.fn(),
     tabs: async () => [{ index: 0, title: "Fixture", url, active: true }], screenshot: async () => Buffer.from("test"), recordShot: async () => "shot", persist: async () => {}, schedulePersist: vi.fn(), log: vi.fn(), replay: [] };
   mocks.open.mockResolvedValue(session);
   return { session, page };
@@ -55,6 +68,17 @@ describe("agent execution verification", () => {
     expect(events).toContainEqual(expect.objectContaining({ type: "paused", kind: "stuck" }));
     expect(mocks.clear).not.toHaveBeenCalled();
     expect(mocks.save.mock.calls.at(-1)?.[1].requirements.every((r: { status: string }) => r.status === "pending")).toBe(true);
+  });
+
+  it("does not send the same click twice when the observed page has not changed", async () => {
+    const { page } = fixture(true);
+    const replies = [plan, { action: "click", id: 1 }, { action: "click", id: 1 }, { action: "done", answer: "The page is ready." }, review(true)];
+    mocks.complete.mockImplementation(async () => reply(replies.shift()));
+    const events: RunEvent[] = [];
+    await runAgent({ chatId: "dedupe-click", ownerId: "owner", goal, signal: new AbortController().signal, emit: e => events.push(e) });
+    expect(page.mouse.down).toHaveBeenCalledOnce();
+    expect(mocks.complete.mock.calls[3][0][1].content).toContain("Skipped duplicate Clicking");
+    expect(events.some(e => e.type === "done")).toBe(true);
   });
 
   it("preserves checkpoint requirements on resume and hands back control after a provider failure", async () => {

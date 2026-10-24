@@ -126,12 +126,41 @@ export async function truncateMessagesFrom(chatId: string, target: TruncateTarge
   }
 }
 
-export async function maybeTitle(chatId: string, firstUserText: string) {
+export async function maybeTitle(chatId: string, firstUserText: string, provider?: string) {
   const chat = await q1<{ title: string }>("SELECT title FROM chats WHERE id = $1", [chatId]);
   if (chat && chat.title === "New chat" && firstUserText.trim()) {
     const t = firstUserText.trim().replace(/\s+/g, " ");
-    await q("UPDATE chats SET title = $2 WHERE id = $1", [chatId, t.length > 48 ? `${t.slice(0, 47)}…` : t]);
+    const quick = t.length > 48 ? `${t.slice(0, 47)}…` : t;
+    await q("UPDATE chats SET title = $2 WHERE id = $1", [chatId, quick]);
+    // A short, specific title from the model, in the background so the reply isn't delayed.
+    // It only replaces the quick title, never one you typed yourself.
+    if (t.length > 24 || /\s/.test(t)) void aiTitle(chatId, t, quick, provider).catch(() => {});
   }
+}
+
+export function cleanTitle(raw: string): string | null {
+  const t = raw
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .split("\n").map((l) => l.trim()).find(Boolean)
+    ?.replace(/^(title|chat title)\s*:\s*/i, "")
+    .replace(/^["'“”‘’*#\s]+|["'“”‘’*.\s]+$/g, "")
+    .trim();
+  // Reject fragments from a cut-off reply ("Sen") and anything that isn't a short title.
+  if (!t || t.length < 5 || t.length > 60 || /new chat/i.test(t) || (!/\s/.test(t) && t.length < 8)) return null;
+  return t;
+}
+
+async function aiTitle(chatId: string, text: string, quick: string, provider?: string) {
+  const { complete } = await import("@/lib/llm");
+  const r = await complete(
+    [
+      { role: "system", content: "You name chat conversations. Reply with ONLY a title of 2-6 words in the user's language that names the SUBJECT they care about (e.g. \"search google images for eevee\" -> Eevee Image Search, \"what's the weather in Paris\" -> Paris Weather). Never just a website or tool name. Title Case, no quotes, no trailing period, no emoji." },
+      { role: "user", content: `First message:\n${text.slice(0, 600)}` },
+    ],
+    { provider, maxTokens: 120, temperature: 0.2, fast: true, priority: "background", hedge: false, maxWaitMs: 8000, signal: AbortSignal.timeout(20_000) }
+  );
+  const title = cleanTitle(r.text);
+  if (title) await q("UPDATE chats SET title = $2 WHERE id = $1 AND title = $3", [chatId, title, quick]);
 }
 
 // ---- images ----

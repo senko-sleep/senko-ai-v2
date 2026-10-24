@@ -1,11 +1,10 @@
 // Picks the lightest layer that can do the job, and escalates when it can't:
 //   0. web      an HTTP browsing session (cookies, history, links, forms; light.ts + http-session.ts).
 //               No browser, any host, ~seconds. Handles search, reading, following links, forms, simple log-ins.
-//   1. remote   a hosted Chromium over CDP (BROWSER_CDP_URL) or the Vercel Sandbox (AGENT_HOST=sandbox).
-//   2. local    Chromium on this machine (Docker/Render/your PC).
+//   1. remote   a hosted Chromium over CDP (Browserbase or BROWSER_CDP_URL).
+//   2. local    Chromium on this machine (Docker or your PC).
 // Layers 1-2 are the same agent (runner.ts); getBrowser() decides which one it gets.
-// On a host with no browser at all (Wasmer) everything runs in layer 0, which says plainly
-// what it couldn't do (playing video, screenshots) and gives direct links instead.
+// Browserbase lets even browserless app hosts (such as Wasmer Edge) run the full browser agent.
 import { getBrowser } from "./browser";
 import { runAgent, type RunOptions } from "./runner";
 import { runLight } from "./light";

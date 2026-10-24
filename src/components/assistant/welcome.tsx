@@ -37,7 +37,7 @@ export function Welcome({
   return (
     <div className="mx-auto flex min-h-full w-full max-w-[580px] flex-col justify-center px-3.5 py-6 sm:px-6 sm:py-10">
       <div className="sk-pop flex flex-col items-center text-center">
-        <FoxMark size={25} className="mb-2.5 drop-shadow-[0_0_18px_rgba(220,20,60,0.45)]" />
+        <FoxMark size={25} className="mb-2.5 drop-shadow-[0_0_18px_rgba(255,122,26,0.5)]" />
         <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-[var(--sk-accent-ink)]/80" suppressHydrationWarning>
           {greeting()}
         </p>

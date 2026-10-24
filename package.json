@@ -10,7 +10,7 @@
     "dev:api": "node search-api/server.js",
     "build": "next build --webpack",
     "start": "next start",
-    "deploy": "npx vercel --prod",
+    "deploy": "wasmer app deploy --dir . --owner senko-sleep --app-name senko-ai --build-remote --non-interactive",
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",

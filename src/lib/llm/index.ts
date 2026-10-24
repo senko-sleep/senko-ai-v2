@@ -1,6 +1,6 @@
 // Server-only LLM layer with automatic fallback.
 //
-// Default order: Senko LLM gateway -> Ollama (if reachable) -> Gemini -> Groq -> OpenRouter (free models) -> your paid key.
+// Default order: Senko LLM gateway -> Ollama (if reachable) -> Gemini -> Groq -> OpenRouter (free models) -> LLM7 -> your paid key.
 // - Every request is fitted to the provider's token budget (long chats are trimmed, and a compact
 //   persona is used for local models), so a long conversation can't lock out a free tier.
 // - Each provider can offer several models; requests with images only go to vision models.
@@ -267,7 +267,7 @@ const num = (key: string, fallback: number) => {
   return Number.isFinite(v) && v > 0 ? v : fallback;
 };
 
-// ---- OpenAI-compatible (Gemini, Groq, OpenRouter, DeepSeek, paid key) ----
+// ---- OpenAI-compatible (Gemini, Groq, OpenRouter, DeepSeek, LLM7, paid key) ----
 
 interface CompatConfig {
   id: string;
@@ -282,6 +282,8 @@ interface CompatConfig {
   fastPreferred?: string[];
   /** Chooses usable chat models from the live /models list. */
   filter?: (m: LiveModel) => boolean;
+  /** Use a configured alias directly when the API's model list omits aliases such as "default". */
+  modelFallbackOnly?: boolean;
   isVision?: (m: LiveModel) => boolean;
   headers?: () => Record<string, string>;
   extras?: (model: string) => Record<string, unknown>;
@@ -340,6 +342,10 @@ function compatProvider(c: CompatConfig): Provider {
     local: c.local,
     configured: () => !!c.key(),
     async candidates(needVision, fast) {
+      if (c.modelFallbackOnly) {
+        const model = c.envModel();
+        return model ? [{ provider: c.id, label: c.label, model, vision: false }] : [];
+      }
       const live = await liveModels(c);
       const has = (id: string) => live.length === 0 || live.some((m) => m.id === id);
       const isVision = (id: string) => {
@@ -700,7 +706,8 @@ const PROVIDERS: Provider[] = [
     key: () => env("OPENROUTER_API_KEY"),
     envModel: () => env("OPENROUTER_MODEL"),
     envVisionModel: () => env("OPENROUTER_VISION_MODEL"),
-    preferred: ["openai/gpt-oss-120b:free", "google/gemma-4-31b-it:free", "minimax/minimax-m3.1-flash:free"],
+    // openai/gpt-oss-120b:free and minimax/minimax-m3.1-flash:free were retired (404) in Oct 2026.
+    preferred: ["google/gemma-4-31b-it:free"],
     preferredVision: ["google/gemma-4-31b-it:free", "nvidia/nemotron-3.5-super-vl:free", "google/gemma-4-26b-a4b-it:free"],
     // Only free models: never spend credit by surprise.
     filter: (m) => m.id.endsWith(":free") && !/safety|guard/i.test(m.id),
@@ -708,6 +715,46 @@ const PROVIDERS: Provider[] = [
     maxModels: 3,
     missingDetail: "Add OPENROUTER_API_KEY (free at openrouter.ai/keys)",
     budget: () => ({ input: num("OPENROUTER_TOKEN_BUDGET", 16_000), output: 2048 }),
+  }),
+  compatProvider({
+    id: "llm7",
+    label: "LLM7",
+    baseUrl: () => "https://api.llm7.io/v1",
+    key: () => env("LLM7_API_KEY"),
+    envModel: () => env("LLM7_MODEL", "default"),
+    preferred: ["default"],
+    modelFallbackOnly: true,
+    maxModels: 1,
+    missingDetail: "Add LLM7_API_KEY (api.llm7.io)",
+    budget: () => ({ input: num("LLM7_TOKEN_BUDGET", 12_000), output: num("LLM7_MAX_OUTPUT", 2048) }),
+  }),
+  compatProvider({
+    id: "sambanova",
+    label: "SambaNova",
+    baseUrl: () => env("SAMBANOVA_BASE_URL", "https://api.sambanova.ai/v1").replace(/\/$/, ""),
+    key: () => env("SAMBANOVA_API_KEY"),
+    envModel: () => env("SAMBANOVA_MODEL"),
+    envVisionModel: () => env("SAMBANOVA_VISION_MODEL"),
+    // Discover current models from SambaNova instead of pinning a model that may be retired.
+    preferred: [],
+    preferredVision: [],
+    isVision: (m) => m.vision,
+    maxModels: 2,
+    missingDetail: "Add SAMBANOVA_API_KEY (cloud.sambanova.ai)",
+    budget: () => ({ input: num("SAMBANOVA_TOKEN_BUDGET", 24_000), output: num("SAMBANOVA_MAX_OUTPUT", 2048) }),
+  }),
+  compatProvider({
+    id: "cloudflare",
+    label: "Cloudflare Workers AI",
+    baseUrl: () => `https://api.cloudflare.com/client/v4/accounts/${env("CLOUDFLARE_ACCOUNT_ID")}/ai/v1`,
+    key: () => env("CLOUDFLARE_ACCOUNT_ID") && env("CLOUDFLARE_API_TOKEN"),
+    envModel: () => env("CLOUDFLARE_MODEL", "@cf/meta/llama-3.1-8b-instruct"),
+    envVisionModel: () => env("CLOUDFLARE_VISION_MODEL"),
+    preferred: ["@cf/meta/llama-3.1-8b-instruct"],
+    preferredVision: [],
+    maxModels: 2,
+    missingDetail: "Add CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN (Workers AI)",
+    budget: () => ({ input: num("CLOUDFLARE_TOKEN_BUDGET", 12_000), output: num("CLOUDFLARE_MAX_OUTPUT", 2048) }),
   }),
   compatProvider({
     id: "paid",
@@ -1224,5 +1271,5 @@ export async function listProviders(): Promise<ProviderStatus[]> {
 }
 
 export function hasVisionProvider(): boolean {
-  return PROVIDERS.some((p) => p.configured() && (p.id === "gemini" || p.id === "openrouter" || p.id === "paid" || p.id === "ollama" || p.id === "senko"));
+  return PROVIDERS.some((p) => p.configured() && (p.id === "gemini" || p.id === "openrouter" || p.id === "paid" || p.id === "ollama" || p.id === "senko" || p.id === "sambanova" || (p.id === "cloudflare" && !!env("CLOUDFLARE_VISION_MODEL"))));
 }

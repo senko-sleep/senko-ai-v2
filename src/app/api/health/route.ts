@@ -8,6 +8,9 @@ export async function GET() {
     status: "ok",
     inputProtocol: INPUT_PROTOCOL_VERSION,
     agentBackendConfigured: !!process.env.AGENT_BACKEND_URL,
+    browserbaseConfigured: !!process.env.BROWSERBASE_API_KEY,
+    browserlessConfigured: !!process.env.BROWSERLESS_TOKEN,
+    steelConfigured: !!process.env.STEEL_API_KEY,
     wasmerRuntime: !!process.env.WASMER_APP_ID,
   });
 }

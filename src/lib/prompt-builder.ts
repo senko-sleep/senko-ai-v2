@@ -1,10 +1,10 @@
-import corePrompt from "@/app/prompts/core.txt";
-import cognitionPrompt from "@/app/prompts/cognition.txt";
-import integrityPrompt from "@/app/prompts/integrity.txt";
-import actionsPrompt from "@/app/prompts/actions.txt";
-import browserPrompt from "@/app/prompts/browser.txt";
-import researchPrompt from "@/app/prompts/research.txt";
-import memoryPrompt from "@/app/prompts/memory.txt";
+import corePrompt from "@/app/prompts/core";
+import cognitionPrompt from "@/app/prompts/cognition";
+import integrityPrompt from "@/app/prompts/integrity";
+import actionsPrompt from "@/app/prompts/actions";
+import browserPrompt from "@/app/prompts/browser";
+import researchPrompt from "@/app/prompts/research";
+import memoryPrompt from "@/app/prompts/memory";
 
 import type { BrowserInfo, LocationInfo, SenkoTab } from "@/types/chat";
 

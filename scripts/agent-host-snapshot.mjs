@@ -102,6 +102,13 @@ try {
   await run("system libraries for Chromium", `dnf install -y --skip-broken ${CHROMIUM_DEPS} >/tmp/dnf.log 2>&1; ldconfig; echo ok`, { sudo: true });
   await run("npm ci", `cd ${APP} && npm ci --include=dev --no-audit --no-fund --loglevel=error`);
   await run("Chromium", `cd ${APP} && npx playwright install chromium chromium-headless-shell`, { env: { PLAYWRIGHT_BROWSERS_PATH: BROWSERS } });
+  // Google Chrome plays H.264/AAC video (most MP4 sites); Playwright's Chromium can't.
+  // Best effort: the agent falls back to Chromium when Chrome isn't there.
+  log(await run(
+    "Google Chrome (video codecs)",
+    `dnf install -y https://dl.google.com/linux/direct/google-chrome-stable_current_x86_64.rpm >/tmp/chrome.log 2>&1; /opt/google/chrome/chrome --version 2>/dev/null || (tail -5 /tmp/chrome.log; echo "Chrome not installed")`,
+    { sudo: true }
+  ));
   await run("next build", `cd ${APP} && npm run build`, {
     env: { NODE_OPTIONS: "--max-old-space-size=6144", NEXT_TELEMETRY_DISABLED: "1", NODE_ENV: "production" },
   });

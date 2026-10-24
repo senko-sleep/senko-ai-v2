@@ -1,0 +1,111 @@
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90mC:/Users/Owner/senko-ai[39m
+
+ [31m❯[39m src/__tests__/identity.test.ts [2m([22m[2m3 tests[22m[2m | [22m[31m2 failed[39m[2m)[22m[33m 863[2mms[22m[39m
+     [32m✓[39m signs and verifies, rejects tampering[32m 24[2mms[22m[39m
+[31m     [31m×[31m creates a device, rejects requests without the key cookie, links a second device[39m[33m 579[2mms[22m[39m
+[31m     [31m×[31m rewinds chat history from an edited user message onward[39m[32m 256[2mms[22m[39m
+ [31m❯[39m src/__tests__/suggestions.test.ts [2m([22m[2m7 tests[22m[2m | [22m[33m1 skipped[39m[2m)[22m[32m 284[2mms[22m[39m
+     [32m✓[39m reads an object, a bare array, and fenced JSON with chatter[32m 3[2mms[22m[39m
+     [32m✓[39m keeps valid items, swaps unknown icons for a keyword guess, and caps at four[32m 2[2mms[22m[39m
+     [32m✓[39m drops duplicates, recently shown titles, and anything leaking private data[32m 0[2mms[22m[39m
+     [32m✓[39m forces agent mode in agent mode[32m 1[2mms[22m[39m
+     [32m✓[39m always returns four renderable, distinct suggestions and avoids recent ones[32m 1[2mms[22m[39m
+     [32m✓[39m guesses icons from keywords[32m 1[2mms[22m[39m
+     [2m[90m↓[39m[22m uses interests and topics, but keeps identity facts out
+ [32m✓[39m src/__tests__/llm-workload.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 811[2mms[22m[39m
+     [33m[2m✓[22m[39m never runs more requests at once than the provider's concurrency limit, and finishes them all [33m 666[2mms[22m[39m
+ [32m✓[39m src/__tests__/memory-conversation.test.ts [2m([22m[2m43 tests[22m[2m)[22m[32m 147[2mms[22m[39m
+ [32m✓[39m src/__tests__/browser-performance.test.ts [2m([22m[2m42 tests[22m[2m)[22m[32m 128[2mms[22m[39m
+ [32m✓[39m src/__tests__/intent-parser.test.ts [2m([22m[2m41 tests[22m[2m)[22m[32m 98[2mms[22m[39m
+ [32m✓[39m src/__tests__/activity.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 50[2mms[22m[39m
+ [32m✓[39m src/__tests__/agent-checkpoint.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m src/__tests__/agent-execution.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 23[2mms[22m[39m
+ [32m✓[39m src/__tests__/browser-input-route.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 29[2mms[22m[39m
+ [32m✓[39m src/__tests__/browser-commands.test.ts [2m([22m[2m18 tests[22m[2m)[22m[32m 21[2mms[22m[39m
+[90mstderr[2m | src/__tests__/operation-manager.test.ts[2m > [22m[2mOperationManager[2m > [22m[2mstall detection auto-aborts after timeout
+[22m[39m[OperationManager] Stall detected for op op_mvm9yair_1 (Generate), auto-aborting after 60000ms
+
+[90mstderr[2m | src/__tests__/operation-manager.test.ts[2m > [22m[2mOperationManager[2m > [22m[2mtouchOp resets the stall timer
+[22m[39m[OperationManager] Stall detected for op op_mvm9yaiv_1 (Generate), auto-aborting after 60000ms
+
+ [32m✓[39m src/__tests__/operation-manager.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32m✓[39m src/__tests__/status-utils.test.ts [2m([22m[2m25 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/__tests__/url-validator.test.ts [2m([22m[2m19 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/__tests__/llm-scheduler.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/__tests__/agent-context.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m src/__tests__/context-window.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m src/__tests__/tool-results.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m src/__tests__/image-search-intent.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/__tests__/agent-requirements.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m src/__tests__/fit-messages.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m src/__tests__/status-tag.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Suites 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m src/__tests__/suggestions.test.ts[2m > [22mgatherSignals
+[31m[1mRangeError[22m: Array buffer allocation failed[39m
+[90m [2m❯[22m Yr node_modules/@electric-sql/pglite/dist/chunk-DDJLRBDX.js:[2m2:64441[22m[39m
+[90m [2m❯[22m At node_modules/@electric-sql/pglite/dist/chunk-DDJLRBDX.js:[2m2:66014[22m[39m
+[90m [2m❯[22m N.Ye node_modules/@electric-sql/pglite/dist/index.js:[2m3:292654[22m[39m
+[90m [2m❯[22m Function.create node_modules/@electric-sql/pglite/dist/index.js:[2m3:284871[22m[39m
+[36m [2m❯[22m createPglite src/lib/server/db.ts:[2m118:10[22m[39m
+    [90m116| [39m  [35mlet[39m db[33m;[39m
+    [90m117| [39m  [35mif[39m (process[33m.[39menv[33m.[39m[33mDATA_DIR[39m [33m===[39m [32m":memory:"[39m) {
+    [90m118| [39m    db [33m=[39m [35mawait[39m [33mPGlite[39m[33m.[39m[34mcreate[39m()[33m;[39m
+    [90m   | [39m         [31m^[39m
+    [90m119| [39m  } [35melse[39m {
+    [90m120| [39m    [35mtry[39m {
+[90m [2m❯[22m init src/lib/server/db.ts:[2m164:46[22m[39m
+[90m [2m❯[22m q src/lib/server/db.ts:[2m185:13[22m[39m
+[90m [2m❯[22m src/__tests__/suggestions.test.ts:[2m71:5[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯[22m[39m
+
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 2 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m src/__tests__/identity.test.ts[2m > [22midentity + linking[2m > [22mcreates a device, rejects requests without the key cookie, links a second device
+[31m[1mRangeError[22m: Array buffer allocation failed[39m
+[90m [2m❯[22m Yr node_modules/@electric-sql/pglite/dist/chunk-DDJLRBDX.js:[2m2:64441[22m[39m
+[90m [2m❯[22m At node_modules/@electric-sql/pglite/dist/chunk-DDJLRBDX.js:[2m2:66014[22m[39m
+[90m [2m❯[22m N.Ye node_modules/@electric-sql/pglite/dist/index.js:[2m3:292654[22m[39m
+[90m [2m❯[22m Function.create node_modules/@electric-sql/pglite/dist/index.js:[2m3:284871[22m[39m
+[36m [2m❯[22m createPglite src/lib/server/db.ts:[2m118:10[22m[39m
+    [90m116| [39m  [35mlet[39m db[33m;[39m
+    [90m117| [39m  [35mif[39m (process[33m.[39menv[33m.[39m[33mDATA_DIR[39m [33m===[39m [32m":memory:"[39m) {
+    [90m118| [39m    db [33m=[39m [35mawait[39m [33mPGlite[39m[33m.[39m[34mcreate[39m()[33m;[39m
+    [90m   | [39m         [31m^[39m
+    [90m119| [39m  } [35melse[39m {
+    [90m120| [39m    [35mtry[39m {
+[90m [2m❯[22m init src/lib/server/db.ts:[2m164:46[22m[39m
+[90m [2m❯[22m q src/lib/server/db.ts:[2m185:13[22m[39m
+[90m [2m❯[22m q1 src/lib/server/db.ts:[2m190:11[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/__tests__/identity.test.ts[2m > [22midentity + linking[2m > [22mrewinds chat history from an edited user message onward
+[31m[1mRangeError[22m: Array buffer allocation failed[39m
+[90m [2m❯[22m Yr node_modules/@electric-sql/pglite/dist/chunk-DDJLRBDX.js:[2m2:64441[22m[39m
+[90m [2m❯[22m At node_modules/@electric-sql/pglite/dist/chunk-DDJLRBDX.js:[2m2:66014[22m[39m
+[90m [2m❯[22m N.Ye node_modules/@electric-sql/pglite/dist/index.js:[2m3:292654[22m[39m
+[90m [2m❯[22m Function.create node_modules/@electric-sql/pglite/dist/index.js:[2m3:284871[22m[39m
+[36m [2m❯[22m createPglite src/lib/server/db.ts:[2m118:10[22m[39m
+    [90m116| [39m  [35mlet[39m db[33m;[39m
+    [90m117| [39m  [35mif[39m (process[33m.[39menv[33m.[39m[33mDATA_DIR[39m [33m===[39m [32m":memory:"[39m) {
+    [90m118| [39m    db [33m=[39m [35mawait[39m [33mPGlite[39m[33m.[39m[34mcreate[39m()[33m;[39m
+    [90m   | [39m         [31m^[39m
+    [90m119| [39m  } [35melse[39m {
+    [90m120| [39m    [35mtry[39m {
+[90m [2m❯[22m init src/lib/server/db.ts:[2m164:46[22m[39m
+[90m [2m❯[22m q src/lib/server/db.ts:[2m185:13[22m[39m
+[90m [2m❯[22m createChat src/lib/server/chats.ts:[2m46:3[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m2 failed[39m[22m[2m | [22m[1m[32m20 passed[39m[22m[90m (22)[39m
+[2m      Tests [22m [1m[31m2 failed[39m[22m[2m | [22m[1m[32m305 passed[39m[22m[2m | [22m[33m1 skipped[39m[90m (308)[39m
+[2m   Start at [22m 06:47:05
+[2m   Duration [22m 12.11s[2m (transform 946ms, setup 0ms, import 4.29s, tests 2.56s, environment 4ms)[22m
+

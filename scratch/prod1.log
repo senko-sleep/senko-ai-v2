@@ -1,0 +1,20 @@
+[8.1s] PASS provider selection available 6 usable; picked gemini
+[102.0s] PASS agent task finished 
+[102.0s] PASS no embedded third-party browser frame 
+[102.0s] PASS live frames arrived 1348 frames
+[102.0s] PASS AI pointer visible with bot name during task Senko · Gemini
+[106.0s] PASS live view frame rate on animated page 17.3 fps
+[106.1s] PASS real page sized to the panel (fills it, no letterbox) frame 895x960, panel 895x960
+[106.1s] PASS AI pointer stays visible after the task 1
+[106.1s] PASS you have control after the task View only button shown = controlling
+[107.8s] PASS address bar navigation 
+[141.2s] FAIL typing + Enter in a real site's search box search URL not reached
+[145.3s] PASS scrolling moves the real page 
+[146.3s] PASS page cursor mirrored while hovering 3 cursor changes
+[151.3s] PASS take control during a task pauses the agent 
+[174.8s] PASS resumed task completes answer mentions Vulpes vulpes: true
+[184.7s] PASS H.264 MP4 video plays in the live browser fps 0.3
+[190.0s] PASS page audio streamed to the panel 61 audio chunks
+[190.0s] FAIL sound control appears 
+[200.1s] PASS switching control modes repeatedly without errors 
+[200.1s] {"passed":false,"failures":["typing + Enter in a real site's search box","sound control appears"]}

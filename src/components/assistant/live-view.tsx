@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { createFrameDecoder } from "@/lib/live-frame";
 import { appendInput, pagePoint, type BrowserInput } from "@/lib/live-input";
 
@@ -7,6 +7,8 @@ import { appendInput, pagePoint, type BrowserInput } from "@/lib/live-input";
 export type LiveEvent =
   | { type: "frame"; data: string; width: number; height: number; epoch?: number }
   | { type: "cursor"; x: number; y: number; kind: "move" | "click"; box?: { x: number; y: number; w: number; h: number } | null; width: number; height: number }
+  | { type: "pointer"; cursor: string }
+  | { type: "audio"; id: string; seq?: number; data?: string; end?: boolean }
   | { type: "reset"; epoch?: number };
 
 export function createLiveBus() {
@@ -54,6 +56,12 @@ function containFit(cw: number, ch: number, iw: number, ih: number): Fit {
 /** Your own input in the live view, in page CSS pixels (sent to /api/sessions/:id/input). */
 export type UserInput = BrowserInput;
 
+// CSS cursors the page may ask for (url() cursors fall back to the default arrow).
+const CSS_CURSOR = /^(auto|default|none|context-menu|help|pointer|progress|wait|cell|crosshair|text|vertical-text|alias|copy|move|no-drop|not-allowed|grab|grabbing|all-scroll|col-resize|row-resize|[nsew]{1,2}-resize|nesw-resize|nwse-resize|zoom-in|zoom-out)$/;
+
+/** CSS width pages are laid out at when the panel is narrower (then scaled to fit). */
+const DESKTOP_WIDTH = 1280;
+
 // Browser key names -> Playwright key names.
 const KEY_MAP: Record<string, string> = { " ": "Space", Esc: "Escape", Del: "Delete", Left: "ArrowLeft", Right: "ArrowRight", Up: "ArrowUp", Down: "ArrowDown" };
 
@@ -62,17 +70,23 @@ export const LiveView = memo(function LiveView({
   title,
   onHasFrame,
   agentRunning = false,
+  agentName = "Senko",
   interactive = false,
   onInput,
+  onViewport,
 }: {
   bus: LiveBus;
   title: string;
   onHasFrame: (v: boolean) => void;
   /** Show Senko's pointer only while it is actively working. */
   agentRunning?: boolean;
+  /** Shown next to the AI's pointer (the bot / model driving the browser). */
+  agentName?: string;
   /** When true, your clicks, scrolling and typing go to the page. */
   interactive?: boolean;
   onInput?: (e: UserInput) => void;
+  /** The panel's size in CSS px; the session resizes the real page to it. */
+  onViewport?: (size: { width: number; height: number }) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const keyboardRef = useRef<HTMLTextAreaElement>(null);
@@ -81,14 +95,14 @@ export const LiveView = memo(function LiveView({
   const cursorRef = useRef<HTMLDivElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const rippleLayerRef = useRef<HTMLDivElement>(null);
-  const agentRunningRef = useRef(agentRunning);
+  const [pageCursor, setPageCursor] = useState("default");
+  const onViewportRef = useRef(onViewport);
+  useEffect(() => { onViewportRef.current = onViewport; }, [onViewport]);
 
   useEffect(() => {
-    agentRunningRef.current = agentRunning;
-    if (!agentRunning) {
-      if (cursorRef.current) cursorRef.current.style.opacity = "0";
-      if (boxRef.current) boxRef.current.style.opacity = "0";
-    }
+    // The AI's pointer stays on screen between tasks, just quieter.
+    cursorRef.current?.classList.toggle("sk-agent-cursor-idle", !agentRunning);
+    if (!agentRunning && boxRef.current) boxRef.current.style.opacity = "0";
   }, [agentRunning]);
 
   useEffect(() => {
@@ -107,11 +121,6 @@ export const LiveView = memo(function LiveView({
     let latestHidden: Extract<LiveEvent, { type: "frame" }> | null = null;
     let raf = 0;
     let boxTimer = 0;
-    const timers = new Set<ReturnType<typeof setTimeout>>();
-    const later = (fn: () => void, ms: number) => {
-      const id = setTimeout(() => { timers.delete(id); fn(); }, ms);
-      timers.add(id);
-    };
     const schedule = () => {
       if (!raf && !document.hidden) raf = requestAnimationFrame(render);
     };
@@ -156,19 +165,6 @@ export const LiveView = memo(function LiveView({
 
     const toScreen = (x: number, y: number) => ({ x: fit.x + (x / vp.w) * fit.w, y: fit.y + (y / vp.h) * fit.h });
 
-    const ripple = (x: number, y: number) => {
-      const layer = rippleLayerRef.current;
-      if (!layer) return;
-      const el = document.createElement("span");
-      el.className = "sk-ripple";
-      el.style.left = `${x}px`;
-      el.style.top = `${y}px`;
-      layer.appendChild(el);
-      later(() => el.remove(), 700);
-      cursorRef.current?.classList.add("sk-cursor-press");
-      later(() => cursorRef.current?.classList.remove("sk-cursor-press"), 160);
-    };
-
     const showBox = (box: { x: number; y: number; w: number; h: number } | null | undefined) => {
       const el = boxRef.current;
       if (!el) return;
@@ -186,9 +182,27 @@ export const LiveView = memo(function LiveView({
       boxTimer = window.setTimeout(() => (el.style.opacity = "0"), 1400);
     };
 
+    // The AI's pointer glides toward each real mouse position it reports (the agent's
+    // moves arrive in bursts over the network); clicks ripple once it gets there.
+    const pos = { x: NaN, y: NaN };
+    let lastTick = 0;
+    let pendingClick = false;
+    const ripple = (x: number, y: number) => {
+      const layer = rippleLayerRef.current;
+      if (!layer) return;
+      const el = document.createElement("span");
+      el.className = "sk-ripple";
+      el.style.left = `${x}px`;
+      el.style.top = `${y}px`;
+      layer.appendChild(el);
+      setTimeout(() => el.remove(), 700);
+      const c = cursorRef.current;
+      c?.classList.add("sk-cursor-press");
+      setTimeout(() => c?.classList.remove("sk-cursor-press"), 160);
+    };
+
     // One draw per display frame, only when a frame, geometry or cursor has changed.
-    // Cursor/click locations represent executed actions; no simulated travel delay.
-    function render() {
+    function render(now: number) {
       raf = 0;
       if (document.hidden) return;
       if (layoutDirty || size.dpr !== Math.min(window.devicePixelRatio || 1, 2)) {
@@ -196,20 +210,34 @@ export const LiveView = memo(function LiveView({
       }
       if (paintDirty && bitmap) {
         draw(); paintDirty = false;
-        if (!hasFrame) { hasFrame = true; onHasFrame(true); }
+        if (!hasFrame) {
+          hasFrame = true; onHasFrame(true);
+          // Show the pointer from the first frame on, so it's always somewhere on screen.
+          if (!cursor) { cursor = { type: "cursor", x: vp.w / 2, y: vp.h / 2, kind: "move", width: vp.w, height: vp.h }; cursorDirty = true; }
+        }
       }
-      if (cursorDirty) {
+      const el = cursorRef.current;
+      if (el && cursor && (cursorDirty || pos.x !== cursor.x || pos.y !== cursor.y)) {
         cursorDirty = false;
-        const el = cursorRef.current;
-        if (el && cursor && agentRunningRef.current) {
-          const at = toScreen(cursor.x, cursor.y);
-          el.style.transform = `translate3d(${at.x}px, ${at.y}px, 0)`;
-          el.style.opacity = "1";
-          showBox(cursor.box);
-          if (cursor.kind === "click") { ripple(at.x, at.y); cursor = { ...cursor, kind: "move" }; }
-        } else if (el) el.style.opacity = "0";
+        const dt = Math.min(64, lastTick ? now - lastTick : 16);
+        const k = Number.isNaN(pos.x) || reduceMotion ? 1 : 1 - Math.exp(-dt / 40); // ~120ms glide; animation only, it never delays the real click
+        pos.x = Number.isNaN(pos.x) ? cursor.x : pos.x + (cursor.x - pos.x) * k;
+        pos.y = Number.isNaN(pos.y) ? cursor.y : pos.y + (cursor.y - pos.y) * k;
+        if (Math.abs(cursor.x - pos.x) < 0.5 && Math.abs(cursor.y - pos.y) < 0.5) { pos.x = cursor.x; pos.y = cursor.y; }
+        const at = toScreen(pos.x, pos.y);
+        el.style.transform = `translate3d(${at.x}px, ${at.y}px, 0)`;
+        el.style.opacity = "1";
+        if (pos.x === cursor.x && pos.y === cursor.y) {
+          if (pendingClick) { pendingClick = false; ripple(at.x, at.y); }
+          if (cursor.box) { showBox(cursor.box); cursor = { ...cursor, box: null }; }
+          lastTick = 0;
+        } else {
+          lastTick = now;
+          schedule();
+        }
       }
     }
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     const unsub = bus.subscribe((e) => {
       if (e.type === "reset") {
@@ -217,17 +245,11 @@ export const LiveView = memo(function LiveView({
         latestHidden = null;
         bitmap?.close();
         bitmap = null;
-        hasFrame = false;
-        cursor = null;
-        paintDirty = cursorDirty = false;
+        paintDirty = false;
         clearTimeout(boxTimer);
-        timers.forEach(clearTimeout); timers.clear();
-        rippleLayerRef.current?.replaceChildren();
-        onHasFrame(false);
-        if (cursorRef.current) cursorRef.current.style.opacity = "0";
         if (boxRef.current) boxRef.current.style.opacity = "0";
-        ctx.fillStyle = "#000";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        // Keep the last pixels and the pointer visible while the new document starts
+        // producing frames. Clearing here creates a black flash on every nav/tab switch.
         return;
       }
       if (e.type === "frame") {
@@ -235,15 +257,37 @@ export const LiveView = memo(function LiveView({
         else decoder.push(e);
         return;
       }
+      if (e.type === "pointer") {
+        setPageCursor(CSS_CURSOR.test(e.cursor) ? e.cursor : "default");
+        return;
+      }
       if (e.type === "cursor") {
-        if (!agentRunningRef.current) return;
-        cursor = e;
+        if (e.kind === "click") pendingClick = true;
+        // Frames own the page geometry; a pointer reported for an older page size is scaled into it.
+        cursor = e.width && e.height && (e.width !== vp.w || e.height !== vp.h) ? { ...e, x: (e.x / e.width) * vp.w, y: (e.y / e.height) * vp.h, box: null } : e;
         cursorDirty = true;
         schedule();
       }
     });
 
-    const resize = () => { layoutDirty = true; schedule(); };
+    // The real browser's viewport follows this panel, so pages lay out for the space you see.
+    let reportTimer: ReturnType<typeof setTimeout> | undefined;
+    let reported = "";
+    const report = () => {
+      clearTimeout(reportTimer);
+      reportTimer = setTimeout(() => {
+        const r = wrap.getBoundingClientRect();
+        const w = Math.round(r.width), h = Math.round(r.height);
+        if (w < 200 || h < 150 || `${w}x${h}` === reported) return;
+        reported = `${w}x${h}`;
+        // Pages get a desktop-width viewport (~1280 CSS px) shown scaled down to the panel,
+        // like a normal browser window zoomed out, instead of a cramped tablet layout.
+        // Same aspect ratio as the panel, so it still fills it edge to edge.
+        const zoom = Math.max(0.5, Math.min(1, w / DESKTOP_WIDTH));
+        onViewportRef.current?.({ width: Math.round(w / zoom), height: Math.round(h / zoom) });
+      }, 250);
+    };
+    const resize = () => { layoutDirty = true; schedule(); report(); };
     const visibility = () => {
       if (document.hidden) {
         cancelAnimationFrame(raf); raf = 0; decoder.reset();
@@ -266,7 +310,7 @@ export const LiveView = memo(function LiveView({
       document.removeEventListener("visibilitychange", visibility);
       decoder.dispose();
       clearTimeout(boxTimer);
-      timers.forEach(clearTimeout);
+      clearTimeout(reportTimer);
       bitmap?.close();
     };
   }, [bus, onHasFrame]);
@@ -412,7 +456,8 @@ export const LiveView = memo(function LiveView({
   return (
     <div
       ref={wrapRef}
-      className={`sk-live-view absolute inset-0 overflow-hidden outline-none ${interactive ? "sk-live-interactive cursor-default" : ""}`}
+      className={`sk-live-view absolute inset-0 overflow-hidden outline-none ${interactive ? "sk-live-interactive" : ""}`}
+      style={interactive ? { cursor: pageCursor } : undefined}
       role={interactive ? "application" : "img"}
       aria-label={interactive ? `${title || "Live browser"}: you're in control. Click, scroll and type here.` : title || "Live browser view"}
       tabIndex={interactive ? 0 : -1}
@@ -421,18 +466,19 @@ export const LiveView = memo(function LiveView({
       <textarea ref={keyboardRef} tabIndex={-1} aria-label="Live browser keyboard" autoComplete="off" autoCapitalize="off" spellCheck={false} className="absolute left-0 top-0 h-px w-px opacity-0" />
       <div ref={boxRef} className="sk-target-box pointer-events-none absolute left-0 top-0 rounded-lg opacity-0" aria-hidden />
       <div ref={rippleLayerRef} className="pointer-events-none absolute inset-0" aria-hidden />
+      {/* The AI's pointer: a fox-orange arrow (tip exactly at the click point) with the bot's name beside it. */}
       <div ref={cursorRef} className="sk-agent-cursor pointer-events-none absolute left-0 top-0 opacity-0" aria-hidden>
-        <svg width="22" height="22" viewBox="0 0 24 24" className="drop-shadow-[0_2px_4px_rgba(0,0,0,0.5)]">
-          <path d="M3.5 2.5l16 9.2-7.1 1.6-3.4 6.6z" fill="#fff" stroke="#2a1408" strokeWidth="1.4" strokeLinejoin="round" />
-          <path d="M5.4 5.6l10.3 6-4.9 1.1-2.2 4.3z" fill="url(#sk-cursor-fill)" />
+        <svg width="30" height="32" viewBox="0 0 30 32">
           <defs>
-            <linearGradient id="sk-cursor-fill" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0" stopColor="#FFB45C" />
-              <stop offset="1" stopColor="#FF7A2E" />
+            <linearGradient id="sk-ai-cursor" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stopColor="#FFC56B" />
+              <stop offset=".45" stopColor="#FF8A1F" />
+              <stop offset="1" stopColor="#D9480A" />
             </linearGradient>
           </defs>
+          <path d="M2 2.2 27 12.6c1.3.55 1.2 2.4-.15 2.75l-9.6 2.6-3.9 9.3c-.55 1.3-2.4 1.25-2.8-.1L2 2.2Z" fill="url(#sk-ai-cursor)" stroke="#fff" strokeWidth="2" strokeLinejoin="round" />
         </svg>
-        <span className="sk-cursor-tag">Senko</span>
+        <span className="sk-cursor-tag">{agentName}</span>
       </div>
     </div>
   );

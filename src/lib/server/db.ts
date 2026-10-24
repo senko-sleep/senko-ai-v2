@@ -88,6 +88,18 @@ CREATE TABLE IF NOT EXISTS memories (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (owner_id, key)
 );
+CREATE TABLE IF NOT EXISTS nav_memory (
+  owner_id TEXT NOT NULL,
+  host TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  key TEXT NOT NULL,
+  data JSONB NOT NULL DEFAULT '{}',
+  successes INTEGER NOT NULL DEFAULT 0,
+  failures INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (owner_id, host, kind, key)
+);
 `;
 
 async function createPg(url: string): Promise<Driver> {

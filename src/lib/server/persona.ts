@@ -1,8 +1,8 @@
 // Senko's personality and long-term memory.
-// The personality comes from the saved prompt in src/app/prompts/core.txt, minus the
+// The personality comes from the saved prompt in src/app/prompts/core.ts, minus the
 // old app's [ACTION:...] tag instructions (this app has its own browser tools).
 // It can be overridden per owner in Settings ("personality").
-import corePrompt from "@/app/prompts/core.txt";
+import corePrompt from "@/app/prompts/core";
 import { json, q, q1 } from "./db";
 
 function section(text: string, startHeader: string, endHeaders: string[]): string {

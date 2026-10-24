@@ -3,27 +3,32 @@
 Setup, model choices, and hosting instructions are in [README.md](README.md).
 All settings are listed in [.env.example](.env.example).
 
-## Browser agent on Vercel (Vercel Sandbox)
+## Browser agent on Wasmer Edge + Browserbase
 
-Vercel functions can't run Chrome, so with `AGENT_HOST=sandbox` the agent runs on an
-"agent computer": this same app inside a 2-vCPU Vercel Sandbox, started on demand
-(~3-5 s from cold) and replaced before the Hobby plan's 45-minute limit. Agent and
-live-view calls are forwarded to it by `src/proxy.ts`.
+The app runs on Wasmer Edge. Agent mode creates a Browserbase cloud browser and
+connects to it with the Playwright package already used by the app. If Browserbase
+cannot create or connect to a browser, it tries Browserless, then Steel. No local
+Chrome or separate Render/Vercel browser service is needed.
 
-The agent computer runs a snapshot of the code, so **after changing agent/server code,
-commit and rebuild the snapshot** (about 2 minutes, runs on Vercel, not your PC):
+Add the secret `BROWSERBASE_API_KEY` to the Wasmer app. The key identifies the
+Browserbase project, so do not set a project ID. The app creates a cloud browser on
+the first real browser task (not at app startup), keeps one live browser by default,
+and lets Browserbase expire it after one hour. Browser session tabs and storage are
+saved in the app database and restored when a new cloud browser is needed.
 
-    node scripts/agent-host-snapshot.mjs
+Set `BROWSERLESS_TOKEN` and `STEEL_API_KEY` as additional Wasmer secrets to enable
+the failover chain. Browserless uses its Playwright CDP endpoint, so it retains full
+click, typing, live-view, and page-observation support; its HTTP screenshot endpoint
+is available for screenshot-only calls. Steel sessions are released when their CDP
+connection ends and have a 15-minute default lifetime. The supplied Browserless
+HTTP screenshot endpoint is screenshot-only, so the app uses Browserless's CDP
+endpoint instead to retain full agent control. The health endpoint exposes only
+booleans for provider configuration, never the keys.
 
-To include reviewed, uncommitted changes (including new source files), use:
+After changing the app source, deploy with:
 
-    node scripts/agent-host-snapshot.mjs --working-tree
+    wasmer app deploy --dir . --owner senko-sleep --app-name senko-ai --build-remote --non-interactive
 
-The browser computer and web UI must be deployed together when input changes.
-Build the snapshot first, then deploy the Vercel gateway and Wasmer site. The
-snapshot smoke test checks the browser input protocol as well as launching
-Chromium; host readiness rejects an incompatible old snapshot. Ignored files,
-local environment files and dependency caches are excluded from the archive.
-
-To go back to the Render server instead, remove `AGENT_HOST` from the Vercel env vars
-(`AGENT_BACKEND_URL` still points at Render) and redeploy.
+The public health endpoint reports `browserbaseConfigured` without revealing the
+secret. A browser task is the end-to-end check that Browserbase can create a session
+and the app can attach to it.

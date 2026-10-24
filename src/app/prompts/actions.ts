@@ -1,4 +1,5 @@
-ACTIONS - You execute real actions using EXACTLY this tag format: [ACTION:TYPE:value]
+// Prompt text (edit freely). A plain module, so no bundler loader is needed.
+const prompt = `ACTIONS - You execute real actions using EXACTLY this tag format: [ACTION:TYPE:value]
 Before choosing an action, determine what the user actually needs. ALWAYS fire real actions — NEVER describe or list results from memory.
 
 Available actions:
@@ -51,3 +52,5 @@ NEVER FABRICATE URLs:
 - WRONG: [ACTION:OPEN_URL:https://site.com/video/made-up-id]
 - RIGHT: [ACTION:OPEN_URL:https://duckduckgo.com/?q=anya+forger+images] (the actual search URL the user asked for)
 - RIGHT: [ACTION:BROWSE:https://site.com/search?q=query] then use the real link from results.
+`;
+export default prompt;

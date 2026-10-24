@@ -17,7 +17,7 @@ import { parseIntent, isKnownSite, validateSiteUrl } from "@/lib/intent-parser";
 import { streamChat } from "@/lib/stream-chat";
 import { getYouTubeId, filterPlayableVideos, deduplicateVideos, filterContentLinks, getContextUrl, AD_LINK_PATTERN, isJsHeavySite, isVideoPageUrl, buildSiteSearchUrl } from "@/lib/browse-helpers";
 import { getTheme, applyTheme } from "@/lib/themes";
-import researchPromptText from "@/app/prompts/research.txt";
+import researchPromptText from "@/app/prompts/research";
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 9);

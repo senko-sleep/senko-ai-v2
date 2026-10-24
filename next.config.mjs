@@ -8,20 +8,10 @@ const nextConfig = {
   ...(process.env.NEXT_OUTPUT_STANDALONE === "1" ? { output: "standalone" } : {}),
   // Playwright ships native binaries; load it from node_modules at runtime instead of bundling it.
   serverExternalPackages: ["playwright", "playwright-core", "pg", "@electric-sql/pglite", "@vercel/sandbox"],
-  turbopack: {
-    rules: {
-      "*.txt": {
-        loaders: ["raw-loader"],
-        as: "*.js",
-      },
-    },
-  },
-  webpack: (config) => {
-    config.module.rules.push({
-      test: /\.txt$/,
-      type: "asset/source",
-    });
-    return config;
+  experimental: {
+    // Turbopack frees its in-memory cache past this target instead of growing until the
+    // machine runs out (low-RAM dev PCs crashed with "Insufficient system resources").
+    turbopackMemoryLimit: Number(process.env.TURBOPACK_MEMORY_LIMIT_MB || 1536) * 1024 * 1024,
   },
 };
 

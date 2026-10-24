@@ -176,8 +176,10 @@ try {
   await viewer.waitForTimeout(300);
   // A deterministic slow decode exposes stale paints after a reset.
   const resetRace = await viewer.evaluate(async () => {
+    const visible = document.querySelector('canvas');
+    const before = visible.toDataURL();
     const c=document.createElement('canvas');c.width=1280;c.height=800;
-    c.getContext('2d').fillRect(0,0,c.width,c.height);
+    const source=c.getContext('2d');source.fillStyle='#ff00aa';source.fillRect(0,0,c.width,c.height);
     const data=c.toDataURL('image/jpeg').split(',')[1];
     const original=window.createImageBitmap;
     window.createImageBitmap=async (...a)=>{await new Promise(r=>setTimeout(r,100));return original(...a)};
@@ -185,7 +187,7 @@ try {
     bus.emit({type:'reset'});
     await new Promise(r=>setTimeout(r,160));
     window.createImageBitmap=original;
-    return {staleFrameAfterReset:window.hasFrame};
+    return {staleFrameAfterReset:visible.toDataURL()!==before};
   });
   const gaps=motion.draws.slice(1).map((t,i)=>t-motion.draws[i]).sort((a,b)=>a-b);
   const percentile=(values,p)=>{const sorted=values.filter(Number.isFinite).sort((a,b)=>a-b);return sorted[Math.floor(sorted.length*p)];};

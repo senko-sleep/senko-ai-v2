@@ -265,6 +265,7 @@ export default function AssistantApp() {
   const inputSession = useRef<string | undefined>(undefined);
   const inputRecovery = useRef<Promise<void> | null>(null);
   const displayRate = useRef(120);
+  const sizedSession = useRef<string | null>(null);
   const panelOpenRef = useRef(false);
   useEffect(() => {
     panelOpenRef.current = panelOpen;
@@ -320,7 +321,7 @@ export default function AssistantApp() {
           }
           inputEpoch.current = e.epoch;
         }
-        if (e.type === "frame" || e.type === "cursor" || e.type === "reset") liveBus.emit(e as never);
+        if (e.type === "frame" || e.type === "cursor" || e.type === "reset" || e.type === "pointer" || e.type === "audio") liveBus.emit(e as never);
         if (e.type === "status") {
           if (typeof e.sessionId === "string") {
             if (inputSession.current !== undefined && inputSession.current !== e.sessionId) {
@@ -336,6 +337,11 @@ export default function AssistantApp() {
           }
           if (typeof e.epoch === "number") inputEpoch.current = e.epoch;
           setSessionAvailable(e.status !== "closed");
+          if (e.status === "active" && lastViewport.current && sizedSession.current !== e.sessionId) {
+            sizedSession.current = e.sessionId as string;
+            const size = lastViewport.current;
+            void fetch(`/api/sessions/${chatId}/viewport`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(size) }).catch(() => {});
+          }
           if (typeof e.takeover === "boolean") setControlling(e.takeover);
           const tab = (e.tabs as { url: string; title: string; active: boolean }[] | undefined)?.find((t) => t.active);
           if (tab) setBrowser((b) => ({ ...b, url: tab.url, title: tab.title }));
@@ -468,6 +474,15 @@ export default function AssistantApp() {
     document.addEventListener("visibilitychange", visibility);
     return () => document.removeEventListener("visibilitychange", visibility);
   }, [attachStream, closeStream]);
+
+  // The real page follows the live view's size (no letterboxing, responsive layouts).
+  const lastViewport = useRef<{ width: number; height: number } | null>(null);
+  const sendViewport = useCallback((size: { width: number; height: number }) => {
+    lastViewport.current = size;
+    const chatId = activeRef.current;
+    if (!chatId) return;
+    void fetch(`/api/sessions/${chatId}/viewport`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(size) }).catch(() => {});
+  }, []);
 
   // ---- open / switch chats ---------------------------------------------------
   const detach = useCallback(() => {
@@ -693,11 +708,15 @@ export default function AssistantApp() {
     if (!on) { inputChannel.current?.channel.dispose(); inputChannel.current = null; }
     setBrowser(b => b.inputError ? { ...b, inputError: undefined } : b);
     try {
-      const r = await fetch(`/api/sessions/${chatId}/takeover`, {
+      // Your click is the newest intent, so no version check: the agent bumps the control
+      // version when it starts, and a click racing that status update must not be refused.
+      // Setting the same mode twice is harmless, so a dropped connection is retried once.
+      const claim = () => fetch(`/api/sessions/${chatId}/takeover`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ on, sessionId: inputSession.current, control: inputControl.current }),
+        body: JSON.stringify({ on, sessionId: inputSession.current }),
       });
+      const r = await claim().catch(() => new Promise<Response>((resolve, reject) => setTimeout(() => claim().then(resolve, reject), 400)));
       if (!r.ok) throw new Error(await errorFromResponse(r));
       const j = (await r.json()) as { takeover: boolean; epoch?: number; control?: number; sessionId?: string };
       if (activeRef.current !== chatId || request !== controlRequest.current) return;
@@ -761,7 +780,7 @@ export default function AssistantApp() {
             },
             claim: async signal => {
               const claim = await fetch(`/api/sessions/${chatId}/takeover`, {
-                method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on: true, sessionId: inputSession.current, control: inputControl.current }), signal,
+                method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on: true, sessionId: inputSession.current }), signal,
               });
               if (!claim.ok) throw new InputTransportError(await errorFromResponse(claim));
               const state = await claim.json() as { epoch?: number; takeover: boolean; control?: number };
@@ -1061,6 +1080,10 @@ export default function AssistantApp() {
         patch(reply.id, (r) => ({ ...r, pending: false, agent: undefined, error: networkError(e) }));
         return;
       }
+      // The AI-written chat title lands a moment after the first message.
+      if (chats.find((c) => c.id === chatId)?.title === "New chat" || !chats.some((c) => c.id === chatId)) {
+        for (const ms of [3000, 8000]) setTimeout(() => void refreshChats(), ms);
+      }
 
       if (cmd) {
         const res = await fetch(`/api/chats/${chatId}/messages`, {
@@ -1076,7 +1099,7 @@ export default function AssistantApp() {
       if (m === "agent") void runAgent(chatId, text, imageIds, reply.id, false, { userId: user.id });
       else void runChat(chatId, text, imageIds, reply.id, { userId: user.id });
     },
-    [attachments, busy, mode, ensureChat, patch, refreshChats, runAgent, runChat]
+    [attachments, busy, chats, mode, ensureChat, patch, refreshChats, runAgent, runChat]
   );
 
   const editMessage = useCallback(
@@ -1225,6 +1248,10 @@ export default function AssistantApp() {
               onSelect={(id) => void openChat(id)}
               onNew={newChat}
               onDelete={(id) => void removeChat(id)}
+              onRename={(id, title) => {
+                setChats((cs) => cs.map((c) => (c.id === id ? { ...c, title } : c)));
+                void API.renameChat(id, title).catch(() => refreshChats());
+              }}
               onSettings={() => setSettingsOpen(true)}
               onClose={() => setSidebarOpen(false)}
             />
@@ -1381,7 +1408,7 @@ export default function AssistantApp() {
 
       {/* Live browser: full-height docked pane on desktop, sheet on smaller screens */}
       {panelOpen && (
-        <div className="sk-in sk-overlay fixed inset-x-1.5 bottom-1.5 top-12 z-20 lg:static lg:inset-auto lg:z-auto lg:h-full lg:w-[46%] lg:max-w-[700px] lg:shrink-0 xl:w-[48%]">
+        <div className="sk-in sk-overlay fixed inset-x-1.5 bottom-1.5 top-12 z-20 lg:static lg:inset-auto lg:z-auto lg:h-full lg:w-[52%] lg:max-w-[1200px] lg:shrink-0 2xl:w-[56%]">
           <BrowserPanel
             state={browser}
             bus={liveBus}
@@ -1396,6 +1423,8 @@ export default function AssistantApp() {
             onToggleControl={() => activeId && void setControl(activeId, !controlling)}
             onResume={resumeAgent}
             onInput={sendInput}
+            onViewport={sendViewport}
+            agentName={activeProvider?.label ? `Senko · ${activeProvider.label}` : "Senko"}
             onNav={(n) => sendInput("url" in n ? { type: "goto", url: n.url } : { type: "nav", action: n.action })}
           />
         </div>
@@ -1433,7 +1462,7 @@ function Gate({
   return (
     <div className="sk flex h-dvh items-center justify-center p-4">
       <div className="sk-pop flex w-full max-w-xs flex-col items-center text-center">
-        <FoxMark size={28} className={`mb-3 drop-shadow-[0_0_18px_rgba(220,20,60,0.45)] ${state === "connecting" ? "sk-thinking" : ""}`} title="Senko" />
+        <FoxMark size={28} className={`mb-3 drop-shadow-[0_0_18px_rgba(255,122,26,0.5)] ${state === "connecting" ? "sk-thinking" : ""}`} title="Senko" />
         {state === "connecting" ? (
           <p className="text-[13px] text-[var(--sk-muted)]" role="status">
             Waking Senko up…

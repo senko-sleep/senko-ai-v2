@@ -7,7 +7,6 @@ export function createLiveStream<T extends { type: string }>(subscribe: (send: (
   let ping: ReturnType<typeof setInterval> | undefined;
   let controller: ReadableStreamDefaultController<Uint8Array>;
   let frame: T | undefined;
-  let cursor: T | undefined;
   const reliable: T[] = [];
   let open = true;
   const cleanup = () => {
@@ -16,7 +15,7 @@ export function createLiveStream<T extends { type: string }>(subscribe: (send: (
     clearInterval(ping);
     unsubscribe();
     signal.removeEventListener("abort", abort);
-    frame = cursor = undefined;
+    frame = undefined;
     reliable.length = 0;
   };
   const abort = () => { cleanup(); try { controller.close(); } catch { /* already closed */ } };
@@ -24,7 +23,6 @@ export function createLiveStream<T extends { type: string }>(subscribe: (send: (
     if (!open) return;
     while ((controller.desiredSize ?? 0) > 0) {
       let next = reliable.shift();
-      if (!next && cursor) { next = cursor; cursor = undefined; }
       if (!next && frame) { next = frame; frame = undefined; }
       if (!next) break;
       controller.enqueue(encoder.encode(`data: ${JSON.stringify(next)}\n\n`));
@@ -38,11 +36,14 @@ export function createLiveStream<T extends { type: string }>(subscribe: (send: (
       unsubscribe = subscribe(event => {
         if (!open) return;
         if (event.type === "frame") frame = event;
-        // Clicks are reliable; only transient cursor movement can be replaced.
-        else if (event.type === "cursor" && (event as T & { kind?: string }).kind !== "click") cursor = event;
         else {
-          if (event.type === "reset") { frame = cursor = undefined; }
-          if (event.type === "cursor") cursor = undefined;
+          if (event.type === "reset") {
+            frame = undefined;
+            // Discard pointer waypoints for a document that is no longer visible.
+            for (let i = reliable.length - 1; i >= 0; i--) if (reliable[i].type === "cursor") reliable.splice(i, 1);
+          }
+          // Pointer waypoints are produced only while the agent performs real
+          // mouse moves. Keep their order so the live cursor follows that path.
           reliable.push(event);
         }
         if (reliable.length > 512) {

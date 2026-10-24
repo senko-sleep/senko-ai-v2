@@ -1,0 +1,332 @@
+Creating deployment archive from C:\Users\Owner\senko-ai...
+Packaging project directory (291 files, 896.4 KiB)
+Requesting upload target...
+Uploading archive (896.4 KiB bytes) to Wasmer...
+Determining build configuration...
+Build configuration determined (preset: node-base)
+Requesting remote build...
+Streaming build logs (build id: 2be9abdb-720e-4be9-aacb-fadd18e36f06)
+Oct 24 11:01:42.859  Waiting for deployment logs...
+Oct 24 11:01:42.957  ╭─────────────────╮
+Oct 24 11:01:42.957  │ Anybuild 0.33.0 │
+Oct 24 11:01:42.957  ╰─────────────────╯
+Oct 24 11:01:42.957  
+Oct 24 11:01:42.957    Detected Node.js provider
+Oct 24 11:01:42.957      Framework: Next.js
+Oct 24 11:01:42.957      Server: Node.js
+Oct 24 11:01:42.987      Package manager: npm
+Oct 24 11:01:42.988      Node version: 24
+Oct 24 11:01:42.989  
+Oct 24 11:01:42.990    Generated Anybuild at /tmp/.tmpE6A4gK/out/Anybuild
+Oct 24 11:01:42.997  
+Oct 24 11:01:42.999    Packages
+Oct 24 11:01:43.000    ──────────
+Oct 24 11:01:43.001    node  │  24
+Oct 24 11:01:43.002    npm   │  11  │  only build
+Oct 24 11:01:43.004    bash  │  -   │  only build
+Oct 24 11:01:43.005  
+Oct 24 11:01:43.005    Build Steps
+Oct 24 11:01:43.006    ───────────
+Oct 24 11:01:43.007    ▸ install
+Oct 24 11:01:43.008      $ npm install
+Oct 24 11:01:43.009  
+Oct 24 11:01:43.011    ▸ build
+Oct 24 11:01:43.012      $ npx -y next-bundle@1.0.0 --build-command 'npm run build'
+Oct 24 11:01:43.013  
+Oct 24 11:01:43.015    Deploy scripts
+Oct 24 11:01:43.016    ──────────────
+Oct 24 11:01:43.016    ▸ start
+Oct 24 11:01:43.018      $ node .next-bundle/server.mjs
+Oct 24 11:01:43.019  
+Oct 24 11:01:43.020    Starting Build...
+Oct 24 11:01:43.021    ─────────────────
+Oct 24 11:01:43.022  ┌──────────────────────────────────────────────────────────────────────────────┐
+Oct 24 11:01:43.024  │    1 # syntax=docker/dockerfile:1.7-labs                                     │
+Oct 24 11:01:43.025  │    2 FROM debian:trixie-slim AS build                                        │
+Oct 24 11:01:43.026  │    3                                                                         │
+Oct 24 11:01:43.027  │    4 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \           │
+Oct 24 11:01:43.028  │    5     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \       │
+Oct 24 11:01:43.029  │    6     rm -f /etc/apt/apt.conf.d/docker-clean \                            │
+Oct 24 11:01:43.029  │    7     && apt-get update \                                                 │
+Oct 24 11:01:43.030  │    8     && apt-get -y --no-install-recommends install \                     │
+Oct 24 11:01:43.031  │    9         build-essential gcc make autoconf libtool bison \               │
+Oct 24 11:01:43.033  │   10         dpkg-dev pkg-config re2c locate \                               │
+Oct 24 11:01:43.034  │   11         libmariadb-dev libmariadb-dev-compat libpq-dev libsqlite3-dev \ │
+Oct 24 11:01:43.035  │   12         libvips-dev default-libmysqlclient-dev libmagickwand-dev \      │
+Oct 24 11:01:43.035  │   13         libicu-dev libxml2-dev libxslt-dev libyaml-dev \                │
+Oct 24 11:01:43.036  │   14         sudo curl ca-certificates unzip git                             │
+Oct 24 11:01:43.037  │   15                                                                         │
+Oct 24 11:01:43.074  │   16 SHELL ["/bin/bash", "-o", "pipefail", "-c"]                             │
+Oct 24 11:01:43.075  │   17 ENV MISE_DATA_DIR="/mise"                                               │
+Oct 24 11:01:43.077  │   18 ENV MISE_CONFIG_DIR="/mise"                                             │
+Oct 24 11:01:43.078  │   19 ENV MISE_CACHE_DIR="/mise/cache"                                        │
+Oct 24 11:01:43.079  │   20 ENV MISE_INSTALL_PATH="/usr/local/bin/mise"                             │
+Oct 24 11:01:43.080  │   21 ENV PATH="/mise/shims:$PATH"                                            │
+Oct 24 11:01:43.081  │   22                                                                         │
+Oct 24 11:01:43.082  │   23 RUN curl https://mise.run | sh                                          │
+Oct 24 11:01:43.082  │   24 RUN mkdir -p /app                                                       │
+Oct 24 11:01:43.083  │   25 RUN --mount=type=cache,target=/mise/cache,sharing=locked mise use --glo │
+Oct 24 11:01:43.085  │   26 RUN --mount=type=cache,target=/mise/cache,sharing=locked mise use --glo │
+Oct 24 11:01:43.087  │   27 WORKDIR /opt/build                                                      │
+Oct 24 11:01:43.090  │   28 COPY package-lock.json package-lock.json                                │
+Oct 24 11:01:43.091  │   29 ENV CI=true NPM_CONFIG_FUND=false                                       │
+Oct 24 11:01:43.092  │   30 RUN \                                                                   │
+Oct 24 11:01:43.093  │   31   --mount=type=bind,source=package.json,target=package.json \           │
+Oct 24 11:01:43.094  │   32   npm install                                                           │
+Oct 24 11:01:43.095  │   33 COPY \                                                                  │
+Oct 24 11:01:43.097  │   34   --exclude=node_modules \                                              │
+Oct 24 11:01:43.098  │   35   --exclude=.git \                                                      │
+Oct 24 11:01:43.098  │   36   --exclude=package-lock.json \                                         │
+Oct 24 11:01:43.099  │   37   . .                                                                   │
+Oct 24 11:01:43.100  │   38 RUN npx -y next-bundle@1.0.0 --build-command 'npm run build'            │
+Oct 24 11:01:43.101  │   39 RUN npm prune --omit=dev --ignore-scripts                               │
+Oct 24 11:01:43.102  │   40 RUN mkdir -p /opt/assets                                                │
+Oct 24 11:01:43.103  │   41 RUN echo 'IyEvdXNyL2Jpbi9lbnYgYmFzaApzZXQgLWV1byBwaXBlZmFpbAoKcm9vdD0iJ │
+Oct 24 11:01:43.104  │   42 RUN bash /opt/assets/optimize-node-modules.sh .next-bundle/node_modules │
+Oct 24 11:01:43.106  │   43 RUN cp -R .next-bundle /app                                             │
+Oct 24 11:01:43.106  │   44                                                                         │
+Oct 24 11:01:43.107  │   45 FROM scratch                                                            │
+Oct 24 11:01:43.108  │   46 COPY --from=build /app /app                                             │
+Oct 24 11:01:43.109  │   47                                                                         │
+Oct 24 11:01:43.110  └──────────────────────────────────────────────────────────────────────────────┘
+Oct 24 11:01:43.132  #1 [depot] build: https://depot.dev/orgs/71bkc6nr3w/projects/63lj75k3n0/builds/b45v359ct3
+Oct 24 11:01:43.253  #1 DONE 0.0s
+Oct 24 11:01:43.254  
+Oct 24 11:01:43.255  #2 [depot] launching amd64 machine
+Oct 24 11:01:43.256  #2 DONE 0.1s
+Oct 24 11:01:43.353  
+Oct 24 11:01:43.354  #3 [depot] connecting to amd64 machine
+Oct 24 11:01:43.356  #3 DONE 0.0s
+Oct 24 11:01:43.357  
+Oct 24 11:01:43.358  #4 [internal] fetching git attributes
+Oct 24 11:01:43.358  #4 DONE 0.0s
+Oct 24 11:01:43.359  
+Oct 24 11:01:43.361  #5 [internal] load build definition from Dockerfile
+Oct 24 11:01:43.362  #5 transferring dockerfile: 2.96kB done
+Oct 24 11:01:43.363  #5 DONE 0.0s
+Oct 24 11:01:43.364  
+Oct 24 11:01:43.365  #6 resolve image config for docker-image://docker.io/docker/dockerfile:1.7-labs
+Oct 24 11:01:43.478  #6 0.003 [auth] Started verifying token authority from the client for registry-1.docker.io
+Oct 24 11:01:43.479  #6 0.006 [auth] Completed verifying token authority from the client for registry-1.docker.io after 0.003s
+Oct 24 11:01:43.481  #6 DONE 0.1s
+Oct 24 11:01:43.629  
+Oct 24 11:01:43.630  #7 docker-image://docker.io/docker/dockerfile:1.7-labs@sha256:b99fecfe00268a8b556fad7d9c37ee25d716ae08a5d7320e6d51c4dd83246894
+Oct 24 11:01:43.632  #7 resolve docker.io/docker/dockerfile:1.7-labs@sha256:b99fecfe00268a8b556fad7d9c37ee25d716ae08a5d7320e6d51c4dd83246894 0.0s done
+Oct 24 11:01:43.633  #7 CACHED
+Oct 24 11:01:43.633  
+Oct 24 11:01:43.634  #8 [internal] load metadata for docker.io/library/debian:trixie-slim
+Oct 24 11:01:43.635  #0 0.003 [auth] Started verifying token authority from the client for registry-1.docker.io
+Oct 24 11:01:43.636  #0 0.005 [auth] Completed verifying token authority from the client for registry-1.docker.io after 0.002s
+Oct 24 11:01:43.791  #8 DONE 0.1s
+Oct 24 11:01:43.792  
+Oct 24 11:01:43.794  #9 [build  1/16] FROM docker.io/library/debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
+Oct 24 11:01:43.795  #9 resolve docker.io/library/debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad 0.0s done
+Oct 24 11:01:43.796  #9 DONE 0.0s
+Oct 24 11:01:43.797  
+Oct 24 11:01:43.798  #10 [internal] load build context
+Oct 24 11:01:43.800  #10 transferring context: 90B
+Oct 24 11:01:43.894  #10 transferring context: 3.05MB 0.2s done
+Oct 24 11:01:44.038  #10 DONE 0.2s
+Oct 24 11:01:44.039  
+Oct 24 11:01:44.041  #11 [build  5/16] RUN --mount=type=cache,target=/mise/cache,sharing=locked mise use --global "node@24"
+Oct 24 11:01:44.042  #11 CACHED
+Oct 24 11:01:44.043  
+Oct 24 11:01:44.044  #12 [build  4/16] RUN mkdir -p /app
+Oct 24 11:01:44.047  #12 CACHED
+Oct 24 11:01:44.048  
+Oct 24 11:01:44.049  #13 [build  6/16] RUN --mount=type=cache,target=/mise/cache,sharing=locked mise use --global "npm@11"
+Oct 24 11:01:44.050  #13 CACHED
+Oct 24 11:01:44.051  
+Oct 24 11:01:44.052  #14 [build  7/16] WORKDIR /opt/build
+Oct 24 11:01:44.054  #14 CACHED
+Oct 24 11:01:44.055  
+Oct 24 11:01:44.056  #15 [build  8/16] COPY package-lock.json package-lock.json
+Oct 24 11:01:44.057  #15 CACHED
+Oct 24 11:01:44.057  
+Oct 24 11:01:44.058  #16 [build  2/16] RUN --mount=type=cache,target=/var/cache/apt,sharing=locked     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked     rm -f /etc/apt/apt.conf.d/docker-clean     && apt-get update     && apt-get -y --no-install-recommends install         build-essential gcc make autoconf libtool bison         dpkg-dev pkg-config re2c locate         libmariadb-dev libmariadb-dev-compat libpq-dev libsqlite3-dev         libvips-dev default-libmysqlclient-dev libmagickwand-dev         libicu-dev libxml2-dev libxslt-dev libyaml-dev         sudo curl ca-certificates unzip git
+Oct 24 11:01:44.059  #16 CACHED
+Oct 24 11:01:44.061  
+Oct 24 11:01:44.062  #17 [build  3/16] RUN curl https://mise.run | sh
+Oct 24 11:01:44.062  #17 CACHED
+Oct 24 11:01:44.063  
+Oct 24 11:01:44.064  #18 [build  9/16] RUN   --mount=type=bind,source=package.json,target=package.json   npm install
+Oct 24 11:01:44.066  #18 CACHED
+Oct 24 11:01:44.067  
+Oct 24 11:01:44.068  #19 [build 10/16] COPY   --exclude=node_modules   --exclude=.git   --exclude=package-lock.json   . .
+Oct 24 11:01:44.068  #19 DONE 0.1s
+Oct 24 11:01:44.188  
+Oct 24 11:01:44.190  #20 [build 11/16] RUN npx -y next-bundle@1.0.0 --build-command 'npm run build'
+Oct 24 11:01:47.632  #20 3.580 npm warn deprecated stream-to-promise@2.2.0: Deprecated. Use node:stream/promises and node:stream/consumers instead.
+Oct 24 11:01:48.534  #20 4.403 npm warn deprecated tar@7.5.7: Old versions of tar are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+Oct 24 11:01:49.990  #20 5.928 Building /opt/build
+Oct 24 11:01:49.992  #20 5.928 Using next@16.1.6 with @vercel/next@4.17.1
+Oct 24 11:01:49.993  #20 5.928 Install step: skipped
+Oct 24 11:01:49.994  #20 5.939 Skipping "install" command...
+Oct 24 11:01:50.142  #20 5.939 Detected Next.js version: 16.1.6
+Oct 24 11:01:50.143  #20 5.940 Running "npm run build"
+Oct 24 11:01:50.144  #20 5.991 
+Oct 24 11:01:50.146  #20 5.991 > senko-ai@0.1.0 build
+Oct 24 11:01:50.147  #20 5.991 > next build --webpack
+Oct 24 11:01:50.147  #20 5.991 
+Oct 24 11:01:50.445  #20 6.251 ⚠ No build cache found. Please configure build caching for faster rebuilds. Read more: https://nextjs.org/docs/messages/no-cache
+Oct 24 11:01:50.446  #20 6.274 Attention: Next.js now collects completely anonymous telemetry regarding usage.
+Oct 24 11:01:50.446  #20 6.274 This information is used to shape Next.js' roadmap and prioritize features.
+Oct 24 11:01:50.446  #20 6.274 You can learn more, including how to opt-out if you'd not like to participate in this anonymous program, by visiting the following URL:
+Oct 24 11:01:50.447  #20 6.274 https://nextjs.org/telemetry
+Oct 24 11:01:50.449  #20 6.274 
+Oct 24 11:01:50.449  #20 6.285 ▲ Next.js 16.1.6 (webpack)
+Oct 24 11:01:50.450  #20 6.285 
+Oct 24 11:01:50.451  #20 6.307   Creating an optimized production build ...
+Oct 24 11:02:04.094  #20 20.04 ✓ Compiled successfully in 12.3s
+Oct 24 11:02:04.245  #20 20.04   Running TypeScript ...
+Oct 24 11:02:07.701  #20 23.58   Collecting page data using 15 workers ...
+Oct 24 11:02:09.191  #20 25.14   Generating static pages using 15 workers (0/26) ...
+Oct 24 11:02:09.341  #20 25.17   Generating static pages using 15 workers (6/26) 
+Oct 24 11:02:09.343  #20 25.17   Generating static pages using 15 workers (12/26) 
+Oct 24 11:02:09.344  #20 25.20   Generating static pages using 15 workers (19/26) 
+Oct 24 11:02:09.492  #20 25.38 ✓ Generating static pages using 15 workers (26/26) in 237.3ms
+Oct 24 11:02:09.755  #20 25.70   Finalizing page optimization ...
+Oct 24 11:02:09.756  #20 25.70   Collecting build traces ...
+Oct 24 11:02:14.834  #20 30.69 
+Oct 24 11:02:14.835  #20 30.69 Route (app)
+Oct 24 11:02:14.836  #20 30.69 ┌ ○ /
+Oct 24 11:02:14.837  #20 30.69 ├ ○ /_not-found
+Oct 24 11:02:14.839  #20 30.69 ├ ƒ /api/access
+Oct 24 11:02:14.839  #20 30.69 ├ ƒ /api/agent-host
+Oct 24 11:02:14.840  #20 30.69 ├ ƒ /api/audio
+Oct 24 11:02:14.841  #20 30.69 ├ ƒ /api/browse
+Oct 24 11:02:14.842  #20 30.69 ├ ƒ /api/chat
+Oct 24 11:02:14.844  #20 30.69 ├ ƒ /api/chats
+Oct 24 11:02:14.845  #20 30.69 ├ ƒ /api/chats/[id]
+Oct 24 11:02:14.845  #20 30.69 ├ ƒ /api/chats/[id]/agent
+Oct 24 11:02:14.846  #20 30.69 ├ ƒ /api/chats/[id]/agent/stop
+Oct 24 11:02:14.847  #20 30.69 ├ ƒ /api/chats/[id]/messages
+Oct 24 11:02:14.848  #20 30.69 ├ ƒ /api/chats/[id]/page
+Oct 24 11:02:14.849  #20 30.69 ├ ƒ /api/dev-memory
+Oct 24 11:02:14.851  #20 30.69 ├ ƒ /api/health
+Oct 24 11:02:14.851  #20 30.69 ├ ƒ /api/images
+Oct 24 11:02:14.852  #20 30.69 ├ ƒ /api/link
+Oct 24 11:02:14.853  #20 30.69 ├ ƒ /api/link/claim
+Oct 24 11:02:14.854  #20 30.69 ├ ƒ /api/list-links
+Oct 24 11:02:14.855  #20 30.69 ├ ƒ /api/me
+Oct 24 11:02:14.856  #20 30.69 ├ ƒ /api/memories
+Oct 24 11:02:14.858  #20 30.69 ├ ƒ /api/navigate
+Oct 24 11:02:14.858  #20 30.69 ├ ƒ /api/open-app
+Oct 24 11:02:14.859  #20 30.69 ├ ƒ /api/providers
+Oct 24 11:02:14.860  #20 30.69 ├ ƒ /api/proxy
+Oct 24 11:02:14.861  #20 30.69 ├ ƒ /api/scrape
+Oct 24 11:02:14.862  #20 30.69 ├ ƒ /api/screenshot
+Oct 24 11:02:14.863  #20 30.69 ├ ƒ /api/search
+Oct 24 11:02:14.864  #20 30.69 ├ ƒ /api/sessions/[chatId]
+Oct 24 11:02:14.866  #20 30.69 ├ ƒ /api/sessions/[chatId]/input
+Oct 24 11:02:14.866  #20 30.69 ├ ƒ /api/sessions/[chatId]/live
+Oct 24 11:02:14.867  #20 30.69 ├ ƒ /api/sessions/[chatId]/screenshots
+Oct 24 11:02:14.868  #20 30.69 ├ ƒ /api/sessions/[chatId]/screenshots/[shotId]
+Oct 24 11:02:14.869  #20 30.69 ├ ƒ /api/sessions/[chatId]/stream
+Oct 24 11:02:14.870  #20 30.69 ├ ƒ /api/sessions/[chatId]/takeover
+Oct 24 11:02:14.871  #20 30.69 ├ ƒ /api/sessions/[chatId]/viewport
+Oct 24 11:02:14.873  #20 30.69 ├ ƒ /api/settings
+Oct 24 11:02:14.874  #20 30.69 ├ ƒ /api/sources
+Oct 24 11:02:14.874  #20 30.69 ├ ƒ /api/structured-browse
+Oct 24 11:02:14.875  #20 30.69 ├ ƒ /api/suggestions
+Oct 24 11:02:14.876  #20 30.69 ├ ƒ /api/tests
+Oct 24 11:02:14.877  #20 30.69 ├ ƒ /api/tests/runs
+Oct 24 11:02:14.878  #20 30.69 ├ ƒ /api/tests/runs/[runId]
+Oct 24 11:02:14.879  #20 30.69 ├ ƒ /api/tts
+Oct 24 11:02:14.880  #20 30.69 ├ ƒ /api/uploads
+Oct 24 11:02:14.882  #20 30.69 ├ ƒ /api/uploads/[id]
+Oct 24 11:02:14.883  #20 30.69 ├ ƒ /api/url
+Oct 24 11:02:14.883  #20 30.69 ├ ƒ /api/validate-url
+Oct 24 11:02:14.884  #20 30.69 ├ ƒ /api/video-extract
+Oct 24 11:02:14.885  #20 30.69 ├ ƒ /api/video-proxy
+Oct 24 11:02:14.886  #20 30.69 ├ ○ /classic
+Oct 24 11:02:14.888  #20 30.69 ├ ƒ /health
+Oct 24 11:02:14.889  #20 30.69 └ ● /test-fixtures/[name]
+Oct 24 11:02:14.889  #20 30.69   ├ /test-fixtures/popups
+Oct 24 11:02:14.890  #20 30.69   ├ /test-fixtures/simple
+Oct 24 11:02:14.891  #20 30.69   └ /test-fixtures/motion
+Oct 24 11:02:14.892  #20 30.69 
+Oct 24 11:02:14.893  #20 30.69 
+Oct 24 11:02:14.895  #20 30.69 ƒ Proxy (Middleware)
+Oct 24 11:02:14.896  #20 30.69 
+Oct 24 11:02:14.897  #20 30.69 ○  (Static)   prerendered as static content
+Oct 24 11:02:14.897  #20 30.69 ●  (SSG)      prerendered as static HTML (uses generateStaticParams)
+Oct 24 11:02:14.898  #20 30.69 ƒ  (Dynamic)  server-rendered on demand
+Oct 24 11:02:14.899  #20 30.69 
+Oct 24 11:02:14.901  #20 30.78 Traced Next.js server files in: 36.358ms
+Oct 24 11:02:15.285  #20 31.14 Created all serverless functions in: 360.682ms
+Oct 24 11:02:15.287  #20 31.15 Collected static files (public/, static/, .next/static): 4.053ms
+Oct 24 11:02:15.586  #20 31.39 Build output written to .next-bundle
+Oct 24 11:02:15.588  #20 31.39 Materialized 648 traced files into .next-bundle/node_modules
+Oct 24 11:02:15.589  #20 31.39 Materialized 346 function files and 744 shared dependency files
+Oct 24 11:02:15.590  #20 31.39 Materialized 57 local runtime package files
+Oct 24 11:02:15.591  #20 31.39 Run it with: node .next-bundle/server.mjs
+Oct 24 11:02:15.717  #20 DONE 31.7s
+Oct 24 11:02:15.868  
+Oct 24 11:02:15.869  #21 [build 12/16] RUN npm prune --omit=dev --ignore-scripts
+Oct 24 11:03:58.826  #21 103.0 
+Oct 24 11:03:58.828  #21 103.0 removed 657 packages, and audited 344 packages in 2m
+Oct 24 11:03:58.977  #21 103.1 
+Oct 24 11:03:58.978  #21 103.1 11 vulnerabilities (1 moderate, 9 high, 1 critical)
+Oct 24 11:03:58.980  #21 103.1 
+Oct 24 11:03:58.981  #21 103.1 To address issues that do not require attention, run:
+Oct 24 11:03:58.982  #21 103.1   npm audit fix
+Oct 24 11:03:58.982  #21 103.1 
+Oct 24 11:03:58.983  #21 103.1 To address all issues (including breaking changes), run:
+Oct 24 11:03:58.984  #21 103.1   npm audit fix --force
+Oct 24 11:03:58.986  #21 103.1 
+Oct 24 11:03:58.987  #21 103.1 Run `npm audit` for details.
+Oct 24 11:03:59.127  #21 DONE 103.3s
+Oct 24 11:03:59.129  
+Oct 24 11:03:59.130  #22 [build 13/16] RUN mkdir -p /opt/assets
+Oct 24 11:03:59.278  #22 DONE 0.2s
+Oct 24 11:03:59.279  
+Oct 24 11:03:59.280  #23 [build 14/16] RUN echo 'IyEvdXNyL2Jpbi9lbnYgYmFzaApzZXQgLWV1byBwaXBlZmFpbAoKcm9vdD0iJHsxOi1ub2RlX21vZHVsZXN9IgoKaWYgW1sgISAtZCAiJHJvb3QiIF1dOyB0aGVuCiAgZXhpdCAwCmZpCgppc193YXNtKCkgewogIGxvY2FsIGZpbGU9IiQxIgogIGxvY2FsIG1hZ2ljCgogIGNhc2UgIiRmaWxlIiBpbgogICAgKi53YXNtIHwgKi5XQVNNKQogICAgICByZXR1cm4gMAogICAgICA7OwogIGVzYWMKCiAgbWFnaWM9IiQoZGQgaWY9IiRmaWxlIiBicz00IGNvdW50PTEgMj4vZGV2L251bGwgfCBvZCAtQW4gLXR4MSB8IHRyIC1kICcgXG4nKSIKICBbWyAiJG1hZ2ljIiA9PSAiMDA2MTczNmQiIF1dCn0KCndoaWxlIElGUz0gcmVhZCAtciAtZCAiIiBmaWxlOyBkbwogIGlmIGlzX3dhc20gIiRmaWxlIjsgdGhlbgogICAgY29udGludWUKICBmaQoKICBpZiAhIGdyZXAgLUlxIC4gIiRmaWxlIjsgdGhlbgogICAgcm0gLWYgLS0gIiRmaWxlIgogIGZpCmRvbmUgPCA8KAogIGZpbmQgIiRyb290IiAtdHlwZSBmIFwoIC1wZXJtIC0xMDAgLW8gLXBlcm0gLTAxMCAtbyAtcGVybSAtMDAxIFwpIC1wcmludDAKKQoKIyBSZW1vdmluZyBuYXRpdmUgZXhlY3V0YWJsZXMgY2FuIGxlYXZlIGRhbmdsaW5nIC5iaW4gbGlua3MgdGhhdCBtYWtlIGNwIC1STCBmYWlsLgp3aGlsZSBJRlM9IHJlYWQgLXIgLWQgIiIgbGluazsgZG8KICBpZiBbWyAhIC1lICIkbGluayIgXV07IHRoZW4KICAgIHJtIC1mIC0tICIkbGluayIKICBmaQpkb25lIDwgPChmaW5kICIkcm9vdCIgLXR5cGUgbCAtcHJpbnQwKQo=' | base64 -d > /opt/assets/optimize-node-modules.sh
+Oct 24 11:03:59.428  #23 DONE 0.1s
+Oct 24 11:03:59.429  
+Oct 24 11:03:59.431  #24 [build 15/16] RUN bash /opt/assets/optimize-node-modules.sh .next-bundle/node_modules
+Oct 24 11:03:59.578  #24 DONE 0.2s
+Oct 24 11:03:59.580  
+Oct 24 11:03:59.581  #25 [build 16/16] RUN cp -R .next-bundle /app
+Oct 24 11:03:59.880  #25 DONE 0.2s
+Oct 24 11:04:00.441  
+Oct 24 11:04:00.442  #26 [stage-1 1/1] COPY --from=build /app /app
+Oct 24 11:04:00.710  #26 DONE 0.2s
+Oct 24 11:04:00.787  
+Oct 24 11:04:00.788  #27 exporting to client directory
+Oct 24 11:04:00.789  #27 copying files 5.07MB 0.1s
+Oct 24 11:04:02.913  #27 copying files 97.36MB 2.3s done
+Oct 24 11:04:02.915  #27 DONE 2.3s
+Oct 24 11:04:02.987  [1;36m
+Oct 24 11:04:02.988  Build Summary[0m: [4;39mhttps://depot.dev/orgs/71bkc6nr3w/projects/63lj75k3n0/builds/b45v359ct3[0m
+Oct 24 11:04:02.991  
+Oct 24 11:04:02.993    ╭───────────────────────────╮
+Oct 24 11:04:02.994    │ Build complete in 139.99s │
+Oct 24 11:04:02.995    ╰───────────────────────────╯
+Oct 24 11:04:03.002  
+Oct 24 11:04:03.004    Wasmer Deployment
+Oct 24 11:04:03.005    ─────────────────
+Oct 24 11:04:03.006    Mapping dependencies to Wasmer packages:
+Oct 24 11:04:03.007  
+Oct 24 11:04:03.008    node@24  │  wasmer/edgejs-quickjs@=0.2.5
+Oct 24 11:04:03.009    bash     │  wasmer/bash@=1.0.25
+Oct 24 11:04:03.010  Using original app.yaml found in source directory
+Oct 24 11:04:04.321  
+Oct 24 11:04:04.322  Saved deploy config to /tmp/.tmpE6A4gK/out/__anybuild_result.json
+Oct 24 11:04:04.326  Wrote deployment config to /tmp/.tmpE6A4gK/out/__anybuild_result.json
+Oct 24 11:04:14.479  Verifying deployment...
+Oct 24 11:04:14.485  Finishing rollout...
+Oct 24 11:04:14.911  Screenshot generation scheduled without waiting for completion.
+Streaming build logs complete
+Remote build finished successfully.
+
+✔ App senko-ai (senko-sleep) deployed successfully.
+
+Live:    https://senko-ai.wasmer.app
+Manage:  https://wasmer.io/apps/senko-sleep/senko-ai
+
+Waiting for new deployment to become available...
+(You can safely stop waiting now with CTRL-C)
+.
+𖥔 Deployment complete
+exit 0

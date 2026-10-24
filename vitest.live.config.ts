@@ -7,7 +7,7 @@ import path from "node:path";
 export default defineConfig({
   plugins: [
     {
-      // Prompt files (e.g. src/app/prompts/core.txt) are imported as plain strings, like in Next.
+      // Any remaining .txt imports load as plain strings.
       name: "raw-txt",
       transform(code, id) {
         if (id.endsWith(".txt")) return { code: `export default ${JSON.stringify(code)};`, map: null };

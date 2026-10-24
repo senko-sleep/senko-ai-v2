@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 const base = process.argv[2] || "https://senko-ai.wasmer.app";
-const headers = { "x-device-id": `test_${randomUUID()}`, "content-type": "application/json" };
+const headers = { "x-device-id": randomUUID(), "content-type": "application/json" };
 const ctl = new AbortController();
 const deadline = setTimeout(() => ctl.abort(), 240_000);
 let id, latest = {}, frames = 0, cursors = 0;

@@ -83,6 +83,7 @@ export function createInputChannel(send: (events: BrowserInput[], signal: AbortS
   const queue: BrowserInput[] = [];
   let sending = false;
   let disposed = false;
+  let flushTimer: ReturnType<typeof setTimeout> | undefined;
   const controller = new AbortController();
   const pump = async () => {
     if (sending || disposed) return;
@@ -94,12 +95,27 @@ export function createInputChannel(send: (events: BrowserInput[], signal: AbortS
       if (!disposed) onError(error);
     } finally { sending = false; }
   };
+  const schedule = (delay = 0) => {
+    if (disposed) return;
+    if (flushTimer !== undefined) {
+      if (delay > 0) return;
+      clearTimeout(flushTimer);
+      flushTimer = undefined;
+    }
+    flushTimer = setTimeout(() => {
+      flushTimer = undefined;
+      void pump();
+    }, delay);
+  };
   return {
     push(event: BrowserInput) {
       if (disposed) return;
       try { appendInput(queue, event); } catch (error) { onError(error); return; }
-      void pump();
+      // Let a short burst of keyboard input collect into one browser round trip.
+      // Pointer actions and scrolling stay immediate; this bounds latency while
+      // avoiding one network request per character on ordinary typing.
+      schedule(event.type === "key" || event.type === "text" ? 8 : 0);
     },
-    dispose() { disposed = true; queue.length = 0; controller.abort(); },
+    dispose() { disposed = true; clearTimeout(flushTimer); flushTimer = undefined; queue.length = 0; controller.abort(); },
   };
 }

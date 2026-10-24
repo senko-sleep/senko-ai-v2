@@ -1,0 +1,24 @@
+import { randomUUID } from "node:crypto";
+const base = "https://senko-ai.wasmer.app";
+const headers = { "x-device-id": randomUUID(), "content-type": "application/json" };
+const call = async (p, b) => { const r = await fetch(base + p, { method: b ? "POST" : "GET", headers, body: b && JSON.stringify(b) }); return r.json().catch(() => ({})); };
+const chat = (await call("/api/chats", { title: "vp probe" })).chat;
+console.log("open", JSON.stringify(await call(`/api/sessions/${chat.id}`, { action: "open" })).slice(0, 200));
+const ctl = new AbortController();
+let last = "", n = 0; setInterval(() => console.log("frames so far", n), 2000).unref();
+const r = await fetch(`${base}/api/sessions/${chat.id}/stream`, { headers, signal: ctl.signal });
+(async () => { const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "";
+  try { for (;;) { const { done, value } = await rd.read(); if (done) break; buf += dec.decode(value, { stream: true }); let i;
+    while ((i = buf.indexOf("\n\n")) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 2); if (!l.startsWith("data: ")) continue; const e = JSON.parse(l.slice(6));
+      if (e.type === "frame") { n++; const k = `${e.width}x${e.height}`; if (k !== last) { last = k; console.log("frame", k); } }
+      else if (e.type === "status") console.log("status", e.status, e.live?.browser, e.tabs?.map(t => t.url).join(",")); else if (e.type !== "log") console.log(e.type); } } } catch {} })();
+await new Promise(r => setTimeout(r, 3000));
+console.log("viewport", JSON.stringify(await call(`/api/sessions/${chat.id}/viewport`, { width: 895, height: 960 })));
+await new Promise(r => setTimeout(r, 2000));
+console.log("goto", JSON.stringify(await call(`/api/sessions/${chat.id}/input`, { events: [{ type: "goto", url: "https://duckduckgo.com/" }], protocol: 2 })));
+await new Promise(r => setTimeout(r, 6000));
+console.log("goto2", JSON.stringify(await call(`/api/sessions/${chat.id}/input`, { events: [{ type: "goto", url: "https://en.wikipedia.org/wiki/Fox" }], protocol: 2 })));
+await new Promise(r => setTimeout(r, 6000));
+ctl.abort();
+await fetch(`${base}/api/sessions/${chat.id}`, { method: "DELETE", headers }); await fetch(`${base}/api/chats/${chat.id}`, { method: "DELETE", headers });
+process.exit(0);

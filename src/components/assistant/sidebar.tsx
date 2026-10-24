@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { PanelLeftClose, Settings2, SquarePen, Trash2 } from "lucide-react";
+import { PanelLeftClose, Pencil, Settings2, SquarePen, Trash2 } from "lucide-react";
 import { FoxMark } from "./fox-mark";
 import type { ChatSummary } from "./lib";
 
@@ -28,6 +28,7 @@ export function Sidebar({
   onSelect,
   onNew,
   onDelete,
+  onRename,
   onSettings,
   onClose,
 }: {
@@ -37,10 +38,19 @@ export function Sidebar({
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
+  onRename: (id: string, title: string) => void;
   onSettings: () => void;
   onClose: () => void;
 }) {
   const [confirming, setConfirming] = useState<string | null>(null);
+  const [editing, setEditing] = useState<{ id: string; value: string } | null>(null);
+  const commit = () => {
+    if (!editing) return;
+    const title = editing.value.trim();
+    const was = chats.find((c) => c.id === editing.id)?.title;
+    if (title && title !== was) onRename(editing.id, title);
+    setEditing(null);
+  };
 
   return (
     <nav aria-label="Chats" className="sk-sidebar flex h-full w-full flex-col border-r border-[var(--sk-line)]">
@@ -93,11 +103,27 @@ export function Sidebar({
                   const asking = confirming === c.id;
                   return (
                     <li key={c.id} className="group/item relative">
+                      {editing?.id === c.id ? (
+                        <input
+                          autoFocus
+                          value={editing.value}
+                          maxLength={120}
+                          onFocus={(e) => e.currentTarget.select()}
+                          onChange={(e) => setEditing({ id: c.id, value: e.target.value })}
+                          onBlur={commit}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") commit();
+                            if (e.key === "Escape") setEditing(null);
+                          }}
+                          aria-label="Chat name"
+                          className="h-7.5 w-full rounded-md border border-[var(--sk-accent-line)] bg-[var(--sk-raised)] px-2.5 text-[12.5px] text-[var(--sk-text)] outline-none"
+                        />
+                      ) : (
                       <button
                         type="button"
                         onClick={() => onSelect(c.id)}
                         aria-current={active ? "page" : undefined}
-                        className={`relative flex h-7.5 w-full items-center rounded-md pl-3 pr-7 text-left text-[12.5px] transition-colors ${
+                        className={`relative flex h-7.5 w-full items-center rounded-md pl-3 pr-12 text-left text-[12.5px] transition-colors ${
                           active
                             ? "bg-[var(--sk-hover)] font-medium text-[var(--sk-text)] before:absolute before:bottom-1.5 before:left-0.5 before:top-1.5 before:w-[2px] before:rounded-full before:bg-[var(--sk-accent)]"
                             : "text-[var(--sk-muted)] hover:bg-[var(--sk-hover)] hover:text-[var(--sk-text)]"
@@ -105,6 +131,19 @@ export function Sidebar({
                       >
                         <span className="truncate">{c.title}</span>
                       </button>
+                      )}
+                      {editing?.id !== c.id && (
+                      <button
+                        type="button"
+                        onClick={() => setEditing({ id: c.id, value: c.title })}
+                        className="absolute right-7 top-1/2 flex h-6 -translate-y-1/2 items-center justify-center rounded px-1.5 text-[var(--sk-faint)] transition hover:text-[var(--sk-text)] sm:opacity-0 sm:focus-visible:opacity-100 sm:group-hover/item:opacity-100"
+                        aria-label={`Rename “${c.title}”`}
+                        title="Rename"
+                      >
+                        <Pencil size={11} />
+                      </button>
+                      )}
+                      {editing?.id !== c.id && (
                       <button
                         type="button"
                         onClick={() => {
@@ -127,6 +166,7 @@ export function Sidebar({
                       >
                         {asking ? "Delete?" : <Trash2 size={11.5} />}
                       </button>
+                      )}
                     </li>
                   );
                 })}
