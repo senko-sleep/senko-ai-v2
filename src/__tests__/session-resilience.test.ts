@@ -116,6 +116,22 @@ describe("browser session resilience", () => {
     expect(s.pages[0]).not.toBe(frozen);
   });
 
+  it("a single slow input on a live page is skipped without reloading it", async () => {
+    process.env.BROWSER_INPUT_STALL_MS = "3000";
+    try {
+      const slow = fakePage("https://heavy.test/");
+      const { s } = session([slow]);
+      slow.mouse.wheel.mockImplementationOnce(() => never<void>()); // input stalls, scripts still run
+      const err = await s.inputBatch([{ type: "wheel", x: 10, y: 10, dx: 0, dy: 300 }]).catch((e: Error) => e);
+      expect(String(err)).toMatch(/skipped/);
+      expect(slow.close).not.toHaveBeenCalled();
+      await s.inputBatch([{ type: "wheel", x: 10, y: 10, dx: 0, dy: 300 }], s.viewEpoch, s.controlVersion);
+      expect(slow.mouse.wheel).toHaveBeenCalledTimes(2);
+    } finally {
+      delete process.env.BROWSER_INPUT_STALL_MS;
+    }
+  }, 15_000);
+
   it("a stuck input event replaces the tab instead of blocking every later input", async () => {
     process.env.BROWSER_INPUT_STALL_MS = "3000";
     try {

@@ -256,6 +256,10 @@ export class BrowserSession {
   /** When each tab was last in front, to pick which background tab to close first. */
   private lastFront = new WeakMap<Page, number>();
   private recovering = new Set<Page>();
+  /** Recent input events that timed out, per tab. */
+  private inputStalls = new WeakMap<Page, number>();
+  /** When each address last had to be recovered (to stop a crash loop). */
+  private recoveries = new Map<string, number[]>();
   private persisting: Promise<void> | null = null;
   private persistAgain = false;
   /** Steps/plan of the current or last agent run, replayed to new subscribers. */
@@ -507,7 +511,15 @@ export class BrowserSession {
         this.pages.splice(Math.min(slot, this.pages.length), 0, fresh);
       }
       this.activeIndex = Math.max(0, this.pages.indexOf(front === p || !this.pages.includes(front) ? fresh : front));
-      if (/^https?:/i.test(url)) {
+      // A page that keeps crashing or freezing the tab isn't reopened again and again.
+      const now = Date.now();
+      const recent = (this.recoveries.get(url) || []).filter((t) => now - t < 120_000);
+      recent.push(now);
+      this.recoveries.set(url, recent);
+      if (this.recoveries.size > 50) this.recoveries.delete(this.recoveries.keys().next().value as string);
+      if (recent.length > 2) {
+        this.log(`${hostOf(url) || "That page"} keeps breaking the tab, so it was left closed. Open it again to retry.`, "warn");
+      } else if (/^https?:/i.test(url)) {
         void fresh.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 }).catch((e) => this.log(`Couldn't reopen ${url}: ${String(e).split("\n")[0]}`, "warn"));
       }
       if (this.pages[this.activeIndex] === fresh) {
@@ -1049,8 +1061,18 @@ export class BrowserSession {
           work.catch(() => {});
           try {
             await orTimeout(work, INPUT_STALL_MS(), "applying your input");
+            this.inputStalls.delete(page);
           } catch (e) {
             if (e instanceof TimeoutError) {
+              // First stall on a page whose scripts still run: drop just that event and keep
+              // the page (and anything typed into it). A repeat, or a page that no longer
+              // answers at all, gets a fresh tab.
+              const strikes = (this.inputStalls.get(page) ?? 0) + 1;
+              this.inputStalls.set(page, strikes);
+              if (strikes < 2 && (await this.responsive(page, 3000))) {
+                this.log("The page was slow to react to your input; skipped that one action.", "warn");
+                throw new Error("The page was too slow to react, so that action was skipped. Try again.");
+              }
               void this.recoverPage(page, "stopped reacting to input");
               throw new Error("The page stopped reacting to input, so its tab was reopened. Try again.");
             }
