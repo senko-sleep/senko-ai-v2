@@ -321,7 +321,9 @@
 }
 
 /* ── Agent cursor in the live browser view ─────────────────────────────────── */
-.sk-agent-cursor { will-change: transform; transition: opacity .3s ease; z-index: 3; }
+.sk-live-view { contain: layout paint; }
+.sk-live-interactive { touch-action: none; user-select: none; }
+.sk-agent-cursor { will-change: transform; z-index: 3; }
 .sk-agent-cursor svg { display: block; transform-origin: 3px 2px; transition: transform .12s ease; }
 .sk-agent-cursor.sk-cursor-press svg { transform: scale(0.82); }
 .sk-cursor-tag {
@@ -332,7 +334,7 @@
 }
 .sk-target-box {
   border: 2px solid var(--sk-accent); box-shadow: 0 0 0 4px var(--sk-accent-soft);
-  transition: opacity .35s ease, transform .25s cubic-bezier(.2, .8, .2, 1), width .25s ease, height .25s ease;
+  transition: opacity .15s ease;
   z-index: 2;
 }
 @keyframes sk-ripple { from { transform: translate(-50%, -50%) scale(.2); opacity: .9; } to { transform: translate(-50%, -50%) scale(1); opacity: 0; } }

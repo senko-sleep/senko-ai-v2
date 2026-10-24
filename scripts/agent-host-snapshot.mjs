@@ -45,9 +45,33 @@ const t0 = Date.now();
 const log = (...a) => console.log(`[${((Date.now() - t0) / 1000).toFixed(0).padStart(4)}s]`, ...a);
 
 const dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=no"]).toString().trim();
-if (dirty) console.warn("Note: uncommitted changes are NOT included (the snapshot uses git HEAD).");
+if (dirty && !process.argv.includes("--working-tree")) console.warn("Note: uncommitted changes are NOT included (use --working-tree to deploy the current files).");
 const sha = execFileSync("git", ["rev-parse", "--short", "HEAD"]).toString().trim();
-const tarball = execFileSync("git", ["archive", "--format=tar.gz", "HEAD"], { maxBuffer: 512 * 1024 * 1024 });
+let tarball;
+if (process.argv.includes("--working-tree")) {
+  // Include the exact reviewed working tree without ever packaging ignored files,
+  // env secrets, dependency caches or Git metadata. No commit is required to deploy.
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), "senko-snapshot-"));
+  try {
+    const files = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]).toString().split("\0").filter(Boolean);
+    for (const file of new Set(files)) {
+      if (/(^|\/)\.env(?:\.|$)/.test(file) && file !== ".env.example") continue;
+      if (/^(\.git|\.vercel|\.vscode|\.next|node_modules|scratch|test-results|\.data)(\/|$)/.test(file)) continue;
+      const source = path.resolve(root, file), target = path.resolve(stage, file);
+      if (!source.startsWith(root + path.sep) || !target.startsWith(stage + path.sep)) throw new Error("Unsafe archive path");
+      if (!fs.existsSync(source) || !fs.lstatSync(source).isFile()) continue;
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(source, target);
+    }
+    tarball = execFileSync("tar", ["-czf", "-", "-C", stage, "."], { maxBuffer: 512 * 1024 * 1024 });
+  } finally {
+    if (!path.resolve(stage).startsWith(path.resolve(os.tmpdir()) + path.sep)) throw new Error("Unsafe staging directory");
+    fs.rmSync(stage, { recursive: true, force: true });
+  }
+  log("including current working tree");
+} else {
+  tarball = execFileSync("git", ["archive", "--format=tar.gz", "HEAD"], { maxBuffer: 512 * 1024 * 1024 });
+}
 log(`code: ${sha} (${(tarball.length / 1024 / 1024).toFixed(1)} MB)`);
 
 let sb;
@@ -78,7 +102,7 @@ try {
   await run("system libraries for Chromium", `dnf install -y --skip-broken ${CHROMIUM_DEPS} >/tmp/dnf.log 2>&1; ldconfig; echo ok`, { sudo: true });
   await run("npm ci", `cd ${APP} && npm ci --include=dev --no-audit --no-fund --loglevel=error`);
   await run("Chromium", `cd ${APP} && npx playwright install chromium chromium-headless-shell`, { env: { PLAYWRIGHT_BROWSERS_PATH: BROWSERS } });
-  await run("next build", `cd ${APP} && npx next build`, {
+  await run("next build", `cd ${APP} && npm run build`, {
     env: { NODE_OPTIONS: "--max-old-space-size=6144", NEXT_TELEMETRY_DISABLED: "1", NODE_ENV: "production" },
   });
   await run("prune dev dependencies", `cd ${APP} && npm prune --omit=dev --no-audit --no-fund --loglevel=error`);
@@ -91,7 +115,7 @@ try {
     { env: { PLAYWRIGHT_BROWSERS_PATH: BROWSERS, NODE_ENV: "production" } }
   );
   log(check.replace(/\s+/g, " "));
-  if (!/"status":"ok"/.test(check) || !/chromium \d/.test(check)) throw new Error("smoke test failed");
+  if (!/"status":"ok"/.test(check) || !/"inputProtocol":2/.test(check) || !/chromium \d/.test(check)) throw new Error("smoke test failed (server, browser or input protocol)");
 
   // Snapshot storage is capped (Hobby: a handful of ~1.6 GB snapshots). Keep only the one
   // the agent uses right now; this build becomes the other.
@@ -120,7 +144,7 @@ try {
   await pool.query("CREATE TABLE IF NOT EXISTS app_kv (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())");
   await pool.query(
     "INSERT INTO app_kv (key, value, updated_at) VALUES ('agent_host.snapshot', $1, now()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
-    [JSON.stringify({ snapshotId: snap.snapshotId, sha, at: new Date().toISOString() })]
+    [JSON.stringify({ snapshotId: snap.snapshotId, sha, inputProtocol: 2, source: process.argv.includes("--working-tree") ? "working-tree" : "commit", at: new Date().toISOString() })]
   );
   await pool.end();
   log(`done: agent computer snapshot for ${sha} is live`);

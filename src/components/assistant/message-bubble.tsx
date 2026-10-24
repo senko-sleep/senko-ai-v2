@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, memo, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -41,17 +41,39 @@ function useCopy() {
   return { copied, copy };
 }
 
+/** Lets a code block hand its text straight to Agent mode (set per reply). */
+const RunPromptContext = createContext<((text: string) => void) | undefined>(undefined);
+
+// Plain-text blocks are prompts or notes, not code, so they can be run as agent tasks.
+const PROMPT_LANGS = new Set(["text", "txt", "plaintext", "prompt"]);
+
 function CodeBlock({ children }: { children: ReactNode }) {
   const ref = useRef<HTMLPreElement>(null);
   const { copied, copy } = useCopy();
+  const runPrompt = useContext(RunPromptContext);
   // rehype-highlight puts "language-xyz" on the inner <code>.
   const child = Array.isArray(children) ? children[0] : children;
   const cls = (child as { props?: { className?: string } })?.props?.className || "";
   const lang = /language-([\w+-]+)/.exec(cls)?.[1] || "text";
+  const canRun = !!runPrompt && PROMPT_LANGS.has(lang.toLowerCase());
   return (
     <div className="sk-code">
       <div className="sk-code-head">
         <span>{lang}</span>
+        {canRun && (
+          <button
+            type="button"
+            onClick={() => {
+              const text = ref.current?.innerText.trim();
+              if (text) runPrompt(text);
+            }}
+            className="ml-auto mr-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] transition hover:bg-white/10 hover:text-white"
+            aria-label="Run this prompt in Agent mode"
+          >
+            <Bot size={11} />
+            Run in Agent
+          </button>
+        )}
         <button
           type="button"
           onClick={() => copy(ref.current?.innerText || "")}
@@ -198,12 +220,14 @@ export const MessageBubble = memo(function MessageBubble({
   streaming,
   onRetry,
   onRunAgent,
+  onRunPrompt,
   onEdit,
 }: {
   msg: Msg;
   streaming?: boolean;
   onRetry?: (id: string) => void;
   onRunAgent?: (id: string) => void;
+  onRunPrompt?: (text: string) => void;
   onEdit?: (id: string, newContent: string) => void;
 }) {
   const { copied, copy } = useCopy();
@@ -371,7 +395,9 @@ export const MessageBubble = memo(function MessageBubble({
 
         {msg.content && !msg.error && (
           <div>
-            <Markdown text={msg.content} />
+            <RunPromptContext.Provider value={streaming ? undefined : onRunPrompt}>
+              <Markdown text={msg.content} />
+            </RunPromptContext.Provider>
             {streaming && <span className="ml-0.5 inline-block h-3.5 w-[2px] translate-y-0.5 rounded-full bg-[var(--sk-accent)] sk-pulse" aria-hidden />}
           </div>
         )}

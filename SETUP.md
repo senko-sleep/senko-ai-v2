@@ -15,5 +15,15 @@ commit and rebuild the snapshot** (about 2 minutes, runs on Vercel, not your PC)
 
     node scripts/agent-host-snapshot.mjs
 
+To include reviewed, uncommitted changes (including new source files), use:
+
+    node scripts/agent-host-snapshot.mjs --working-tree
+
+The browser computer and web UI must be deployed together when input changes.
+Build the snapshot first, then deploy the Vercel gateway and Wasmer site. The
+snapshot smoke test checks the browser input protocol as well as launching
+Chromium; host readiness rejects an incompatible old snapshot. Ignored files,
+local environment files and dependency caches are excluded from the archive.
+
 To go back to the Render server instead, remove `AGENT_HOST` from the Vercel env vars
 (`AGENT_BACKEND_URL` still points at Render) and redeploy.

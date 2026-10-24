@@ -5,6 +5,7 @@ import { absorbMemories } from "@/lib/server/persona";
 import { finishRun, registerRun, takePausedGoal, type RunEvent } from "@/lib/agent/runner";
 import { runLayered } from "@/lib/agent/layers";
 import { sessions } from "@/lib/agent/sessions";
+import { loadCheckpoint, type Checkpoint } from "@/lib/agent/checkpoint";
 import { forwardAgentRequest } from "@/lib/server/agent-forward";
 
 export const runtime = "nodejs";
@@ -33,12 +34,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   let goal = String(body.goal || "").trim();
+  let checkpoint: Checkpoint | null = null;
+  let resumeNote: string | undefined;
   if (body.resume) {
+    // The task's saved progress (plan, steps so far) survives restarts, so Resume continues
+    // from the last step instead of starting over.
     const paused = takePausedGoal(chatId);
-    if (!paused && !goal) return errorResponse(new HttpError(409, "There's no paused task to continue."));
-    goal = paused
-      ? `${paused}\n\n(The user took manual control for a moment and may have changed the page. Continue from where the browser is now.)`
-      : goal;
+    checkpoint = await loadCheckpoint(chatId);
+    if (checkpoint && paused && checkpoint.goal !== paused) checkpoint = null;
+    const base = paused || checkpoint?.goal;
+    if (!base && !goal) return errorResponse(new HttpError(409, "There's no paused task to continue."));
+    if (base) goal = base;
+    const note = paused ? "The user took manual control for a moment and may have changed the page. Continue from where the browser is now." : undefined;
+    if (checkpoint) resumeNote = note;
+    else if (note) goal = `${goal}\n\n(${note})`;
   }
   if (!goal) return errorResponse(new HttpError(400, "Tell the agent what to do."));
 
@@ -63,9 +72,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const replyId = await addMessage(chatId, "assistant", "", [], meta);
 
   const ctl = registerRun(chatId, goal);
-  // A new or resumed task drives the browser again; your takeover ends here.
-  const live = sessions.get(chatId);
-  if (live?.takeover) live.setTakeover(false);
+  // Acquire before emitting any events; the run's own signal fences its cleanup.
+  sessions.get(chatId)?.beginAgent(ctl.signal);
   req.signal.addEventListener("abort", () => {
     // Closing the page doesn't stop the agent; only the Stop button does.
   });
@@ -89,12 +97,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         } catch {
           open = false;
         }
-      }, 15_000);
+      }, 10_000);
       send({ type: "start", messageId: replyId, userMessageId });
 
       let content = "";
       const imageIds: string[] = [];
       const emit = (e: RunEvent) => {
+        if (["done", "error", "stopped", "paused"].includes(e.type)) {
+          finishRun(chatId, ctl);
+          sessions.get(chatId)?.endAgent(ctl.signal);
+        }
         if (e.type === "step") trail[e.id - 1] = { label: e.label, url: e.url };
         if (e.type === "done") {
           content = e.answer;
@@ -116,9 +128,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       };
 
       try {
-        await runLayered({ chatId, ownerId: who.ownerId, goal, provider: body.provider, signal: ctl.signal, emit, context });
+        await runLayered({ chatId, ownerId: who.ownerId, goal, provider: body.provider, signal: ctl.signal, emit, context, checkpoint, resumeNote });
       } finally {
         clearInterval(ping);
+        sessions.get(chatId)?.endAgent(ctl.signal);
         finishRun(chatId, ctl);
         if (meta.agent?.status === "running") meta.agent = { goal, status: "stopped", trail };
         content = await absorbMemories(who.ownerId, content).catch(() => content);

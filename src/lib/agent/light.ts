@@ -201,7 +201,7 @@ ${notes.length ? `Notes so far:\n${notes.slice(-6).join("\n\n")}\n\n` : ""}${pag
     ];
     let r;
     try {
-      r = await complete(messages, { provider, signal, json: true, temperature: 0.2, maxTokens: 1400, maxWaitMs: 60_000, fast: true });
+      r = await complete(messages, { provider, signal, json: true, temperature: 0.2, maxTokens: 1400, maxWaitMs: 60_000, fast: true, priority: "background" });
     } catch (e) {
       if (signal.aborted) break;
       emit({ type: "error", message: e instanceof Error ? e.message : String(e) });
@@ -319,7 +319,7 @@ ${notes.length ? `Notes so far:\n${notes.slice(-6).join("\n\n")}\n\n` : ""}${pag
           { role: "system", content: "Answer the user's goal now in markdown, using only the page and notes below. Say plainly what you could not do without a real browser, and give direct links where useful." + (voice ? `\n\n${voice}` : "") },
           { role: "user", content: `Goal: ${goal}\n\n${notes.slice(-6).join("\n\n")}\n\n${p ? `Current page:\n${describePage(p)}` : ""}` },
         ],
-        { provider, signal, temperature: 0.2, maxTokens: 900, maxWaitMs: 60_000, fast: true }
+        { provider, signal, temperature: 0.2, maxTokens: 900, maxWaitMs: 60_000, fast: true, priority: "background" }
       );
       last = { provider: r.providerLabel, model: r.model };
       answer = r.text.trim();

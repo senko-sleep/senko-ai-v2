@@ -1,7 +1,8 @@
 import { requireChat } from "@/lib/server/chats";
 import { errorResponse, identify } from "@/lib/server/identity";
 import { verifyLive } from "@/lib/auth-token";
-import { sessions, type BusEvent } from "@/lib/agent/sessions";
+import { sessions } from "@/lib/agent/sessions";
+import { createLiveStream } from "@/lib/server/live-stream";
 import type { NextRequest } from "next/server";
 import { forwardAgentRequest } from "@/lib/server/agent-forward";
 
@@ -40,42 +41,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ chat
   }
 
   const session = s;
-  const encoder = new TextEncoder();
-  let unsubscribe = () => {};
-  let ping: ReturnType<typeof setInterval> | undefined;
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      let open = true;
-      const send = (e: BusEvent | { type: "ping" }) => {
-        if (!open) return;
-        // Viewer falling behind (slow network): skip this frame rather than queue it,
-        // so what you see stays live instead of drifting seconds behind.
-        if (e.type === "frame" && controller.desiredSize !== null && controller.desiredSize <= -4) return;
-        try {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(e)}\n\n`));
-        } catch {
-          open = false;
-          unsubscribe();
-        }
-      };
-      unsubscribe = session.subscribe(send);
-      ping = setInterval(() => send({ type: "ping" }), 20_000);
-      req.signal.addEventListener("abort", () => {
-        open = false;
-        clearInterval(ping);
-        unsubscribe();
-        try {
-          controller.close();
-        } catch {
-          /* closed */
-        }
-      });
-    },
-    cancel() {
-      clearInterval(ping);
-      unsubscribe();
-    },
-  });
+  const refreshRate = Number(req.nextUrl.searchParams.get("fps")) || undefined;
+  const stream = createLiveStream(send => session.subscribe(send, refreshRate), req.signal);
   return new Response(stream, {
     headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-store", Connection: "keep-alive", "X-Accel-Buffering": "no", ...cors },
   });

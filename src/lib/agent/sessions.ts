@@ -7,9 +7,12 @@
 // - The only automatic shutdowns are real resource limits (MAX_LIVE_SESSIONS / low memory);
 //   evicted sessions are saved first and restore when you come back, and the UI is told why.
 import type { BrowserContext, CDPSession, Page } from "playwright";
+import { randomUUID } from "node:crypto";
 import { SCREEN, browserMode, browserProxy, desktopUserAgent, freeMemoryMB, getBrowser, isHeaded, isLowMemoryHost } from "./browser";
 import { isAdHost, isPrivateUrl } from "./safety";
 import { json, newId, q, q1, toBuffer } from "@/lib/server/db";
+import { INPUT_PROTOCOL_VERSION, type BrowserInput } from "@/lib/live-input";
+import { createFramePublisher } from "./frame-publisher";
 
 export type SessionStatus = "active" | "restoring" | "suspended" | "closed";
 
@@ -21,8 +24,9 @@ export interface TabInfo {
 }
 
 export type BusEvent =
-  | { type: "status"; status: SessionStatus; tabs: TabInfo[]; takeover: boolean; live: LiveInfo; running: boolean }
-  | { type: "frame"; data: string; width: number; height: number }
+  | { type: "reset"; epoch?: number }
+  | { type: "status"; status: SessionStatus; tabs: TabInfo[]; takeover: boolean; live: LiveInfo; running: boolean; control: number; epoch: number; sessionId: string }
+  | { type: "frame"; data: string; width: number; height: number; epoch?: number }
   | { type: "cursor"; x: number; y: number; kind: "move" | "click"; box?: { x: number; y: number; w: number; h: number } | null; width: number; height: number }
   | { type: "log"; text: string; level: "info" | "warn" | "error"; at: number }
   | { type: "plan"; steps: string[] }
@@ -30,6 +34,7 @@ export type BusEvent =
   | { type: "shot"; id: string; label: string; at: number };
 
 export interface LiveInfo {
+  inputProtocol: number;
   /** "vnc" when a VNC stream of the real screen is available, else screenshot streaming. */
   mode: "vnc" | "screencast";
   audio: boolean;
@@ -46,9 +51,9 @@ interface SavedTab {
 
 const MAX_LIVE = Math.max(1, Number(process.env.MAX_LIVE_SESSIONS || (isLowMemoryHost() ? 1 : 3)));
 const LOW_MEMORY_MB = Number(process.env.LOW_MEMORY_MB || (isLowMemoryHost() ? 80 : 250));
-// Live view frame rate. 30 keeps video watchable; Chrome only sends frames when the page
-// changes, so a still page costs almost nothing. LIVE_QUALITY trades sharpness for bandwidth.
-const FPS = Math.min(60, Math.max(1, Number(process.env.LIVE_FPS || 30)));
+// A ceiling, not a timer that delays every captured frame. Viewers advertise their
+// display rate; Chrome remains change-driven. Small hosts retain a conservative cap.
+const FPS = Math.min(240, Math.max(1, Number(process.env.LIVE_FPS) || (isLowMemoryHost() ? 30 : 120)));
 const QUALITY = Math.min(95, Math.max(20, Number(process.env.LIVE_QUALITY || (isLowMemoryHost() ? 50 : 60))));
 // Live view size relative to the real screen. Smaller frames encode much faster on weak CPUs.
 const SCALE = Math.min(1, Math.max(0.3, Number(process.env.LIVE_SCALE || (isLowMemoryHost() ? 0.75 : 1))));
@@ -56,6 +61,7 @@ const SCALE = Math.min(1, Math.max(0.3, Number(process.env.LIVE_SCALE || (isLowM
 export function liveInfo(): LiveInfo {
   const m = browserMode();
   return {
+    inputProtocol: INPUT_PROTOCOL_VERSION,
     mode: process.env.VNC_PORT && isHeaded() ? "vnc" : "screencast",
     audio: !!process.env.AUDIO_SOURCE && isHeaded(),
     headed: !!m?.headed,
@@ -77,27 +83,36 @@ const INIT_SCRIPT = () => {
 };
 
 export class BrowserSession {
+  readonly sessionId = randomUUID();
   readonly chatId: string;
   readonly ownerId: string;
   status: SessionStatus = "restoring";
   context!: BrowserContext;
   pages: Page[] = [];
   activeIndex = 0;
-  takeover = false;
+  // An idle browser belongs to the user, including restored sessions.
+  takeover = true;
   running = false;
+  private agentLease: AbortSignal | null = null;
+  viewEpoch = 0;
   lastUsed = Date.now();
   private subs = new Set<(e: BusEvent) => void>();
+  private viewerRates = new Map<(e: BusEvent) => void, number>();
   private cdp: CDPSession | null = null;
   private castPage: Page | null = null;
-  private lastFrameAt = 0;
-  private lastFrame: { data: string; width: number; height: number } | null = null;
+  private publisher: ReturnType<typeof createFramePublisher<Extract<BusEvent, { type: "frame" }>>> | null = null;
+  private castGeneration = 0;
+  private castTask: Promise<void> = Promise.resolve();
+  private lastFrame: { data: string; width: number; height: number; epoch?: number } | null = null;
   private lastCursor: Extract<BusEvent, { type: "cursor" }> | null = null;
   private expectingTab = false;
   private saveTimer: ReturnType<typeof setInterval> | null = null;
   private logs: Extract<BusEvent, { type: "log" }>[] = [];
-  // Your scrolling, still to be played out on the page (see glideScroll).
-  private scrollLeft = { dx: 0, dy: 0, x: SCREEN.width / 2, y: SCREEN.height / 2 };
-  private scrolling = false;
+  private inputTask: Promise<void> = Promise.resolve();
+  private queuedInputs = 0;
+  private controlGeneration = 0;
+  get controlVersion() { return this.controlGeneration; }
+  private heldButtons = new Map<"left" | "right" | "middle", Page>();
   /** Steps/plan of the current or last agent run, replayed to new subscribers. */
   replay: BusEvent[] = [];
 
@@ -193,6 +208,7 @@ export class BrowserSession {
     });
     p.on("framenavigated", (f) => {
       if (f !== p.mainFrame()) return;
+      if (this.pages[this.activeIndex] === p) this.resetView();
       this.emitStatus();
       this.schedulePersist();
     });
@@ -227,6 +243,8 @@ export class BrowserSession {
 
   async close(reason: "closed" | "suspended" = "closed") {
     if (this.saveTimer) clearInterval(this.saveTimer);
+    if (this.persistSoon) clearTimeout(this.persistSoon);
+    this.controlGeneration++;
     if (reason === "suspended") await this.persist().catch(() => {});
     this.status = reason;
     this.emitStatus();
@@ -319,9 +337,10 @@ export class BrowserSession {
 
   // ---- events / live view ----------------------------------------------------------
 
-  subscribe(fn: (e: BusEvent) => void): () => void {
+  subscribe(fn: (e: BusEvent) => void, refreshRate = FPS): () => void {
     this.subs.add(fn);
-    void this.tabs().then((tabs) => fn({ type: "status", status: this.status, tabs, takeover: this.takeover, live: liveInfo(), running: this.running }));
+    this.viewerRates.set(fn, Math.min(FPS, Math.max(1, Number.isFinite(refreshRate) ? refreshRate : FPS)));
+    void this.tabs().then((tabs) => { if (this.subs.has(fn)) fn({ type: "status", status: this.status, tabs, takeover: this.takeover, live: liveInfo(), running: this.running, control: this.controlVersion, epoch: this.viewEpoch, sessionId: this.sessionId }); });
     for (const l of this.logs.slice(-20)) fn(l);
     for (const e of this.replay) fn(e);
     if (this.lastFrame) fn({ type: "frame", ...this.lastFrame });
@@ -330,12 +349,21 @@ export class BrowserSession {
     if (this.status === "active") void this.startCast();
     return () => {
       this.subs.delete(fn);
-      if (!this.subs.size && !this.running) void this.stopCast();
+      this.viewerRates.delete(fn);
+      if (!this.subs.size) { void this.stopCast(); void this.releaseButtons(); }
     };
   }
 
   emit(e: BusEvent) {
-    if (e.type === "plan" || e.type === "step" || e.type === "shot") this.replay.push(e);
+    if (e.type === "plan" || e.type === "step" || e.type === "shot") {
+      // Replay current step state, not every running/done transition forever.
+      // Full task history and screenshots remain in their persisted records.
+      const previous = e.type === "step" ? this.replay.findIndex(p => p.type === "step" && p.id === e.id)
+        : e.type === "plan" ? this.replay.findIndex(p => p.type === "plan") : -1;
+      if (previous >= 0) this.replay[previous] = e;
+      else this.replay.push(e);
+      if (this.replay.length > 256) this.replay.splice(this.replay[0].type === "plan" ? 1 : 0, this.replay.length - 256);
+    }
     if (e.type === "cursor") this.lastCursor = { ...e, kind: "move" };
     for (const fn of this.subs) {
       try {
@@ -356,8 +384,18 @@ export class BrowserSession {
   emitStatus() {
     if (!this.subs.size) return;
     void this.tabs().then((tabs) =>
-      this.emit({ type: "status", status: this.status, tabs, takeover: this.takeover, live: liveInfo(), running: this.running })
+      this.emit({ type: "status", status: this.status, tabs, takeover: this.takeover, live: liveInfo(), running: this.running, control: this.controlVersion, epoch: this.viewEpoch, sessionId: this.sessionId })
     );
+  }
+
+  /** Coordinates queued for the previous document must never reach the next one. */
+  private resetView() {
+    this.controlGeneration++;
+    this.lastFrame = null;
+    this.lastCursor = null;
+    this.publisher?.reset();
+    void this.releaseButtons();
+    this.emit({ type: "reset", epoch: ++this.viewEpoch });
   }
 
   /** Viewport size of the active page in CSS pixels. */
@@ -367,26 +405,44 @@ export class BrowserSession {
 
   async startCast() {
     const p = this.pages[this.activeIndex];
-    if (!p || (!this.subs.size && !this.running)) return;
+    if (!p || !this.subs.size) return;
     if (this.castPage === p && this.cdp) return;
-    await this.stopCast();
+    const generation = ++this.castGeneration;
+    const task = this.castTask.catch(() => {}).then(async () => {
+      if (generation !== this.castGeneration) return;
+      await this.detachCast();
+      if (generation !== this.castGeneration || !this.subs.size) return;
+      await this.openCast(p, generation);
+    });
+    this.castTask = task;
+    await task;
+  }
+
+  private async openCast(p: Page, generation: number) {
+    let cdp: CDPSession | null = null;
     try {
+      cdp = await this.context.newCDPSession(p);
+      if (generation !== this.castGeneration || !this.subs.size) { await cdp.detach().catch(() => {}); return; }
       this.castPage = p;
-      this.cdp = await this.context.newCDPSession(p);
-      const minGap = 1000 / FPS;
-      const cdp = this.cdp;
+      this.cdp = cdp;
+      this.lastFrame = null;
+      this.lastCursor = null;
+      await this.releaseButtons();
+      if (generation !== this.castGeneration || !this.subs.size) { await this.detachCast(); return; }
+      const epoch = ++this.viewEpoch;
+      this.emit({ type: "reset", epoch });
+      const cast = cdp;
+      const publisher = createFramePublisher<Extract<BusEvent, { type: "frame" }>>(frame => {
+        if (this.cdp !== cast || frame.epoch !== this.viewEpoch) return;
+        this.lastFrame = { data: frame.data, width: frame.width, height: frame.height, epoch: frame.epoch };
+        this.emit(frame);
+      }, () => Math.max(1, ...this.viewerRates.values()));
+      this.publisher = publisher;
       cdp.on("Page.screencastFrame", (f: { data: string; sessionId: number; metadata: { deviceWidth: number; deviceHeight: number } }) => {
-        const now = Date.now();
-        this.lastFrameAt = now;
-        this.lastFrame = { data: f.data, width: f.metadata.deviceWidth, height: f.metadata.deviceHeight };
-        this.emit({ type: "frame", ...this.lastFrame });
-        // Chrome encodes the next frame only after this ack. Acking when the next frame is
-        // actually due (instead of right away and dropping extras) means no CPU is spent
-        // encoding frames nobody sees, which is what keeps weak servers smooth.
-        const ack = () => cdp.send("Page.screencastFrameAck", { sessionId: f.sessionId }).catch(() => {});
-        const wait = minGap - (Date.now() - now);
-        if (wait > 4) setTimeout(ack, wait);
-        else void ack();
+        // Acknowledge immediately: delaying an ACK stalls Chrome's capture pipeline.
+        void cast.send("Page.screencastFrameAck", { sessionId: f.sessionId }).catch(() => {});
+        if (this.cdp !== cast) return;
+        publisher.push({ type: "frame", data: f.data, width: f.metadata.deviceWidth, height: f.metadata.deviceHeight, epoch: this.viewEpoch });
       });
       await cdp.send("Page.startScreencast", {
         format: "jpeg",
@@ -396,12 +452,20 @@ export class BrowserSession {
         everyNthFrame: 1,
       });
     } catch {
-      this.cdp = null;
-      this.castPage = null;
+      if (this.cdp === cdp) { this.publisher?.dispose(); this.publisher = null; this.cdp = null; this.castPage = null; }
+      await cdp?.detach().catch(() => {});
     }
   }
 
   async stopCast() {
+    const generation = ++this.castGeneration;
+    await this.castTask.catch(() => {});
+    if (generation === this.castGeneration) await this.detachCast();
+  }
+
+  private async detachCast() {
+    this.publisher?.dispose();
+    this.publisher = null;
     const c = this.cdp;
     this.cdp = null;
     this.castPage = null;
@@ -453,13 +517,64 @@ export class BrowserSession {
 
   // ---- user takeover input -----------------------------------------------------------------
 
-  setTakeover(on: boolean) {
+  setTakeover(on: boolean, resetInput = false) {
+    if (this.takeover === on && !resetInput) return;
+    this.controlGeneration++;
     this.takeover = on;
+    // Release a drag before handing control to the agent, even if the viewer vanished.
+    if (!on || resetInput) void this.releaseButtons();
     this.log(on ? "You took control of the browser." : "Control handed back to the agent.");
     this.emitStatus();
   }
 
-  async input(ev: InputEvent) {
+  /** Fence cleanup from an older/replaced run; it must never unlock a newer run. */
+  beginAgent(signal: AbortSignal) {
+    this.agentLease = signal;
+    this.running = true;
+    this.setTakeover(false);
+    this.emitStatus();
+  }
+
+  endAgent(signal: AbortSignal) {
+    if (this.agentLease !== signal) return;
+    this.agentLease = null;
+    this.running = false;
+    this.setTakeover(true);
+    this.emitStatus();
+  }
+
+  /** Serialize all viewers' batches at the browser, not just in each client's queue. */
+  input(ev: InputEvent) { return this.inputBatch([ev]); }
+
+  inputBatch(events: InputEvent[], expectedEpoch = this.viewEpoch, expectedControl = this.controlVersion) {
+    if (this.queuedInputs + events.length > 512) return Promise.reject(new Error("Browser input queue is full."));
+    this.queuedInputs += events.length;
+    const generation = expectedControl;
+    const page = this.pages[this.activeIndex];
+    const task = this.inputTask.catch(() => {}).then(async () => {
+      try {
+        for (const event of events) {
+          if (!this.takeover || generation !== this.controlGeneration || this.status !== "active" || page !== this.pages[this.activeIndex] || expectedEpoch !== this.viewEpoch) {
+            throw new BrowserInputConflict("STALE_VIEW", "The browser view or ownership changed before this input was applied.", this.viewEpoch, this.controlVersion);
+          }
+          await this.applyInput(event);
+        }
+      } finally {
+        this.queuedInputs -= events.length;
+        if (generation !== this.controlGeneration || page !== this.pages[this.activeIndex] || expectedEpoch !== this.viewEpoch) await this.releaseButtons();
+      }
+    });
+    this.inputTask = task;
+    return task;
+  }
+
+  private async releaseButtons() {
+    const held = [...this.heldButtons];
+    this.heldButtons.clear();
+    for (const [button, page] of held) await page.mouse.up({ button }).catch(() => {});
+  }
+
+  private async applyInput(ev: InputEvent) {
     this.lastUsed = Date.now();
     const p = this.active();
     switch (ev.type) {
@@ -469,13 +584,21 @@ export class BrowserSession {
       case "move":
         await p.mouse.move(ev.x, ev.y);
         break;
+      case "down":
+      case "up": {
+        await p.mouse.move(ev.x, ev.y);
+        if (ev.type === "down") {
+          this.heldButtons.set(ev.button, p);
+          await p.mouse.down({ button: ev.button, clickCount: ev.clickCount || 1 });
+        } else {
+          await p.mouse.up({ button: ev.button, clickCount: ev.clickCount || 1 });
+          this.heldButtons.delete(ev.button);
+        }
+        break;
+      }
       case "wheel": {
-        const q = this.scrollLeft;
-        q.dx += ev.dx || 0;
-        q.dy += ev.dy || 0;
-        q.x = ev.x ?? q.x;
-        q.y = ev.y ?? q.y;
-        void this.glideScroll(); // answer right away so the next scroll can come in
+        if (ev.x !== undefined && ev.y !== undefined) await p.mouse.move(ev.x, ev.y);
+        await p.mouse.wheel(ev.dx || 0, ev.dy || 0);
         break;
       }
       case "key":
@@ -485,69 +608,29 @@ export class BrowserSession {
         await p.keyboard.insertText(ev.text);
         break;
       case "nav":
-        if (ev.action === "back") await p.goBack({ timeout: 15_000 }).catch(() => {});
-        if (ev.action === "forward") await p.goForward({ timeout: 15_000 }).catch(() => {});
-        if (ev.action === "reload") await p.reload({ timeout: 30_000 }).catch(() => {});
+        // Navigation starts now, but DNS/network/load completion must not hold the
+        // input queue hostage. The user can scroll, type or supersede it immediately.
+        if (ev.action === "back") void p.goBack({ waitUntil: "commit", timeout: 15_000 }).catch(() => {});
+        if (ev.action === "forward") void p.goForward({ waitUntil: "commit", timeout: 15_000 }).catch(() => {});
+        if (ev.action === "reload") void p.reload({ waitUntil: "commit", timeout: 30_000 }).catch(() => {});
         break;
       case "goto": {
         const url = /^https?:\/\//i.test(ev.url) ? ev.url : `https://${ev.url}`;
-        await p.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
+        void p.goto(url, { waitUntil: "commit", timeout: 45_000 }).catch(e => {
+          if (!String(e).includes("ERR_ABORTED")) this.log(`Navigation failed: ${String(e).split("\n")[0]}`, "warn");
+        });
         break;
       }
     }
   }
 
-  /**
-   * Play queued scrolling out as small wheel steps, one per display frame. A single big
-   * wheel jump makes the page teleport (and Chrome draws just one new frame); gliding gives
-   * the live view a smooth stream of frames, like scrolling on a real screen.
-   */
-  private async glideScroll() {
-    if (this.scrolling) return;
-    this.scrolling = true;
-    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-    const stepOf = (left: number) => {
-      if (Math.abs(left) < 1) return 0;
-      const s = Math.round(left * 0.3); // ease out: ~90% done in 6 frames (~100ms)
-      return Math.abs(s) >= 6 ? s : Math.sign(left) * Math.min(6, Math.abs(Math.round(left)));
-    };
-    try {
-      let at = { x: -1, y: -1 };
-      for (;;) {
-        const q = this.scrollLeft;
-        const sx = stepOf(q.dx);
-        const sy = stepOf(q.dy);
-        if (!sx && !sy) break;
-        q.dx -= sx;
-        q.dy -= sy;
-        const started = Date.now();
-        const p = this.active();
-        if (q.x !== at.x || q.y !== at.y) {
-          at = { x: q.x, y: q.y };
-          await p.mouse.move(at.x, at.y);
-        }
-        await p.mouse.wheel(sx, sy);
-        const wait = 16 - (Date.now() - started);
-        if (wait > 0) await sleep(wait);
-      }
-    } catch {
-      /* page closed or navigating: drop the rest */
-    } finally {
-      this.scrollLeft.dx = 0;
-      this.scrollLeft.dy = 0;
-      this.scrolling = false;
-    }
-  }
 }
 
-export type InputEvent =
-  | { type: "click"; x: number; y: number; button?: "left" | "right" | "middle"; double?: boolean }
-  | { type: "move"; x: number; y: number }
-  | { type: "wheel"; dx?: number; dy?: number; x?: number; y?: number }
-  | { type: "key"; key: string }
-  | { type: "text"; text: string }
-  | { type: "nav"; action: "back" | "forward" | "reload" }
-  | { type: "goto"; url: string };
+export type InputEvent = BrowserInput;
+
+export class BrowserInputConflict extends Error {
+  constructor(public code: "STALE_VIEW", message: string, public epoch: number, public control?: number) { super(message); }
+}
 
 function hostOf(url: string) {
   try {

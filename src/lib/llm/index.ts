@@ -8,6 +8,10 @@
 //   so the next one answers without the user noticing.
 // - If a stream fails before its first token, the next candidate takes over.
 // Keys come from environment variables only and never reach the browser.
+// - Every request is paced by the central scheduler (./scheduler.ts) so it doesn't break a
+//   provider's per-minute limits in the first place.
+import { scheduler, type Priority } from "./scheduler";
+export { scheduler } from "./scheduler";
 
 export type Role = "system" | "user" | "assistant";
 export interface ImagePart {
@@ -45,6 +49,25 @@ export interface LlmOptions {
   onWait?: (ms: number) => void;
   /** Latency over cleverness: try each provider's quickest models first (browser agent steps). */
   fast?: boolean;
+  /**
+   * "background" work (agent steps) only uses part of each provider's limits, so a chat
+   * message sent while the agent runs still gets through. Default "interactive".
+   */
+  priority?: Priority;
+  /** Allow a backup request on another provider when the first is slow (default true). */
+  hedge?: boolean;
+  /** Reuse an identical request's answer for this long (and share one in flight). */
+  cacheTtlMs?: number;
+  /** Internal: sees each provider response's headers (rate-limit learning). */
+  onResponse?: (headers: Headers) => void;
+}
+
+/** Every provider is rate-limited or failing; `retryInMs` says when the first frees up (if known). */
+export class LlmBusyError extends Error {
+  constructor(message: string, public retryInMs: number | null, public reasons: string[]) {
+    super(message);
+    this.name = "LlmBusyError";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -200,20 +223,6 @@ class ProviderError extends Error {
   constructor(message: string, public status = 0, public retryMs: number | null = null) {
     super(message);
   }
-}
-
-function sleep(ms: number, signal?: AbortSignal) {
-  return new Promise<void>((resolve) => {
-    const t = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(t);
-        resolve();
-      },
-      { once: true }
-    );
-  });
 }
 
 /** Read "Retry-After" or "try again in 1m2.5s / 292.5ms / retry in 40s" hints. */
@@ -391,6 +400,7 @@ function compatProvider(c: CompatConfig): Provider {
           ...(c.headers ? c.headers() : {}),
         }, opts.signal);
       }
+      opts.onResponse?.(res.headers);
       await throwIfBad(res, c.label, cand.model);
       return stripThink(sseContent(res.body!));
     },
@@ -596,6 +606,7 @@ const ollama: Provider = {
     });
     let res = await connect(`${ollamaUrl()}/api/chat`, payload(true), ollamaHeaders(), opts.signal);
     if (res.status === 400) res = await connect(`${ollamaUrl()}/api/chat`, payload(false), ollamaHeaders(), opts.signal);
+    opts.onResponse?.(res.headers);
     await throwIfBad(res, "Ollama", cand.model);
     return stripThink(ollamaLines(res.body!));
   },
@@ -801,30 +812,48 @@ function friendly(e: unknown): string {
 /**
  * Start a backup model if the current one hasn't started answering after this long.
  * Screenshots make models slower to start, so those get more patience. Every backup is a
- * real request against someone's quota, so at most MAX_PARALLEL run at once.
+ * real request against someone's quota, so it only goes out when that model has plenty of
+ * headroom (scheduler pressure below HEDGE_MAX_PRESSURE) and at most MAX_PARALLEL run at once.
  */
 const HEDGE_MS = (vision = false) => (vision ? num("LLM_HEDGE_VISION_MS", 7000) : num("LLM_HEDGE_MS", 3500));
 const MAX_PARALLEL = () => Math.max(1, num("LLM_MAX_PARALLEL", 2));
+const HEDGE_MAX_PRESSURE = 0.5;
 /** Give up on a model that hasn't sent its first words after this long. */
 const FIRST_TOKEN_MS = () => num("LLM_FIRST_TOKEN_MS", 20_000);
+
+interface QueueEntry {
+  p: Provider;
+  c: Candidate;
+  /** Input + output tokens this request reserves in the scheduler. */
+  est: number;
+  /** Fit the input to this many tokens (the provider's budget, or less when its per-minute limit is smaller). */
+  inputBudget: number;
+  maxTokens: number;
+}
 
 /**
  * Open one model and read the first words, so empty replies, refusals and stalls are
  * caught before we commit to it. Rejects with a ProviderError on any problem.
  */
-async function tryCandidate(p: Provider, c: Candidate, messages: LlmMessage[], opts: LlmOptions, signal: AbortSignal): Promise<AsyncGenerator<string>> {
+async function tryCandidate(q: QueueEntry, messages: LlmMessage[], opts: LlmOptions, signal: AbortSignal): Promise<{ stream: AsyncGenerator<string>; inputTokens: number }> {
+  const { p, c } = q;
   if (opts.simulateFail?.includes(c.provider)) {
     throw new ProviderError(`${c.label} (${c.model}): simulated failure for testing`, 503, null);
   }
-  const budget = p.budget();
   // Fit the conversation to this provider. If it still says "too large" (our estimate
   // was off), try once more at half the size before moving on.
   let gen: AsyncGenerator<string> | null = null;
+  let inputTokens = 0;
   for (const scale of [1, 0.5]) {
-    const fitted = fitMessages(messages, Math.floor(budget.input * scale), opts.compactSystem, !!p.local || scale < 1);
-    const maxTokens = Math.min(opts.maxTokens ?? budget.output, budget.output);
+    const fitted = fitMessages(messages, Math.floor(q.inputBudget * scale), opts.compactSystem, !!p.local || scale < 1);
+    inputTokens = totalTokens(fitted);
     try {
-      gen = await p.open(c, fitted, { ...opts, signal, maxTokens });
+      gen = await p.open(c, fitted, {
+        ...opts,
+        signal,
+        maxTokens: q.maxTokens,
+        onResponse: (h) => scheduler.observeHeaders(c.provider, c.model, h),
+      });
       break;
     } catch (err) {
       if (scale === 1 && isTooLarge(err)) {
@@ -848,21 +877,36 @@ async function tryCandidate(p: Provider, c: Candidate, messages: LlmMessage[], o
   if (/^\s*(?:i'm sorry,? (?:but )?i (?:cannot|can't|am unable|won't)|i (?:cannot|can't|am unable to|must decline to) (?:fulfill|assist|help|provide|comply|search|open|generate)|as an ai(?: language model)?,? i (?:cannot|can't|do not))/i.test(head)) {
     throw new ProviderError(`${c.label} (${c.model}): model refused request`, 422, null);
   }
-  return prepend(head, gen);
+  return { stream: prepend(head, gen), inputTokens };
+}
+
+/** Pass a stream through, then tell the scheduler what it really used. */
+async function* metered(src: AsyncGenerator<string>, done: (outChars: number) => void): AsyncGenerator<string> {
+  let out = 0;
+  try {
+    for await (const chunk of src) {
+      out += chunk.length;
+      yield chunk;
+    }
+  } finally {
+    done(out);
+  }
 }
 
 /**
  * Try models best-first, but don't wait on a slow one: if it hasn't started answering
- * within HEDGE_MS, a backup starts in parallel and whichever answers first wins.
- * Returns null when every model failed.
+ * within HEDGE_MS, a backup starts in parallel (only where there's headroom) and whichever
+ * answers first wins. Every attempt holds a scheduler ticket. Returns null when none answered.
  */
 async function raceCandidates(
-  queue: { p: Provider; c: Candidate }[],
+  queue: QueueEntry[],
   messages: LlmMessage[],
   opts: LlmOptions,
-  onFail: (c: Candidate, e: unknown) => void
+  onFail: (q: QueueEntry, e: unknown) => void,
+  onPaced: (waitMs: number) => void = () => {}
 ): Promise<{ c: Candidate; stream: AsyncGenerator<string> } | null> {
   if (!queue.length) return null;
+  const priority = opts.priority ?? "interactive";
   return new Promise((resolve) => {
     const started = new Array(queue.length).fill(false);
     const live = new Set<string>();
@@ -879,6 +923,7 @@ async function raceCandidates(
         clearTimeout(a.timer);
         if (a.ctl !== keep) a.ctl.abort();
       }
+      opts.signal?.removeEventListener("abort", onAbort);
       resolve(result);
     };
     const onAbort = () => finish(null);
@@ -886,25 +931,42 @@ async function raceCandidates(
 
     const scheduleHedge = () => {
       if (hedge) clearTimeout(hedge);
+      if (opts.hedge === false) return;
       const ms = HEDGE_MS(messages.some((m) => m.images?.length));
       if (ms > 0 && started.includes(false) && running < MAX_PARALLEL()) hedge = setTimeout(() => launch(true), ms);
     };
 
-    function launch(asBackup = false) {
+    function launch(asBackup = false): void {
       if (done) return;
       // A backup only while fewer than MAX_PARALLEL are in flight; failures still move on at once.
       if (asBackup && running >= MAX_PARALLEL()) return;
-      // A backup should come from another provider: one provider is often slow as a whole.
-      let i = asBackup ? queue.findIndex((q, n) => !started[n] && !live.has(q.p.id)) : -1;
-      if (i < 0) i = started.indexOf(false);
+      // A backup should come from another provider (one provider is often slow as a whole)
+      // and only where it won't eat into a nearly used-up limit.
+      let i = -1;
+      if (asBackup) {
+        i = queue.findIndex(
+          (q, n) => !started[n] && !live.has(q.p.id) && scheduler.pressure(q.c.provider, q.c.model) < HEDGE_MAX_PRESSURE && scheduler.delayFor(q.c.provider, q.c.model, q.est, priority) === 0
+        );
+        if (i < 0) return; // nothing with headroom: keep waiting on the first one
+      } else {
+        i = started.indexOf(false);
+      }
       if (i < 0) {
         if (running === 0) finish(null);
         return;
       }
       started[i] = true;
-      const { p, c } = queue[i];
+      const q = queue[i];
+      const { p, c } = q;
+      // Time has passed since the queue was built (hedge timer, earlier failures): re-check.
+      const late = scheduler.delayFor(c.provider, c.model, q.est, priority);
+      if (late > 0) {
+        onPaced(late);
+        return launch(asBackup);
+      }
       live.add(p.id);
       running++;
+      const ticket = scheduler.acquire(c.provider, c.model, q.est);
       const ctl = new AbortController();
       // The winner must still stop when the caller aborts.
       opts.signal?.addEventListener("abort", () => ctl.abort(), { once: true });
@@ -914,25 +976,29 @@ async function raceCandidates(
         ctl.abort();
       }, FIRST_TOKEN_MS());
       attempts.push({ ctl, timer });
-      tryCandidate(p, c, messages, opts, ctl.signal).then(
-        (stream) => {
+      tryCandidate(q, messages, opts, ctl.signal).then(
+        ({ stream, inputTokens }) => {
           clearTimeout(timer);
           running--;
           live.delete(p.id);
+          scheduler.onSuccess(c.provider, c.model);
           if (done) {
+            ticket.release(inputTokens);
             void stream.return(undefined).catch(() => {});
             return;
           }
-          opts.signal?.removeEventListener("abort", onAbort);
-          finish({ c, stream }, ctl);
+          finish({ c, stream: metered(stream, (out) => ticket.release(inputTokens + Math.ceil(out / 3.6))) }, ctl);
         },
         (e) => {
           clearTimeout(timer);
           running--;
           live.delete(p.id);
+          const status = e instanceof ProviderError ? e.status : 0;
+          // A rejected request (rate limit, connection failure) used no tokens; an aborted or failed one may have.
+          ticket.release(status === 429 || status === 0 || status === 401 || status === 403 ? 0 : undefined);
           if (done) return;
           const err = slow ? new ProviderError(`${c.label} (${c.model}): no answer within ${Math.round(FIRST_TOKEN_MS() / 1000)}s`, 408, null) : e;
-          onFail(c, err);
+          onFail(q, err);
           // Failed: move to the next model right away instead of waiting for the hedge timer.
           launch();
         }
@@ -946,24 +1012,29 @@ async function raceCandidates(
 
 /**
  * Stream a reply, falling back across providers/models until one answers.
- * Throws only when every option failed, with each reason listed.
+ * Requests are paced: a model whose limits are full is skipped until it frees up, and when
+ * every model is full the call waits (up to maxWaitMs) for the first free slot.
+ * Throws LlmBusyError when everything stayed rate-limited, Error when everything failed.
  */
 export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}): Promise<OpenedStream> {
   const needVision = messages.some((m) => m.images?.length);
-  const errors: string[] = [];
-  const skipped: string[] = [];
+  const priority = opts.priority ?? "interactive";
+  let errors: string[] = [];
+  let skipped: string[] = [];
   const deadline = Date.now() + (opts.maxWaitMs ?? 30_000);
+  const inputTokens = totalTokens(messages);
+  let soonest = Infinity;
 
   await syncSharedCooldowns();
-  for (let round = 0; round < 6; round++) {
+  // Bounded by the deadline; the cap is just a guard against a busy loop.
+  for (let round = 0; round < 200; round++) {
     // Each round reports fresh reasons (retry times change between rounds).
-    errors.length = 0;
-    skipped.length = 0;
+    errors = [];
+    skipped = [];
     /** Soonest moment a rate-limited / temporarily failing model should be usable again. */
-    let soonest = Infinity;
+    soonest = Infinity;
 
-    // Every usable model, best first.
-    const queue: { p: Provider; c: Candidate }[] = [];
+    const ready: (QueueEntry & { whole: boolean })[] = [];
     let providers = orderedProviders(opts.provider).filter((p) => p.configured());
     if (opts.fast && !needVision && (!opts.provider || opts.provider === "auto")) {
       providers = [...providers.filter((p) => p.id === "groq"), ...providers.filter((p) => p.id !== "groq")];
@@ -978,20 +1049,41 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
           skipped.push(`${c.label} (${c.model}): ${cool.reason}`);
           continue;
         }
-        queue.push({ p, c });
+        const budget = p.budget();
+        const maxTokens = Math.min(opts.maxTokens ?? budget.output, budget.output);
+        // A model whose per-minute token limit is smaller than its request budget gets a smaller request.
+        const cap = scheduler.maxRequestTokens(c.provider, c.model, priority);
+        const inputBudget = Math.min(budget.input, cap - maxTokens - 200);
+        if (inputBudget < 1500) {
+          skipped.push(`${c.label} (${c.model}): its per-minute token limit is too small for this request`);
+          continue;
+        }
+        const est = Math.min(inputTokens, inputBudget) + maxTokens;
+        const wait = scheduler.delayFor(c.provider, c.model, est, priority);
+        if (wait > 0) {
+          if (Number.isFinite(wait)) soonest = Math.min(soonest, wait);
+          skipped.push(`${c.label} (${c.model}): pacing to stay under its rate limit (free in ~${Math.ceil(wait / 1000)}s)`);
+          continue;
+        }
+        // Prefer models that take the whole request; heavy trimming loses the context a good answer needs.
+        ready.push({ p, c, est, inputBudget, maxTokens, whole: inputTokens <= inputBudget * 1.6 });
       }
     });
+    const queue = [...ready.filter((r) => r.whole), ...ready.filter((r) => !r.whole)];
 
-    const onFail = (c: Candidate, e: unknown) => {
+    const onFail = (q: QueueEntry, e: unknown) => {
+      const { c } = q;
       const pe = e instanceof ProviderError ? e : null;
       const status = pe?.status ?? 0;
       if (!opts.simulateFail?.includes(c.provider)) {
         // Only real daily caps get the long cooldown. Gemini says "exceeded your current quota" for
         // per-minute limits too, so "quota" alone isn't a sign; trust its retry hint instead.
         const daily = /per ?day|daily|RPD|free-models-per-day/i.test(pe?.message || "") || (pe?.retryMs ?? 0) > 60 * 60_000;
+        // A 429 shrinks the model's limit in the scheduler and backs off exponentially with jitter.
+        const backoff = status === 429 ? scheduler.onRateLimited(c.provider, c.model, pe?.retryMs ?? null) : 0;
         const ms =
           isTooLarge(e) ? 5_000 // not the provider's fault; a smaller request may work right away
-          : status === 429 ? Math.max(pe?.retryMs ?? 30_000, daily ? 60 * 60_000 : 15_000)
+          : status === 429 ? (daily ? Math.max(backoff, 60 * 60_000) : backoff)
           : status === 402 ? 60 * 60_000 // out of credit
           : status === 401 || status === 403 ? 10 * 60_000
           : status === 404 ? 60 * 60_000
@@ -1000,7 +1092,7 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
           : 30_000;
         // Worth waiting for: rate limits, network blips and server errors (not refusals/bad keys).
         const retryable = status === 429 || status === 0 || status === 408 || status >= 500;
-        coolDown(c.provider, c.model, ms, status === 429 ? "rate limited" : status === 408 ? "too slow" : `error ${status || "network"}`, retryable);
+        coolDown(c.provider, c.model, ms, status === 429 ? (daily ? "daily limit reached" : "rate limited") : status === 408 ? "too slow" : `error ${status || "network"}`, retryable);
         if (retryable) soonest = Math.min(soonest, ms);
       }
       const msg = friendly(e);
@@ -1009,17 +1101,20 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
       skipped.push(msg);
     };
 
-    const won = await raceCandidates(queue, messages, opts, onFail);
+    const won = await raceCandidates(queue, messages, opts, onFail, (w) => (soonest = Math.min(soonest, w)));
     if (won) return { provider: won.c.provider, providerLabel: won.c.label, model: won.c.model, stream: won.stream, skipped };
     if (opts.signal?.aborted) throw new Error("Aborted");
 
-    // Everything is rate-limited for now: wait for the first model to free up (within the
-    // caller's patience) and try again, instead of failing the whole request.
-    const wait = soonest + 500;
-    if (Number.isFinite(soonest) && Date.now() + wait <= deadline && !opts.signal?.aborted) {
-      console.warn(`[llm] all providers busy, waiting ${Math.ceil(wait / 1000)}s for the next free one`);
-      opts.onWait?.(wait);
-      await sleep(wait, opts.signal);
+    // Everything is paced or rate-limited for now: wait for the first model to free up
+    // (within the caller's patience) and try again, instead of failing the whole request.
+    if (Number.isFinite(soonest) && Date.now() + soonest <= deadline) {
+      const wait = Math.max(250, soonest + 100);
+      if (wait >= 1500) {
+        console.warn(`[llm] all providers busy, waiting ${Math.ceil(wait / 1000)}s for the next free one`);
+        opts.onWait?.(wait);
+      }
+      // Wakes early when another request finishes and frees a slot.
+      await scheduler.waitForChange(wait, opts.signal);
       if (opts.signal?.aborted) throw new Error("Aborted");
       continue;
     }
@@ -1034,15 +1129,75 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
     throw new Error("No image-capable model is available. Add GEMINI_API_KEY (free) to analyze images.");
   }
   const reasons = [...new Set([...errors, ...skipped])];
-  throw new Error(`Every AI provider is busy or failing right now:\n- ${reasons.join("\n- ")}`);
+  const text = `Every AI provider is busy or failing right now:\n- ${reasons.join("\n- ")}`;
+  if (Number.isFinite(soonest)) throw new LlmBusyError(text, Math.max(0, Math.ceil(soonest)), reasons);
+  throw new Error(text);
 }
 
-/** Non-streaming helper (collects the whole reply). */
+// ---- identical-request sharing --------------------------------------------------------
+
+const answers = new Map<string, { at: number; ttl: number; value: Promise<Answered & { text: string }> }>();
+
+/** FNV-1a over the request (cheap, no crypto needed; collisions only cost a wrong cache hit at ~2^-32). */
+function requestKey(messages: LlmMessage[], opts: LlmOptions): string {
+  let h = 0x811c9dc5;
+  const add = (s: string) => {
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+  };
+  add(JSON.stringify([opts.provider, opts.json, opts.maxTokens, opts.temperature, opts.compactSystem]));
+  for (const m of messages) {
+    add(m.role);
+    add(m.content);
+    for (const i of m.images || []) add(i.data);
+  }
+  return `${(h >>> 0).toString(36)}:${messages.length}`;
+}
+
+/**
+ * Non-streaming helper (collects the whole reply).
+ * With cacheTtlMs, identical requests share one in-flight call and reuse its answer.
+ */
 export async function complete(messages: LlmMessage[], opts: LlmOptions = {}): Promise<Answered & { text: string }> {
-  const { stream, provider, providerLabel, model } = await openStream(messages, opts);
-  let text = "";
-  for await (const c of stream) text += c;
-  return { text, provider, providerLabel, model };
+  const run = async () => {
+    const { stream, provider, providerLabel, model } = await openStream(messages, opts);
+    let text = "";
+    for await (const c of stream) text += c;
+    return { text, provider, providerLabel, model };
+  };
+  if (!opts.cacheTtlMs || opts.simulateFail?.length) return run();
+  const now = Date.now();
+  for (const [k, v] of answers) if (now - v.at > v.ttl) answers.delete(k);
+  const k = requestKey(messages, opts);
+  const hit = answers.get(k);
+  if (hit) return hit.value;
+  const value = run();
+  answers.set(k, { at: now, ttl: opts.cacheTtlMs, value });
+  // Failures aren't worth remembering.
+  value.catch(() => answers.delete(k));
+  return value;
+}
+
+/**
+ * Spare capacity right now (0 = everything is at its limit or cooling down, 1 = idle) across the
+ * configured models that could take a request. Lets the agent skip optional work (a sanity-check
+ * screenshot needs the scarcest kind of model) before it causes a rate limit.
+ */
+export async function headroom(needVision: boolean): Promise<number> {
+  let best = 0;
+  const providers = PROVIDERS.filter((p) => p.configured());
+  const lists = await Promise.all(providers.map((p) => p.candidates(needVision).catch(() => [] as Candidate[])));
+  for (const list of lists) {
+    for (const c of list) {
+      if (needVision && !c.vision) continue;
+      if (isCooling(c.provider, c.model)) continue;
+      best = Math.max(best, 1 - scheduler.pressure(c.provider, c.model));
+      if (best >= 1) return 1;
+    }
+  }
+  return best;
 }
 
 export async function listProviders(): Promise<ProviderStatus[]> {

@@ -32,6 +32,7 @@ export interface BrowserState {
   plan: string[];
   steps: AgentStep[];
   outcome: "idle" | "running" | "done" | "stopped" | "error";
+  inputError?: string;
   /** The page the HTTP browser is on, when there's no screencast (no Chromium on this server). */
   page?: PageSnap | null;
 }
@@ -81,13 +82,14 @@ export function BrowserPanel({
   pageBusy: boolean;
 }) {
   const logRef = useRef<HTMLDivElement>(null);
+  const followLog = useRef(true);
   const viewRef = useRef<HTMLDivElement>(null);
   const [hasFrame, setHasFrame] = useState(false);
   const [showLog, setShowLog] = useState(true);
   const [editingUrl, setEditingUrl] = useState<string | null>(null);
   const onHasFrame = useCallback((v: boolean) => setHasFrame(v), []);
   useEffect(() => {
-    logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
+    if (followLog.current && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [state.steps.length, state.plan.length]);
 
   const outcome = OUTCOME[state.outcome];
@@ -173,7 +175,7 @@ export function BrowserPanel({
             </span>
           )}
 
-          {paused ? (
+          {paused && (
             <button
               type="button"
               onClick={onResume}
@@ -182,11 +184,13 @@ export function BrowserPanel({
             >
               <Play size={10} fill="currentColor" aria-hidden /> Resume
             </button>
-          ) : (
+          )}
+          {(
             hasFrame && (
               <button
                 type="button"
                 onClick={onToggleControl}
+                data-browser-control
                 aria-pressed={controlling}
                 className={`sk-btn h-6.5 shrink-0 rounded-md px-2 text-[11px] font-medium ${
                   controlling
@@ -236,6 +240,12 @@ export function BrowserPanel({
           </button>
         </div>
       </div>
+
+      {state.inputError && (
+        <div role="alert" className="shrink-0 px-3 pb-2 text-[11px] text-[var(--sk-danger)]">
+          {state.inputError}
+        </div>
+      )}
 
       {/* Main viewport + unconfined activity feed */}
       <div className="flex min-h-0 flex-1 flex-col gap-2.5 px-2.5 pb-2.5">
@@ -301,7 +311,10 @@ export function BrowserPanel({
 
         {/* Unconfined activity stream directly on pitch-black canvas */}
         {hasActivity && showLog ? (
-          <div ref={logRef} className="sk-scroll min-h-0 flex-1 overflow-y-auto px-1 py-1">
+          <div ref={logRef} onScroll={e => {
+            const el = e.currentTarget;
+            followLog.current = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
+          }} className="sk-scroll min-h-0 flex-1 overflow-y-auto px-1 py-1">
             {state.plan.length > 0 && (
               <div className="mb-3">
                 <h3 className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-[var(--sk-faint)]">Plan</h3>
@@ -318,7 +331,7 @@ export function BrowserPanel({
             <h3 className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-[var(--sk-faint)]">Activity ({state.steps.length})</h3>
             <ul className="space-y-1.5" aria-live="polite">
               {state.steps.map((s) => (
-                <li key={s.id} className="sk-in flex items-start gap-2 text-[12px]">
+                <li key={s.id} className="flex items-start gap-2 text-[12px]" style={{ contentVisibility: "auto", containIntrinsicSize: "auto 40px" }}>
                   <span className="mt-0.5 shrink-0">
                     {s.status === "running" ? (
                       <Loader2 size={12.5} className="sk-spin text-[var(--sk-accent)]" aria-label="Running" />

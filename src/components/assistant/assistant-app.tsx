@@ -12,6 +12,7 @@ import { SettingsDialog, type Theme } from "./settings-dialog";
 import { Welcome } from "./welcome";
 import { FoxMark } from "./fox-mark";
 import { createLiveBus } from "./live-view";
+import { createInputChannel, deliverInputBatch, InputTransportError, INPUT_PROTOCOL_VERSION, type BrowserInput } from "@/lib/live-input";
 import * as API from "./api";
 import {
   errorFromResponse,
@@ -259,6 +260,11 @@ export default function AssistantApp() {
 
   // ---- live browser stream (frames + current page) -------------------------
   const [liveBus] = useState(createLiveBus);
+  const inputEpoch = useRef<number | undefined>(undefined);
+  const inputControl = useRef<number | undefined>(undefined);
+  const inputSession = useRef<string | undefined>(undefined);
+  const inputRecovery = useRef<Promise<void> | null>(null);
+  const displayRate = useRef(120);
   const panelOpenRef = useRef(false);
   useEffect(() => {
     panelOpenRef.current = panelOpen;
@@ -276,6 +282,7 @@ export default function AssistantApp() {
   const attachStream = useCallback(
     (chatId: string, viaHost = false) => {
       closeStream();
+      if (document.hidden) return;
       const cached = directLive.current.get(chatId);
       if (!viaHost && (!cached || cached.until < Date.now())) {
         // Ask once (cheap); reconnect with whatever we learn.
@@ -284,14 +291,17 @@ export default function AssistantApp() {
           .then((r) => (r.ok ? r.json() : { url: null }))
           .then((j: { url?: string | null }) => {
             directLive.current.set(chatId, { url: j.url || null, until: Date.now() + 9 * 60_000 });
-            if (j.url && activeRef.current === chatId) attachStream(chatId);
+            if (j.url && activeRef.current === chatId && panelOpenRef.current) attachStream(chatId);
           })
           .catch(() => {});
       }
       const direct = viaHost ? null : directLive.current.get(chatId)?.url;
-      const es = new EventSource(direct || `/api/sessions/${chatId}/stream`);
+      const streamUrl = new URL(direct || `/api/sessions/${chatId}/stream`, window.location.href);
+      streamUrl.searchParams.set("fps", String(displayRate.current));
+      const es = new EventSource(streamUrl.href);
       streamRef.current = es;
       es.onmessage = (ev) => {
+        if (streamRef.current !== es || activeRef.current !== chatId) return;
         let e: { type: string } & Record<string, unknown>;
         try {
           e = JSON.parse(ev.data);
@@ -299,8 +309,32 @@ export default function AssistantApp() {
           return;
         }
         // Frames and cursor moves go straight to the live view (no React re-render per frame).
-        if (e.type === "frame" || e.type === "cursor") liveBus.emit(e as never);
+        if (e.type === "reset") {
+          inputChannel.current?.channel.dispose();
+          inputChannel.current = null;
+        }
+        if ((e.type === "frame" || e.type === "reset") && typeof e.epoch === "number") {
+          if (inputEpoch.current !== undefined && inputEpoch.current !== e.epoch) {
+            inputChannel.current?.channel.dispose();
+            inputChannel.current = null;
+          }
+          inputEpoch.current = e.epoch;
+        }
+        if (e.type === "frame" || e.type === "cursor" || e.type === "reset") liveBus.emit(e as never);
         if (e.type === "status") {
+          if (typeof e.sessionId === "string") {
+            if (inputSession.current !== undefined && inputSession.current !== e.sessionId) {
+              inputChannel.current?.channel.dispose(); inputChannel.current = null;
+            }
+            inputSession.current = e.sessionId;
+          }
+          if (typeof e.control === "number") {
+            if (inputControl.current !== undefined && inputControl.current !== e.control) {
+              inputChannel.current?.channel.dispose(); inputChannel.current = null;
+            }
+            inputControl.current = e.control;
+          }
+          if (typeof e.epoch === "number") inputEpoch.current = e.epoch;
           setSessionAvailable(e.status !== "closed");
           if (typeof e.takeover === "boolean") setControlling(e.takeover);
           const tab = (e.tabs as { url: string; title: string; active: boolean }[] | undefined)?.find((t) => t.active);
@@ -323,6 +357,38 @@ export default function AssistantApp() {
     },
     [closeStream, liveBus]
   );
+  // Short, event-driven samples also handle moving the window between displays.
+  useEffect(() => {
+    let gaps: number[] = [];
+    let last = 0;
+    let raf = 0;
+    const sample = (at: number) => {
+      if (last && at > last) gaps.push(at - last);
+      last = at;
+      if (gaps.length < 12) raf = requestAnimationFrame(sample);
+      else {
+        gaps.sort((a, b) => a - b);
+        const rate = Math.min(240, Math.max(1, Math.round(1000 / gaps[Math.floor(gaps.length / 2)])));
+        if (Math.abs(rate - displayRate.current) > 2) {
+          displayRate.current = rate;
+          if (panelOpenRef.current && activeRef.current) attachStream(activeRef.current);
+        }
+      }
+    };
+    const measure = () => {
+      cancelAnimationFrame(raf);
+      gaps = []; last = 0;
+      if (!document.hidden) raf = requestAnimationFrame(sample);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    document.addEventListener("visibilitychange", measure);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", measure);
+      document.removeEventListener("visibilitychange", measure);
+    };
+  }, [attachStream]);
   // Your own clicks in the reader view (the HTTP browser the agent uses when there's no Chromium).
   const [pageBusy, setPageBusy] = useState(false);
   const pageOp = useCallback(async (op: PageOp) => {
@@ -390,13 +456,27 @@ export default function AssistantApp() {
     await openLiveBrowser();
   }, [openLiveBrowser, panelOpen]);
   useEffect(() => closeStream, [closeStream]);
-  // Closing the panel stops the video stream (saves bandwidth) unless a task is still running.
+  // Agent progress uses its own stream. Hidden viewers don't need JPEG capture.
   useEffect(() => {
-    if (!panelOpen && !runningRef.current) closeStream();
+    if (!panelOpen) closeStream();
   }, [panelOpen, closeStream]);
+  useEffect(() => {
+    const visibility = () => {
+      if (document.hidden) closeStream();
+      else if (panelOpenRef.current && activeRef.current) attachStream(activeRef.current);
+    };
+    document.addEventListener("visibilitychange", visibility);
+    return () => document.removeEventListener("visibilitychange", visibility);
+  }, [attachStream, closeStream]);
 
   // ---- open / switch chats ---------------------------------------------------
   const detach = useCallback(() => {
+    inputChannel.current?.channel.dispose();
+    inputChannel.current = null;
+    inputEpoch.current = undefined;
+    inputControl.current = undefined;
+    inputSession.current = undefined;
+    inputRecovery.current = null;
     abortRef.current?.abort("switch");
     abortRef.current = null;
     closeStream();
@@ -606,77 +686,130 @@ export default function AssistantApp() {
   );
 
   // ---- you driving the browser -------------------------------------------------
+  const controlRequest = useRef(0);
   const setControl = useCallback(async (chatId: string, on: boolean) => {
-    setControlling(on);
+    const request = ++controlRequest.current;
+    const previousSession = inputSession.current;
+    if (!on) { inputChannel.current?.channel.dispose(); inputChannel.current = null; }
+    setBrowser(b => b.inputError ? { ...b, inputError: undefined } : b);
     try {
       const r = await fetch(`/api/sessions/${chatId}/takeover`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ on }),
+        body: JSON.stringify({ on, sessionId: inputSession.current, control: inputControl.current }),
       });
       if (!r.ok) throw new Error(await errorFromResponse(r));
-      const j = (await r.json()) as { takeover: boolean };
+      const j = (await r.json()) as { takeover: boolean; epoch?: number; control?: number; sessionId?: string };
+      if (activeRef.current !== chatId || request !== controlRequest.current) return;
+      if (typeof j.epoch === "number") inputEpoch.current = j.epoch;
+      if (typeof j.control === "number") inputControl.current = j.control;
+      if (typeof j.sessionId === "string") inputSession.current = j.sessionId;
       setControlling(j.takeover);
-    } catch {
-      setControlling(false);
+      if (previousSession && j.sessionId && previousSession !== j.sessionId) {
+        directLive.current.delete(chatId);
+        attachStream(chatId);
+      }
+    } catch (error) {
+      if (activeRef.current !== chatId || request !== controlRequest.current) return;
+      setBrowser(b => ({ ...b, inputError: error instanceof Error ? error.message : "Could not transfer browser control. Try again." }));
     }
-  }, []);
+  }, [attachStream]);
 
   // When a task ends, the browser is yours: you can click around right away.
   const handOverRef = useRef<(chatId: string) => void>(() => {});
   useEffect(() => {
     handOverRef.current = (chatId: string) => {
-      if (activeRef.current === chatId) void setControl(chatId, true);
+      // The server releases its lease before a terminal event. No competing
+      // takeover request is needed (it could otherwise abort a newer task).
+      if (activeRef.current === chatId) setControlling(true);
     };
-  }, [setControl]);
-
-  // Your input goes out one event at a time, in order; queued mouse moves collapse to the latest
-  // and queued scrolling adds up.
-  const inputQueue = useRef<{ chatId: string; ev: Record<string, unknown> }[]>([]);
-  const inputBusy = useRef(false);
-  const pumpInput = useCallback(async () => {
-    if (inputBusy.current) return;
-    inputBusy.current = true;
-    try {
-      while (inputQueue.current.length) {
-        const next = inputQueue.current.shift()!;
-        // Straight to the agent computer when there's a direct link (no hop through the app
-        // host). text/plain keeps it a "simple" request: no CORS preflight per click.
-        const direct = directLive.current.get(next.chatId)?.url?.replace("/stream?", "/input?");
-        let r = direct
-          ? await fetch(direct, { method: "POST", headers: { "Content-Type": "text/plain" }, body: JSON.stringify(next.ev) }).catch(() => null)
-          : null;
-        if (!r || r.status === 401 || r.status === 404) {
-          r = await fetch(`/api/sessions/${next.chatId}/input`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(next.ev),
-          }).catch(() => null);
-        }
-        // 409 = the server no longer has you in control (e.g. the agent took over again).
-        if (r?.status === 409) {
-          setControlling(false);
-          inputQueue.current = [];
-        }
-      }
-    } finally {
-      inputBusy.current = false;
-    }
   }, []);
+
+  const inputChannel = useRef<{ chatId: string; channel: ReturnType<typeof createInputChannel> } | null>(null);
+  useEffect(() => () => inputChannel.current?.channel.dispose(), []);
+  // A batch preserves key/click ordering across a single round trip. Continuous
+  // pointer/scroll input replaces adjacent queued events instead of building a backlog.
   const sendInput = useCallback(
-    (ev: Record<string, unknown>) => {
+    (ev: BrowserInput) => {
       const chatId = activeRef.current;
       if (!chatId) return;
-      const q = inputQueue.current;
-      const last = q[q.length - 1];
-      if (ev.type === "move" && last?.ev.type === "move") q[q.length - 1] = { chatId, ev };
-      // Scrolling waiting behind a request in flight adds up into one, so it never lags behind.
-      else if (ev.type === "wheel" && last?.ev.type === "wheel" && last.chatId === chatId)
-        last.ev = { ...ev, dx: Number(last.ev.dx || 0) + Number(ev.dx || 0), dy: Number(last.ev.dy || 0) + Number(ev.dy || 0) };
-      else q.push({ chatId, ev });
-      void pumpInput();
+      if (inputChannel.current?.chatId !== chatId) {
+        inputChannel.current?.channel.dispose();
+        const control = inputControl.current;
+        const sessionId = inputSession.current;
+        const channel = createInputChannel(async (events, signal) => {
+          await inputRecovery.current;
+          signal.throwIfAborted();
+          await deliverInputBatch(events, signal, {
+            epoch: () => inputEpoch.current,
+            setEpoch: epoch => { inputEpoch.current = epoch; },
+            request: async (events, epoch, signal) => {
+              const body = JSON.stringify({ events, epoch, control: inputControl.current, sessionId: inputSession.current, protocol: INPUT_PROTOCOL_VERSION });
+            const cached = directLive.current.get(chatId);
+            const direct = cached && cached.until > Date.now() ? cached.url?.replace("/stream?", "/input?") : null;
+            let response = direct
+              ? await fetch(direct, { method: "POST", headers: { "Content-Type": "text/plain" }, body, signal })
+              : null;
+            // These responses guarantee no input ran. Never retry a lost response.
+            if (!response || response.status === 401 || response.status === 404) {
+              if (direct) directLive.current.set(chatId, { url: null, until: Date.now() + 60_000 });
+              response = await fetch(`/api/sessions/${chatId}/input`, {
+                method: "POST", headers: { "Content-Type": "application/json" }, body, signal,
+              });
+            }
+              return response;
+            },
+            claim: async signal => {
+              const claim = await fetch(`/api/sessions/${chatId}/takeover`, {
+                method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on: true, sessionId: inputSession.current, control: inputControl.current }), signal,
+              });
+              if (!claim.ok) throw new InputTransportError(await errorFromResponse(claim));
+              const state = await claim.json() as { epoch?: number; takeover: boolean; control?: number };
+              if (activeRef.current === chatId) setControlling(state.takeover);
+              if (typeof state.control === "number") inputControl.current = state.control;
+              return state;
+            },
+          });
+          if (activeRef.current === chatId) setBrowser(b => b.inputError ? { ...b, inputError: undefined } : b);
+        }, error => {
+          if (activeRef.current !== chatId) return;
+          inputChannel.current?.channel.dispose();
+          inputChannel.current = null;
+          if (error instanceof InputTransportError && error.code === "SESSION_CHANGED") {
+            directLive.current.delete(chatId);
+            inputSession.current = undefined; inputEpoch.current = undefined; inputControl.current = undefined;
+            attachStream(chatId);
+            return;
+          }
+          if (error instanceof InputTransportError && ["STALE_VIEW", "STALE_CONTROL"].includes(error.code || "")) {
+            // Old coordinates must never be replayed into a different page. The next
+            // gesture uses this epoch; ownership and the open browser stay intact.
+            if (typeof error.epoch === "number") inputEpoch.current = error.epoch;
+            if (typeof error.control === "number") inputControl.current = error.control;
+            return;
+          }
+          setBrowser(b => ({ ...b, inputError: error instanceof Error ? error.message : "Browser input failed. Take control again to reconnect." }));
+          if (typeof control === "number") {
+            // Release a possibly held drag after an uncertain response. This CAS
+            // cannot interrupt a newer agent/user lease and never replays the gesture.
+            const recovery = fetch(`/api/sessions/${chatId}/takeover`, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ on: true, resetInput: true, control, sessionId }), signal: AbortSignal.timeout(5000),
+            }).then(async r => {
+              const state = await r.json() as { control?: number; epoch?: number; takeover?: boolean };
+              if (activeRef.current !== chatId) return;
+              if (typeof state.control === "number") inputControl.current = state.control;
+              if (typeof state.epoch === "number") inputEpoch.current = state.epoch;
+              if (typeof state.takeover === "boolean") setControlling(state.takeover);
+            }).catch(() => {}).finally(() => { if (inputRecovery.current === recovery) inputRecovery.current = null; });
+            inputRecovery.current = recovery;
+          }
+        });
+        inputChannel.current = { chatId, channel };
+      }
+      inputChannel.current.channel.push(ev);
     },
-    [pumpInput]
+    [attachStream]
   );
 
   // ---- agent turn ------------------------------------------------------------
@@ -692,6 +825,9 @@ export default function AssistantApp() {
       const ctl = new AbortController();
       abortRef.current = ctl;
       agentChatRef.current = chatId;
+      inputChannel.current?.channel.dispose();
+      inputChannel.current = null;
+      controlRequest.current++;
       runningRef.current = true;
       setBusy(true);
       if (typeof window !== "undefined" && window.innerWidth < 1440) setSidebarOpen(false);
@@ -705,8 +841,6 @@ export default function AssistantApp() {
           ? { ...b, running: true, status: "Continuing…", outcome: "running" }
           : { ...EMPTY_BROWSER, running: true, status: "Starting…", outcome: "running" }
       );
-      attachStream(chatId);
-
       const trail: { label: string; url?: string }[] = [];
       const end = (outcome: "done" | "stopped" | "error", url?: string) =>
         setBrowser((b) => ({
@@ -727,6 +861,11 @@ export default function AssistantApp() {
         const slow = setTimeout(() => setBrowser((b) => ({ ...b, status: "Starting the agent computer…" })), 800);
         try {
           await API.ensureAgentHost();
+          // The host may have renewed since the last task. Do not keep watching
+          // or sending input to the old, still-running browser computer.
+          directLive.current.delete(chatId);
+          inputSession.current = undefined; inputEpoch.current = undefined; inputControl.current = undefined;
+          attachStream(chatId);
         } finally {
           clearTimeout(slow);
         }
@@ -737,6 +876,7 @@ export default function AssistantApp() {
           signal: ctl.signal,
         });
         if (!res.ok) throw new Error(await errorFromResponse(res));
+        let dropped: unknown = null;
         await readSSE(res, (d) => {
           const e = d as { type: string } & Record<string, unknown>;
           switch (e.type) {
@@ -788,7 +928,7 @@ export default function AssistantApp() {
               finished = true;
               end("stopped");
               setPaused(true);
-              setControlling(true);
+              handOverRef.current(chatId);
               patch(replyId, (m) => ({ ...m, pending: false, content: String(e.reason), agent: { ...m.agent!, status: "paused" } }));
               break;
             case "stopped":
@@ -809,7 +949,13 @@ export default function AssistantApp() {
               patch(replyId, (m) => ({ ...m, pending: false, error: String(e.message), agent: { ...m.agent!, status: "error" } }));
               break;
           }
+        }).catch((err) => {
+          // A dropped stream throws a bare "network error". The agent keeps going on the
+          // server, so fall through to the reconnect below instead of failing.
+          if (ctl.signal.aborted) throw err;
+          dropped = err;
         });
+        if (dropped && !serverReplyId) throw dropped;
         if (!finished && serverReplyId && !ctl.signal.aborted) {
           // The connection dropped (proxy timeout, phone sleep, flaky network) but the agent
           // keeps working on the server. Wait for its saved result instead of failing.
@@ -826,10 +972,8 @@ export default function AssistantApp() {
             end(st === "done" ? "done" : st === "error" ? "error" : "stopped", final.agent?.url);
             handOverRef.current(chatId);
             patch(replyId, () => ({ ...final, id: replyId, pending: false }));
-            if (st === "paused") {
-              setPaused(true);
-              setControlling(true);
-            }
+            // Paused (your takeover, or AI limits used up): offer Resume; take control yourself if you want.
+            if (st === "paused") setPaused(true);
             break;
           }
         }
@@ -1029,6 +1173,15 @@ export default function AssistantApp() {
     [send]
   );
 
+  /** "Run in Agent" on a prompt Senko wrote: send that exact text as an agent task. */
+  const runPromptInAgent = useCallback(
+    (text: string) => {
+      changeMode("agent");
+      void send(text, "agent");
+    },
+    [send]
+  );
+
   const pickSuggestion = (s: Suggestion) => {
     if (s.mode !== mode) changeMode(s.mode);
     void send(s.prompt, s.mode);
@@ -1208,6 +1361,7 @@ export default function AssistantApp() {
                         streaming={m.id === streamingId && !!m.content}
                         onRetry={busy ? undefined : retry}
                         onRunAgent={busy ? undefined : runSuggestedAgent}
+                        onRunPrompt={busy ? undefined : runPromptInAgent}
                         onEdit={busy ? undefined : (id, next) => void editMessage(id, next)}
                       />
                     ))

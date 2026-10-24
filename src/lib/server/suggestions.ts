@@ -285,7 +285,7 @@ export async function getSuggestions(
         { role: "system", content: "You write short, specific, genuinely useful conversation starters. You output strict JSON." },
         { role: "user", content: buildPrompt(mode, signals, avoid, opts.local) },
       ],
-      { provider: opts.provider, temperature: 0.95, maxTokens: 1500, json: true, signal: AbortSignal.timeout(30_000) }
+      { provider: opts.provider, temperature: 0.95, maxTokens: 1500, json: true, signal: AbortSignal.timeout(30_000), priority: "background", hedge: false }
     );
     suggestions = cleanSuggestions(parseSuggestions(text), { mode, avoid, privateValues: signals?.privateValues });
   } catch (e) {

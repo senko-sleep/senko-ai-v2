@@ -156,6 +156,11 @@ async function init(): Promise<Driver> {
         "and on most hosts its files are wiped on every deploy. Set DATABASE_URL to a Postgres/Neon URL."
     );
   }
+  // The embedded database needs far more memory than a Wasmer sandbox has: booting it kills the
+  // whole workload (every request then returns a 500). Fail this one call with a clear error instead.
+  if (!url && process.env.WASMER_APP_ID) {
+    throw new Error("No database configured on Wasmer: set SENKO_DATABASE_URL (or DATABASE_URL) as an app secret.");
+  }
   const driver = url ? await createPg(url) : await createPglite();
   if (url) {
     for (const stmt of SCHEMA.split(";").map((s) => s.trim()).filter(Boolean)) await driver.query(stmt);

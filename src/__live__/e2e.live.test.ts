@@ -46,7 +46,7 @@ describe("Senko end-to-end", () => {
   for (const sc of selected) {
     it(`[${sc.group}] ${sc.title}`, async () => {
       const { execute } = await import("@/lib/testing/runner");
-      const run = {
+      const run: import("@/lib/testing/runner").TestRun = {
         id: sc.id, scenarioId: sc.id, title: sc.title, state: "running" as const,
         startedAt: Date.now(), logs: [] as { at: number; text: string }[], shots: [] as { label: string; mime: string; data: string }[],
       };

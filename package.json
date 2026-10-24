@@ -14,6 +14,7 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
+    "profile:browser": "node scripts/profile-browser.mjs",
     "test:e2e": "vitest run --config vitest.live.config.ts",
     "ollama-bridge": "node scripts/ollama-bridge.mjs"
   },
@@ -60,6 +61,7 @@
     "babel-plugin-react-compiler": "1.0.0",
     "concurrently": "^9.2.1",
     "eslint": "^9",
+    "esbuild": "0.25.12",
     "eslint-config-next": "16.1.6",
     "raw-loader": "^4.0.2",
     "shadcn": "^3.8.4",

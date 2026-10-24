@@ -6,6 +6,7 @@
 // Hobby plans cap a sandbox at 45 minutes, so a fresh one replaces it shortly before it
 // expires. Browser sessions are saved in the database and restore on the new host.
 import { q, q1 } from "./db";
+import { INPUT_PROTOCOL_VERSION } from "@/lib/live-input";
 
 export const SNAPSHOT_KEY = "agent_host.snapshot";
 const CURRENT_KEY = "agent_host.current";
@@ -79,7 +80,9 @@ export async function currentHost(): Promise<AgentHost | null> {
 async function healthy(url: string, ms = 3000): Promise<boolean> {
   try {
     const r = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(ms), cache: "no-store" });
-    return r.ok;
+    if (!r.ok) return false;
+    const health = await r.json();
+    return health.inputProtocol === INPUT_PROTOCOL_VERSION;
   } catch {
     return false;
   }

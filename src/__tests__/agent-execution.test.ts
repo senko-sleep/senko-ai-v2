@@ -1,0 +1,69 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({ complete: vi.fn(), open: vi.fn(), save: vi.fn(), clear: vi.fn() }));
+vi.mock("@/lib/llm", () => ({ complete: mocks.complete, headroom: async () => 1, LlmBusyError: class extends Error {} }));
+vi.mock("@/lib/agent/sessions", () => ({ sessions: { get: () => undefined, open: mocks.open } }));
+vi.mock("@/lib/agent/checkpoint", () => ({ checkpointLease: () => Symbol(), saveCheckpoint: mocks.save, clearCheckpoint: mocks.clear }));
+vi.mock("@/lib/server/persona", () => ({ agentVoice: async () => "" }));
+vi.mock("@/lib/server/chats", () => ({ saveImage: vi.fn() }));
+vi.mock("@/lib/server/db", () => ({ q: vi.fn(), q1: vi.fn(), newId: () => "test" }));
+import { runAgent, type RunEvent } from "@/lib/agent/runner";
+
+function fixture() {
+  let url = "https://fixture.test/start";
+  const page = { url: () => url, title: async () => "Task fixture", waitForLoadState: async () => {}, waitForTimeout: async () => {},
+    goto: vi.fn(async (next: string) => { url = next; return { status: () => 200 }; }),
+    evaluate: vi.fn(async (fn: () => unknown) => {
+      const source = String(fn);
+      if (source.includes("data-agent-id")) return { elements: [], images: [], text: url.endsWith("result") ? "Code: KIWI-4217" : "Start page", atBottom: false };
+      if (source.includes("innerText.length")) return 600;
+      return null;
+    }),
+  };
+  const session = { pages: [page], active: () => page, isActive: () => true, beginAgent: vi.fn(), endAgent: vi.fn(), startCast: async () => {}, emitStatus: vi.fn(), emit: vi.fn(),
+    tabs: async () => [{ index: 0, title: "Fixture", url, active: true }], screenshot: async () => Buffer.from("test"), recordShot: async () => "shot", persist: async () => {}, schedulePersist: vi.fn(), log: vi.fn(), replay: [] };
+  mocks.open.mockResolvedValue(session);
+  return { session, page };
+}
+const goal = "Open the result page, report the exact code, and keep the result tab open.";
+const plan = { requirements: ["Report the exact code", "Keep the result tab open"], steps: ["Open result", "Read code"] };
+const review = (complete: boolean) => ({ requirements: ["r0", "r1", "r2"].map(id => ({ id, status: complete ? "verified" : "pending", evidence: complete ? "Result page visibly says KIWI-4217; answer reports it; tab remains open" : "Still on start page; code has not been observed" })) });
+function reply(value: unknown) { return { text: JSON.stringify(value), providerLabel: "test", model: "fixture" }; }
+beforeEach(() => { vi.clearAllMocks(); mocks.save.mockResolvedValue(undefined); mocks.clear.mockResolvedValue(undefined); });
+
+describe("agent execution verification", () => {
+  it("rejects an early done, keeps original requirements, and completes only after a successful review", async () => {
+    const { page, session } = fixture();
+    const replies = [plan, { action: "done", answer: "Done" }, review(false), { action: "goto", url: "https://fixture.test/result" }, { action: "done", answer: "The exact code is KIWI-4217." }, review(true)];
+    mocks.complete.mockImplementation(async () => reply(replies.shift()));
+    const events: RunEvent[] = []; const ctl = new AbortController();
+    await runAgent({ chatId: "verify", ownerId: "owner", goal, signal: ctl.signal, emit: e => events.push(e) });
+    expect(page.goto).toHaveBeenCalledOnce();
+    expect(events.filter(e => e.type === "done")).toEqual([expect.objectContaining({ answer: "The exact code is KIWI-4217." })]);
+    expect(mocks.complete.mock.calls[3][0][1].content).toContain("Completion rejected");
+    expect(mocks.complete.mock.calls[3][0][1].content).toContain(goal);
+    expect(mocks.save.mock.calls.some(([, ck]) => ck.requirements?.length === 3)).toBe(true);
+    expect(mocks.clear).toHaveBeenCalledOnce(); expect(session.endAgent).toHaveBeenCalledWith(ctl.signal);
+  });
+
+  it("pauses with saved requirements instead of claiming success after repeated unverified completions", async () => {
+    fixture(); const replies = [plan, ...Array.from({ length: 3 }, () => [{ action: "done", answer: "Done" }, review(false)]).flat()];
+    mocks.complete.mockImplementation(async () => reply(replies.shift()));
+    const events: RunEvent[] = [];
+    await runAgent({ chatId: "incomplete", ownerId: "owner", goal, signal: new AbortController().signal, emit: e => events.push(e) });
+    expect(events.some(e => e.type === "done")).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({ type: "paused", kind: "stuck" }));
+    expect(mocks.clear).not.toHaveBeenCalled();
+    expect(mocks.save.mock.calls.at(-1)?.[1].requirements.every((r: { status: string }) => r.status === "pending")).toBe(true);
+  });
+
+  it("preserves checkpoint requirements on resume and hands back control after a provider failure", async () => {
+    const { session } = fixture(); mocks.complete.mockRejectedValue(new Error("No AI provider is configured"));
+    const events: RunEvent[] = []; const ctl = new AbortController();
+    await runAgent({ chatId: "resume", ownerId: "owner", goal, signal: ctl.signal, emit: e => events.push(e), checkpoint: { v: 1, goal, plan: ["Read code"], history: ["Already opened result"], actionsTaken: 1, sources: [], updatedAt: Date.now(), requirements: [{ id: "r0", text: goal, status: "verified", evidence: "Before handoff" }] } });
+    expect(events).toContainEqual(expect.objectContaining({ type: "error" }));
+    expect(session.endAgent).toHaveBeenCalledWith(ctl.signal);
+    expect(mocks.save.mock.calls.at(-1)?.[1].requirements[0]).toMatchObject({ text: goal, status: "pending" });
+    expect(mocks.complete.mock.calls[0][0][1].content).toContain("Already opened result");
+  });
+});

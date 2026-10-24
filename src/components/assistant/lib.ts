@@ -158,6 +158,13 @@ export async function errorFromResponse(res: Response): Promise<string> {
   }
   if (res.status === 401) return "Not signed in to the app (wrong or missing password).";
   if (res.status === 404) return "The server route wasn't found. Is the app up to date?";
+  // Hosts (Railway, Render, etc.) reply with a full HTML error page when the app crashes or restarts.
+  // Don't dump that markup into the chat.
+  if (/^\s*(<!doctype|<html|<head)/i.test(text)) {
+    return res.status >= 500
+      ? `The server hit an error (${res.status}). The host returned an error page, so the app may have crashed, run out of memory or be restarting. Try again shortly and check the server logs if it persists.`
+      : `Request failed (${res.status}).`;
+  }
   if (res.status >= 500) return `The server hit an error (${res.status}). ${text.slice(0, 200)}`;
   return `Request failed (${res.status}). ${text.slice(0, 200)}`;
 }
@@ -167,7 +174,7 @@ export function networkError(e: unknown): string {
   if (/timed out|timeout/i.test(msg)) {
     return "The server took too long to respond. Check that the app and its local database are running, then try again.";
   }
-  if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+  if (/failed to fetch|network ?error|load failed|connection (was )?(reset|closed|lost)/i.test(msg)) {
     return "Couldn't reach the server. Check your connection, or that the app is still running.";
   }
   return msg;

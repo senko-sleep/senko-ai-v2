@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef } from "react";
+import { createFrameDecoder } from "@/lib/live-frame";
+import { appendInput, pagePoint, type BrowserInput } from "@/lib/live-input";
 
 // High-rate live events (frames, cursor) skip React state entirely: the stream pushes them
 // onto this tiny bus and the LiveView draws them straight to a canvas / moves the cursor.
 export type LiveEvent =
-  | { type: "frame"; data: string; width: number; height: number }
+  | { type: "frame"; data: string; width: number; height: number; epoch?: number }
   | { type: "cursor"; x: number; y: number; kind: "move" | "click"; box?: { x: number; y: number; w: number; h: number } | null; width: number; height: number }
-  | { type: "reset" };
+  | { type: "reset"; epoch?: number };
 
 export function createLiveBus() {
   const subs = new Set<(e: LiveEvent) => void>();
@@ -24,6 +26,9 @@ export function createLiveBus() {
 export type LiveBus = ReturnType<typeof createLiveBus>;
 
 function b64ToBlob(b64: string): Blob {
+  // Native decoding avoids a JS loop and an intermediate UTF-16 string on modern clients.
+  const fromBase64 = (Uint8Array as unknown as { fromBase64?: (s: string) => Uint8Array<ArrayBuffer> }).fromBase64;
+  if (fromBase64) return new Blob([fromBase64(b64)], { type: "image/jpeg" });
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
@@ -46,22 +51,13 @@ function containFit(cw: number, ch: number, iw: number, ih: number): Fit {
   return { x: (cw - w) / 2, y: (ch - h) / 2, w, h };
 }
 
-/**
- * The agent's live browser: frames drawn to a canvas as fast as they arrive, plus Senko's
- * cursor gliding between targets while a task is running.
- */
 /** Your own input in the live view, in page CSS pixels (sent to /api/sessions/:id/input). */
-export type UserInput =
-  | { type: "click"; x: number; y: number; button?: "left" | "right" | "middle" }
-  | { type: "move"; x: number; y: number }
-  | { type: "wheel"; dx: number; dy: number; x: number; y: number }
-  | { type: "key"; key: string }
-  | { type: "text"; text: string };
+export type UserInput = BrowserInput;
 
 // Browser key names -> Playwright key names.
 const KEY_MAP: Record<string, string> = { " ": "Space", Esc: "Escape", Del: "Delete", Left: "ArrowLeft", Right: "ArrowRight", Up: "ArrowUp", Down: "ArrowDown" };
 
-export function LiveView({
+export const LiveView = memo(function LiveView({
   bus,
   title,
   onHasFrame,
@@ -79,18 +75,16 @@ export function LiveView({
   onInput?: (e: UserInput) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
+  const keyboardRef = useRef<HTMLTextAreaElement>(null);
   const geomRef = useRef<{ fit: Fit; vp: { w: number; h: number } }>({ fit: { x: 0, y: 0, w: 0, h: 0 }, vp: { w: 1280, h: 800 } });
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cursorRef = useRef<HTMLDivElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const rippleLayerRef = useRef<HTMLDivElement>(null);
   const agentRunningRef = useRef(agentRunning);
-  const cursorReadyRef = useRef(false);
-  const [fps, setFps] = useState(0);
 
   useEffect(() => {
     agentRunningRef.current = agentRunning;
-    cursorReadyRef.current = false;
     if (!agentRunning) {
       if (cursorRef.current) cursorRef.current.style.opacity = "0";
       if (boxRef.current) boxRef.current.style.opacity = "0";
@@ -101,24 +95,30 @@ export function LiveView({
     const wrap = wrapRef.current!;
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext("2d", { alpha: false })!;
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
     let bitmap: ImageBitmap | null = null;
-    let decoding = false;
-    let pending: string | null = null;
     let fit: Fit = { x: 0, y: 0, w: 0, h: 0 };
     let vp = { w: 1280, h: 800 }; // the page's viewport in CSS px (from frame/cursor metadata)
     let hasFrame = false;
-    let frames = 0;
-
-    // Cursor state: target (page px) and current (screen px), smoothed toward the target.
-    let target: { x: number; y: number } | null = null;
-    let cur: { x: number; y: number } | null = null;
-    let clickPending = false;
-
+    let size = { w: 0, h: 0, dpr: 1 };
+    let layoutDirty = true;
+    let paintDirty = false;
+    let cursor: Extract<LiveEvent, { type: "cursor" }> | null = null;
+    let cursorDirty = false;
+    let latestHidden: Extract<LiveEvent, { type: "frame" }> | null = null;
+    let raf = 0;
+    let boxTimer = 0;
+    const timers = new Set<ReturnType<typeof setTimeout>>();
+    const later = (fn: () => void, ms: number) => {
+      const id = setTimeout(() => { timers.delete(id); fn(); }, ms);
+      timers.add(id);
+    };
+    const schedule = () => {
+      if (!raf && !document.hidden) raf = requestAnimationFrame(render);
+    };
     const layout = () => {
       const r = wrap.getBoundingClientRect();
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      size = { w: r.width, h: r.height, dpr };
       const W = Math.max(1, Math.round(r.width * dpr));
       const H = Math.max(1, Math.round(r.height * dpr));
       if (canvas.width !== W || canvas.height !== H) {
@@ -127,42 +127,32 @@ export function LiveView({
       }
       fit = containFit(r.width, r.height, vp.w, vp.h);
       geomRef.current = { fit, vp };
-      draw();
+      // JPEGs are opaque; clear letterboxing only when geometry changes.
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.imageSmoothingQuality = "high";
     };
 
     const draw = () => {
       if (!bitmap) return;
-      const dpr = canvas.width / Math.max(1, wrap.clientWidth);
-      ctx.fillStyle = "#000";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.imageSmoothingQuality = "high";
+      const dpr = size.dpr;
       ctx.drawImage(bitmap, fit.x * dpr, fit.y * dpr, fit.w * dpr, fit.h * dpr);
     };
 
-    const decode = async (b64: string) => {
-      decoding = true;
-      try {
-        const next = await createImageBitmap(b64ToBlob(b64));
+    const decoder = createFrameDecoder<Extract<LiveEvent, { type: "frame" }>, ImageBitmap>(
+      frame => createImageBitmap(b64ToBlob(frame.data)),
+      (next, frame) => {
         bitmap?.close();
         bitmap = next;
-        frames++;
-        if (!hasFrame) {
-          hasFrame = true;
-          onHasFrame(true);
+        if (frame.width && frame.height && (frame.width !== vp.w || frame.height !== vp.h)) {
+          vp = { w: frame.width, h: frame.height };
+          layoutDirty = true;
         }
-        draw();
-      } catch {
-        /* a corrupt frame: skip it */
-      } finally {
-        decoding = false;
-        // Always jump to the newest frame that arrived while we were busy (never queue).
-        if (pending) {
-          const p = pending;
-          pending = null;
-          void decode(p);
-        }
-      }
-    };
+        paintDirty = true;
+        schedule();
+      },
+      image => image.close(),
+    );
 
     const toScreen = (x: number, y: number) => ({ x: fit.x + (x / vp.w) * fit.w, y: fit.y + (y / vp.h) * fit.h });
 
@@ -174,9 +164,9 @@ export function LiveView({
       el.style.left = `${x}px`;
       el.style.top = `${y}px`;
       layer.appendChild(el);
-      setTimeout(() => el.remove(), 700);
+      later(() => el.remove(), 700);
       cursorRef.current?.classList.add("sk-cursor-press");
-      setTimeout(() => cursorRef.current?.classList.remove("sk-cursor-press"), 160);
+      later(() => cursorRef.current?.classList.remove("sk-cursor-press"), 160);
     };
 
     const showBox = (box: { x: number; y: number; w: number; h: number } | null | undefined) => {
@@ -192,19 +182,47 @@ export function LiveView({
       el.style.width = `${b.x - a.x + 6}px`;
       el.style.height = `${b.y - a.y + 6}px`;
       el.style.opacity = "1";
-      clearTimeout((el as unknown as { _t?: number })._t);
-      (el as unknown as { _t?: number })._t = window.setTimeout(() => (el.style.opacity = "0"), 1400);
+      clearTimeout(boxTimer);
+      boxTimer = window.setTimeout(() => (el.style.opacity = "0"), 1400);
     };
+
+    // One draw per display frame, only when a frame, geometry or cursor has changed.
+    // Cursor/click locations represent executed actions; no simulated travel delay.
+    function render() {
+      raf = 0;
+      if (document.hidden) return;
+      if (layoutDirty || size.dpr !== Math.min(window.devicePixelRatio || 1, 2)) {
+        layout(); layoutDirty = false; paintDirty = true; cursorDirty = true;
+      }
+      if (paintDirty && bitmap) {
+        draw(); paintDirty = false;
+        if (!hasFrame) { hasFrame = true; onHasFrame(true); }
+      }
+      if (cursorDirty) {
+        cursorDirty = false;
+        const el = cursorRef.current;
+        if (el && cursor && agentRunningRef.current) {
+          const at = toScreen(cursor.x, cursor.y);
+          el.style.transform = `translate3d(${at.x}px, ${at.y}px, 0)`;
+          el.style.opacity = "1";
+          showBox(cursor.box);
+          if (cursor.kind === "click") { ripple(at.x, at.y); cursor = { ...cursor, kind: "move" }; }
+        } else if (el) el.style.opacity = "0";
+      }
+    }
 
     const unsub = bus.subscribe((e) => {
       if (e.type === "reset") {
+        decoder.reset();
+        latestHidden = null;
         bitmap?.close();
         bitmap = null;
         hasFrame = false;
-        target = null;
-        cur = null;
-        clickPending = false;
-        cursorReadyRef.current = false;
+        cursor = null;
+        paintDirty = cursorDirty = false;
+        clearTimeout(boxTimer);
+        timers.forEach(clearTimeout); timers.clear();
+        rippleLayerRef.current?.replaceChildren();
         onHasFrame(false);
         if (cursorRef.current) cursorRef.current.style.opacity = "0";
         if (boxRef.current) boxRef.current.style.opacity = "0";
@@ -213,70 +231,42 @@ export function LiveView({
         return;
       }
       if (e.type === "frame") {
-        if (e.width && e.height && (e.width !== vp.w || e.height !== vp.h)) {
-          vp = { w: e.width, h: e.height };
-          layout();
-        }
-        if (decoding) pending = e.data;
-        else void decode(e.data);
+        if (document.hidden) latestHidden = e;
+        else decoder.push(e);
         return;
       }
       if (e.type === "cursor") {
         if (!agentRunningRef.current) return;
-        cursorReadyRef.current = true;
-        if (e.width && e.height && (e.width !== vp.w || e.height !== vp.h)) {
-          vp = { w: e.width, h: e.height };
-          layout();
-        }
-        target = { x: e.x, y: e.y };
-        if (!cur || reduceMotion) cur = toScreen(e.x, e.y);
-        if (e.kind === "click") clickPending = true;
-        showBox(e.box);
+        cursor = e;
+        cursorDirty = true;
+        schedule();
       }
     });
 
-    // Spring toward the target every display frame (frame-rate independent).
-    let raf = 0;
-    let last = performance.now();
-    const tick = (now: number) => {
-      const dt = Math.min(0.05, (now - last) / 1000);
-      last = now;
-      const el = cursorRef.current;
-      if (el && agentRunningRef.current && cursorReadyRef.current && target && cur) {
-        const t = toScreen(target.x, target.y);
-        const k = 1 - Math.exp(-dt * 16);
-        cur = { x: cur.x + (t.x - cur.x) * k, y: cur.y + (t.y - cur.y) * k };
-        const dist = Math.hypot(t.x - cur.x, t.y - cur.y);
-        if (dist < 0.3) cur = t;
-        el.style.transform = `translate3d(${cur.x}px, ${cur.y}px, 0)`;
-        el.style.opacity = "1";
-        // Click once the pointer has (nearly) arrived, so the ripple lands where it points.
-        if (clickPending && dist < 6) {
-          clickPending = false;
-          ripple(t.x, t.y);
-        }
-      } else if (el) {
-        el.style.opacity = "0";
-        clickPending = false;
+    const resize = () => { layoutDirty = true; schedule(); };
+    const visibility = () => {
+      if (document.hidden) {
+        cancelAnimationFrame(raf); raf = 0; decoder.reset();
+      } else {
+        if (latestHidden) { decoder.push(latestHidden); latestHidden = null; }
+        resize();
       }
-      raf = requestAnimationFrame(tick);
     };
-    raf = requestAnimationFrame(tick);
-
-    const ro = new ResizeObserver(layout);
+    const ro = new ResizeObserver(resize);
     ro.observe(wrap);
-    layout();
-
-    const fpsTimer = setInterval(() => {
-      setFps(frames);
-      frames = 0;
-    }, 1000);
+    window.addEventListener("resize", resize);
+    document.addEventListener("visibilitychange", visibility);
+    schedule();
 
     return () => {
       unsub();
       cancelAnimationFrame(raf);
       ro.disconnect();
-      clearInterval(fpsTimer);
+      window.removeEventListener("resize", resize);
+      document.removeEventListener("visibilitychange", visibility);
+      decoder.dispose();
+      clearTimeout(boxTimer);
+      timers.forEach(clearTimeout);
       bitmap?.close();
     };
   }, [bus, onHasFrame]);
@@ -287,93 +277,148 @@ export function LiveView({
     if (!wrap || !interactive || !onInput) return;
 
     /** Screen point -> page CSS px, or null when outside the page image. */
-    const toPage = (clientX: number, clientY: number) => {
+    const toPage = (clientX: number, clientY: number, clamp = false) => {
       const r = wrap.getBoundingClientRect();
       const { fit, vp } = geomRef.current;
-      const x = ((clientX - r.left - fit.x) / fit.w) * vp.w;
-      const y = ((clientY - r.top - fit.y) / fit.h) * vp.h;
-      if (!(x >= 0 && y >= 0 && x <= vp.w && y <= vp.h)) return null;
-      return { x: Math.round(x), y: Math.round(y) };
+      return pagePoint(clientX - r.left, clientY - r.top, fit, vp, clamp);
     };
 
-    let lastMove = 0;
-    const onMouseMove = (e: MouseEvent) => {
-      const now = performance.now();
-      if (now - lastMove < 70) return; // ~14/s is plenty for hover menus
-      lastMove = now;
+    const continuous: BrowserInput[] = [];
+    let inputRaf = 0;
+    let hoverTimer: ReturnType<typeof setTimeout> | undefined;
+    let pressed: { button: "left" | "right" | "middle"; x: number; y: number; clickCount: number } | null = null;
+    const flush = () => {
+      cancelAnimationFrame(inputRaf); inputRaf = 0;
+      clearTimeout(hoverTimer); hoverTimer = undefined;
+      for (const event of continuous.splice(0)) onInput(event);
+    };
+    const queue = () => { if (!inputRaf) inputRaf = requestAnimationFrame(flush); };
+    const onPointerMove = (e: PointerEvent) => {
+      const p = toPage(e.clientX, e.clientY, !!pressed);
+      if (p) {
+        appendInput(continuous, { type: "move", ...p });
+        if (pressed) pressed = { ...pressed, ...p };
+        // Hover needs the final position, but not an HTTP request at every display
+        // refresh. Drags bypass this limit; clicks flush pending input immediately.
+        if (pressed) queue();
+        else hoverTimer ??= setTimeout(queue, 24);
+      }
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button > 2 || pressed) return;
       const p = toPage(e.clientX, e.clientY);
-      if (p) onInput({ type: "move", ...p });
+      if (!p) return;
+      e.preventDefault();
+      (keyboardRef.current || wrap).focus({ preventScroll: true });
+      flush();
+      pressed = { ...p, button: e.button === 2 ? "right" : e.button === 1 ? "middle" : "left", clickCount: Math.min(3, e.detail || 1) };
+      wrap.setPointerCapture(e.pointerId);
+      onInput({ type: "down", ...pressed });
+    };
+    const release = () => { if (pressed) { flush(); onInput({ type: "up", ...pressed }); pressed = null; } };
+    const onPointerUp = (e: PointerEvent) => {
+      const p = toPage(e.clientX, e.clientY, true);
+      if (pressed && p) pressed = { ...pressed, ...p };
+      release();
+      if (wrap.hasPointerCapture(e.pointerId)) wrap.releasePointerCapture(e.pointerId);
     };
     const onClick = (e: MouseEvent) => {
-      const p = toPage(e.clientX, e.clientY);
-      wrap.focus({ preventScroll: true });
-      if (p) onInput({ type: "click", ...p });
+      // Keyboard/assistive-technology activation has no pointerdown/up sequence.
+      if (e.detail === 0) { const p = toPage(e.clientX, e.clientY); if (p) { flush(); onInput({ type: "click", ...p }); } }
     };
-    const onContext = (e: MouseEvent) => {
-      e.preventDefault();
-      const p = toPage(e.clientX, e.clientY);
-      if (p) onInput({ type: "click", ...p, button: "right" });
-    };
-    // Scroll: add up wheel ticks and send them once per display frame (the agent computer
-    // glides each batch out smoothly, and queued batches merge while one is in flight).
-    let wheel = { dx: 0, dy: 0, x: 0, y: 0 };
-    let wheelTimer: ReturnType<typeof setTimeout> | null = null;
+    const onContext = (e: MouseEvent) => e.preventDefault();
     const onWheel = (e: WheelEvent) => {
       const p = toPage(e.clientX, e.clientY);
       if (!p) return;
       e.preventDefault();
       const scale = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1;
-      wheel = { dx: wheel.dx + e.deltaX * scale, dy: wheel.dy + e.deltaY * scale, ...p };
-      wheelTimer ??= setTimeout(() => {
-        onInput({ type: "wheel", ...wheel });
-        wheel = { dx: 0, dy: 0, x: 0, y: 0 };
-        wheelTimer = null;
-      }, 16);
+      appendInput(continuous, { type: "wheel", dx: e.deltaX * scale, dy: e.deltaY * scale, ...p });
+      queue();
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.isComposing || ["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(e.key)) return;
+      if (e.isComposing || ["Shift", "Control", "Alt", "Meta", "CapsLock", "Dead", "Process", "Unidentified"].includes(e.key)) return;
       // Let the browser keep its own shortcuts for leaving fullscreen etc.
       if (e.key === "Escape" && document.fullscreenElement) return;
-      e.preventDefault();
       const key = KEY_MAP[e.key] || e.key;
       const mods = [e.ctrlKey && "Control", e.altKey && "Alt", e.metaKey && "Meta"].filter(Boolean) as string[];
-      if (mods.length) onInput({ type: "key", key: [...mods, e.shiftKey && key.length > 1 ? "Shift" : "", key].filter(Boolean).join("+") });
+      // A real text sink enables Unicode, mobile keyboards and IME composition.
+      if (!mods.length && [...e.key].length === 1 && e.target === keyboardRef.current) return;
+      e.preventDefault();
+      flush();
+      if (!mods.length && [...e.key].length === 1) onInput({ type: "text", text: e.key });
+      else if (mods.length) onInput({ type: "key", key: [...mods, e.shiftKey ? "Shift" : "", key].filter(Boolean).join("+") });
       else onInput({ type: "key", key: key.length === 1 || key === "Space" ? key : e.shiftKey ? `Shift+${key}` : key });
     };
     const onPaste = (e: ClipboardEvent) => {
       const text = e.clipboardData?.getData("text/plain");
       if (text) {
         e.preventDefault();
+        flush();
         onInput({ type: "text", text });
       }
     };
 
-    wrap.addEventListener("mousemove", onMouseMove);
+    const onTextInput = (e: Event) => {
+      const sink = keyboardRef.current;
+      if (!sink || (e as InputEvent).isComposing || !sink.value) return;
+      flush(); onInput({ type: "text", text: sink.value }); sink.value = "";
+    };
+    const onCompositionEnd = (e: CompositionEvent) => {
+      if (e.data) { flush(); onInput({ type: "text", text: e.data }); }
+      if (keyboardRef.current) keyboardRef.current.value = "";
+    };
+    const discard = () => {
+      pressed = null;
+      continuous.length = 0;
+      cancelAnimationFrame(inputRaf); inputRaf = 0;
+      clearTimeout(hoverTimer); hoverTimer = undefined;
+    };
+    const unsubscribe = bus.subscribe(event => { if (event.type === "reset") discard(); });
+    wrap.addEventListener("pointermove", onPointerMove);
+    wrap.addEventListener("pointerdown", onPointerDown);
+    wrap.addEventListener("pointerup", onPointerUp);
+    wrap.addEventListener("pointercancel", release);
+    wrap.addEventListener("lostpointercapture", release);
+    wrap.addEventListener("focusout", release);
     wrap.addEventListener("click", onClick);
     wrap.addEventListener("contextmenu", onContext);
     wrap.addEventListener("wheel", onWheel, { passive: false });
     wrap.addEventListener("keydown", onKeyDown);
     wrap.addEventListener("paste", onPaste);
+    wrap.addEventListener("compositionend", onCompositionEnd);
+    wrap.addEventListener("input", onTextInput);
+    if (document.activeElement?.hasAttribute("data-browser-control")) keyboardRef.current?.focus({ preventScroll: true });
     return () => {
-      wrap.removeEventListener("mousemove", onMouseMove);
+      // The server releases held buttons on takeover/stream close. Emitting here
+      // could send old-view input into the chat that just replaced this component.
+      discard();
+      unsubscribe();
+      wrap.removeEventListener("pointermove", onPointerMove);
+      wrap.removeEventListener("pointerdown", onPointerDown);
+      wrap.removeEventListener("pointerup", onPointerUp);
+      wrap.removeEventListener("pointercancel", release);
+      wrap.removeEventListener("lostpointercapture", release);
+      wrap.removeEventListener("focusout", release);
       wrap.removeEventListener("click", onClick);
       wrap.removeEventListener("contextmenu", onContext);
       wrap.removeEventListener("wheel", onWheel);
       wrap.removeEventListener("keydown", onKeyDown);
       wrap.removeEventListener("paste", onPaste);
-      if (wheelTimer) clearTimeout(wheelTimer);
+      wrap.removeEventListener("compositionend", onCompositionEnd);
+      wrap.removeEventListener("input", onTextInput);
     };
-  }, [interactive, onInput]);
+  }, [bus, interactive, onInput]);
 
   return (
     <div
       ref={wrapRef}
-      className={`absolute inset-0 overflow-hidden outline-none ${interactive ? "sk-live-interactive cursor-default" : ""}`}
+      className={`sk-live-view absolute inset-0 overflow-hidden outline-none ${interactive ? "sk-live-interactive cursor-default" : ""}`}
       role={interactive ? "application" : "img"}
       aria-label={interactive ? `${title || "Live browser"}: you're in control. Click, scroll and type here.` : title || "Live browser view"}
       tabIndex={interactive ? 0 : -1}
     >
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
+      <textarea ref={keyboardRef} tabIndex={-1} aria-label="Live browser keyboard" autoComplete="off" autoCapitalize="off" spellCheck={false} className="absolute left-0 top-0 h-px w-px opacity-0" />
       <div ref={boxRef} className="sk-target-box pointer-events-none absolute left-0 top-0 rounded-lg opacity-0" aria-hidden />
       <div ref={rippleLayerRef} className="pointer-events-none absolute inset-0" aria-hidden />
       <div ref={cursorRef} className="sk-agent-cursor pointer-events-none absolute left-0 top-0 opacity-0" aria-hidden>
@@ -389,11 +434,6 @@ export function LiveView({
         </svg>
         <span className="sk-cursor-tag">Senko</span>
       </div>
-      {fps > 0 && (
-        <span className="absolute right-2 top-2 rounded-full bg-black/55 px-2 py-0.5 font-mono text-[10px] text-white/80 backdrop-blur" aria-hidden>
-          {fps} fps
-        </span>
-      )}
     </div>
   );
-}
+});
