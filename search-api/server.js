@@ -6,6 +6,70 @@ puppeteer.use(StealthPlugin());
 const app = express();
 const PORT = process.env.PORT || 3010;
 
+// ============================================================================
+// GOOGLE TRAFFIC GATE
+// Google rate-limits by IP. Bursts of plain-HTTP requests (no cookies, no JS) are the
+// quickest way to get this server's IP a robot check, which then also blocks the agent's
+// real browser when it runs on the same machine. So Google requests are spaced out, a
+// robot-check answer pauses Google here for a while (5 min, doubling up to 1 h), and
+// repeated identical searches are answered from a short-lived cache.
+// ============================================================================
+const googleGate = { last: 0, queue: Promise.resolve(), blockedUntil: 0, strikes: 0 };
+const GOOGLE_MIN_GAP_MS = Number(process.env.GOOGLE_MIN_GAP_MS || 4000);
+const GOOGLE_COOLDOWN_MS = Number(process.env.GOOGLE_COOLDOWN_MS || 5 * 60_000);
+
+function googleAvailable() {
+  return Date.now() >= googleGate.blockedUntil;
+}
+
+function reportGoogleCaptcha(where) {
+  googleGate.strikes = Math.min(googleGate.strikes + 1, 8);
+  const ms = Math.min(60 * 60_000, GOOGLE_COOLDOWN_MS * 2 ** (googleGate.strikes - 1));
+  googleGate.blockedUntil = Math.max(googleGate.blockedUntil, Date.now() + ms);
+  console.warn(`[google] robot check from ${where}; pausing Google requests for ${Math.round(ms / 60_000)} min`);
+}
+
+function reportGoogleOk() {
+  googleGate.strikes = 0;
+}
+
+/** Wait for a Google slot. Resolves false (without taking one) if the wait would exceed maxWaitMs. */
+function paceGoogle(maxWaitMs = 5000) {
+  const turn = googleGate.queue.then(async () => {
+    const wait = googleGate.last + GOOGLE_MIN_GAP_MS + Math.random() * 1500 - Date.now();
+    if (wait > maxWaitMs) return false;
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    googleGate.last = Date.now();
+    return true;
+  });
+  googleGate.queue = turn.catch(() => {});
+  return turn;
+}
+
+function isGoogleCaptcha(res, html) {
+  return res.status === 429 || String(res.url || "").includes("/sorry/") || /unusual traffic from your computer network|id="captcha-form"/i.test(html || "");
+}
+
+/** Size-capped cache whose entries expire. */
+function ttlCache(ttlMs, max) {
+  const map = new Map();
+  return {
+    get(key) {
+      const hit = map.get(key);
+      if (!hit) return undefined;
+      if (Date.now() - hit.at > ttlMs) { map.delete(key); return undefined; }
+      return hit.value;
+    },
+    set(key, value) {
+      map.delete(key);
+      map.set(key, { at: Date.now(), value });
+      while (map.size > max) map.delete(map.keys().next().value);
+    },
+  };
+}
+const searchCache = ttlCache(10 * 60_000, 300);
+const imageCache = ttlCache(10 * 60_000, 200);
+
 // Detect Chromium executable path based on environment
 function getChromiumPath() {
   // Explicit env var takes priority
@@ -241,6 +305,7 @@ async function fetchDDG(query) {
 }
 
 async function fetchGoogle(query) {
+  if (!googleAvailable() || !(await paceGoogle(3000))) return null;
   try {
     const res = await fetch(
       `https://www.google.com/search?q=${encodeURIComponent(query)}&hl=en&num=15`,
@@ -249,8 +314,11 @@ async function fetchGoogle(query) {
         signal: AbortSignal.timeout(8000),
       }
     );
+    if (isGoogleCaptcha(res, "")) { reportGoogleCaptcha("search"); return null; }
     if (!res.ok) return null;
     const html = await res.text();
+    if (isGoogleCaptcha(res, html)) { reportGoogleCaptcha("search"); return null; }
+    reportGoogleOk();
     const results = extractGoogleResults(html);
     if (results.length > 0) return { engine: "google-fetch", results };
   } catch { }
@@ -279,6 +347,7 @@ async function fetchBing(query) {
 // ============================================================================
 
 async function puppeteerGoogle(query) {
+  if (!googleAvailable() || !(await paceGoogle(5000))) return null;
   let page;
   try {
     const b = await getBrowser();
@@ -289,6 +358,11 @@ async function puppeteerGoogle(query) {
       `https://www.google.com/search?q=${encodeURIComponent(query)}&hl=en&num=15`,
       { waitUntil: "domcontentloaded", timeout: 15000 }
     );
+    if (page.url().includes("/sorry/")) {
+      reportGoogleCaptcha("puppeteer search");
+      await page.close().catch(() => { });
+      return null;
+    }
 
     const results = await page.evaluate(() => {
       const items = [];
@@ -1314,6 +1388,13 @@ app.get("/search", async (req, res) => {
   if (!query) return res.status(400).json({ error: "q parameter required" });
 
   console.log(`[search] "${query}"`);
+  const cacheKey = String(query).trim().replace(/\s+/g, " ").toLowerCase();
+  const cached = searchCache.get(cacheKey);
+  if (cached) return res.json({ ...cached, cached: true });
+  const send = (body) => {
+    if (body.results && body.results.length) searchCache.set(cacheKey, body);
+    return res.json(body);
+  };
   const attempts = [];
   const start = Date.now();
 
@@ -1330,7 +1411,7 @@ app.get("/search", async (req, res) => {
       });
       if (result) {
         console.log(`[search] ✓ ${result.engine} returned ${result.results.length} results in ${Date.now() - start}ms`);
-        return res.json({
+        return send({
           results: result.results,
           engine: result.engine,
           attempts,
@@ -1361,7 +1442,7 @@ app.get("/search", async (req, res) => {
       });
       if (result) {
         console.log(`[search] ✓ ${result.engine} returned ${result.results.length} results in ${Date.now() - start}ms`);
-        return res.json({
+        return send({
           results: result.results,
           engine: result.engine,
           attempts,
@@ -1580,6 +1661,9 @@ app.get("/images", async (req, res) => {
   }
 
   // Mode 2: Search for images via multiple strategies in parallel
+  const cacheKey = `${String(query).trim().toLowerCase()}|${page}`;
+  const cachedImages = imageCache.get(cacheKey);
+  if (cachedImages) return res.json(cachedImages);
   const images = [];
   // Query variations for later pages — keeps Google/Bing returning fresh results
   const querySuffixes = ["", "HD", "wallpaper", "fan art", "artwork", "render", "high quality", "4k", "illustration", "digital art"];
@@ -1793,15 +1877,27 @@ app.get("/images", async (req, res) => {
     (async () => {
       const results = [];
       try {
-        const googleOffsets = Array.from({ length: 10 }, (_, i) => googleOffset + i * 20);
-        const googlePages = await Promise.allSettled(
-          googleOffsets.map((off) =>
-            fetch(`https://www.google.com/search?q=${encoded}&tbm=isch&hl=en&start=${off}&safe=off`, {
+        // Previously 10 result pages were fetched at once for every gallery page: a burst that
+        // reliably earned this IP a robot check. Now a couple of pages, spaced out, and none
+        // while Google is cooling down; the other engines fill the gallery meanwhile.
+        const pageCount = Math.max(0, Math.min(10, Number(process.env.GOOGLE_IMAGE_PAGES || 2)));
+        const googleOffsets = Array.from({ length: pageCount }, (_, i) => googleOffset + i * 20);
+        const googlePages = [];
+        for (const off of googleOffsets) {
+          if (!googleAvailable() || !(await paceGoogle(6000))) break;
+          try {
+            const r = await fetch(`https://www.google.com/search?q=${encoded}&tbm=isch&hl=en&start=${off}&safe=off`, {
               headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml", "Accept-Language": "en-US,en;q=0.9" },
               signal: AbortSignal.timeout(8000),
-            }).then((r) => r.text())
-          )
-        );
+            });
+            const text = await r.text();
+            if (isGoogleCaptcha(r, text)) { reportGoogleCaptcha("images"); break; }
+            reportGoogleOk();
+            googlePages.push({ status: "fulfilled", value: text });
+          } catch (e) {
+            googlePages.push({ status: "rejected", reason: e });
+          }
+        }
         for (const pg of googlePages) {
           if (pg.status !== "fulfilled") continue;
           const html = pg.value;
@@ -1819,7 +1915,7 @@ app.get("/images", async (req, res) => {
             }
           }
         }
-        console.log(`[images] Google found ${results.length} images (10 pages)`);
+        console.log(`[images] Google found ${results.length} images (${googlePages.length} pages)`);
       } catch (e) { console.log("[images] Google error:", e.message); }
       return results;
     })(),
@@ -1843,6 +1939,7 @@ app.get("/images", async (req, res) => {
   // Return all images with engine metadata for gallery mode source filtering
   const hasMore = images.length >= 10;
   console.log(`[images] Returning ${images.length} deduplicated images (page ${page})`);
+  if (images.length) imageCache.set(cacheKey, { images, query, page, hasMore });
   res.json({ images, query, page, hasMore });
 });
 

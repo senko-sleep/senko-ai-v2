@@ -11,6 +11,7 @@
 // - Every request is paced by the central scheduler (./scheduler.ts) so it doesn't break a
 //   provider's per-minute limits in the first place.
 import { scheduler, type Priority } from "./scheduler";
+import { startsLikeRefusal } from "@/lib/refusal";
 export { scheduler } from "./scheduler";
 
 export type Role = "system" | "user" | "assistant";
@@ -921,7 +922,8 @@ async function tryCandidate(q: QueueEntry, messages: LlmMessage[], opts: LlmOpti
   if (!head.trim()) {
     throw new ProviderError(`${c.label} (${c.model}): empty response`, 422, null);
   }
-  if (/^\s*(?:i'm sorry,? (?:but )?i (?:cannot|can't|am unable|won't)|i (?:cannot|can't|am unable to|must decline to) (?:fulfill|assist|help|provide|comply|search|open|generate)|as an ai(?: language model)?,? i (?:cannot|can't|do not))/i.test(head)) {
+  // A canned refusal ("Sorry, I can't assist.") goes to the next model, which usually just does the task.
+  if (startsLikeRefusal(head)) {
     throw new ProviderError(`${c.label} (${c.model}): model refused request`, 422, null);
   }
   return { stream: prepend(head, gen), inputTokens };
@@ -1134,7 +1136,7 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
           : status === 402 ? 60 * 60_000 // out of credit
           : status === 401 || status === 403 ? 10 * 60_000
           : status === 404 ? 60 * 60_000
-          : status === 422 ? 2_000
+          : status === 422 ? (/refused/.test(pe?.message || "") ? 20_000 : 2_000) // a model that just refused is likely to again: let the others take this stretch
           : status === 408 ? 20_000 // too slow to answer: let faster models take over for a bit
           : 30_000;
         // Worth waiting for: rate limits, network blips and server errors (not refusals/bad keys).

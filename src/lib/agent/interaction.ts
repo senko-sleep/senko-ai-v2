@@ -16,6 +16,7 @@
 // from one event while the real pointer moves there in a single step.
 import type { Page } from "playwright";
 import type { ElementFingerprint } from "./nav-memory";
+import { orTimeout } from "./timeouts";
 
 export interface Box { x: number; y: number; w: number; h: number }
 
@@ -461,9 +462,12 @@ export const PAGE_SCRIPT = async (arg: ScriptArg): Promise<unknown> => {
   return null;
 };
 
-/** One typed call into PAGE_SCRIPT. */
+/** Longest any single PAGE_SCRIPT call may take. A tab that can't answer within it is frozen. */
+const PAGE_CALL_MS = Number(process.env.AGENT_PAGE_CALL_MS || 20_000);
+
+/** One typed call into PAGE_SCRIPT, bounded: a hung tab fails the call instead of freezing the agent. */
 export function pageCall(page: Page, arg: ScriptArg): Promise<unknown> {
-  return page.evaluate(PAGE_SCRIPT, arg);
+  return orTimeout(page.evaluate(PAGE_SCRIPT, arg), PAGE_CALL_MS, `reading the page (${arg.cmd})`);
 }
 
 export function observeDom(page: Page, max = 60): Promise<DomObservation> {

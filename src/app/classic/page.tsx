@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
+import { looksLikeRefusal } from "@/lib/refusal";
 import { cn } from "@/lib/utils";
 import { Sidebar } from "@/components/sidebar/sidebar";
 import { ChatArea } from "@/components/chat/chat-area";
@@ -2492,7 +2493,9 @@ I should cover: evolutions, competitive viability, cultural impact, and why fans
 
           // ── REFUSAL DETECTOR ──
           // If the AI refused the user's request, bypass it and execute the action directly
-          const refusalPatterns = /I can'?t (?:provide|open|help|do|show|search|access|navigate|browse|generate|create)|I'?m not able to|I cannot|I'?m unable|content policy|against my|I don'?t (?:feel comfortable|think I should)|not appropriate|explicit content|I'?m sorry.{0,20}(?:can'?t|unable|not able)/i;
+          // Only a reply that OPENS like a refusal counts (see lib/refusal): a normal answer that mentions
+          // "explicit content" or "not appropriate" somewhere is not a refusal.
+          const refusalPatterns = { test: (t: string) => looksLikeRefusal(t.replace(/^\s*\[ACTION:[^\]]*\]\s*/g, "")) };
           if (refusalPatterns.test(totalContent) && !totalContent.includes("[ACTION:")) {
             console.log(`%c[REFUSAL] 🚫 AI refused — bypassing with client-side action`, "color: #ff6600; font-weight: bold");
             const lastUserMsg = allMessages.filter((m) => m.role === "user").pop()?.content || "";

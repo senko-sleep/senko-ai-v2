@@ -69,6 +69,8 @@ export interface Settings {
   personalizedSuggestions?: boolean;
   provider?: string;
   mode?: Mode;
+  /** Adult-content filtering for searches the agent runs. Default "off". */
+  safeSearch?: "off" | "moderate" | "strict";
 }
 export const getSettings = () => api<{ settings: Settings }>("/api/settings").then((r) => r.settings);
 export const saveSettings = (settings: Partial<Settings>) =>

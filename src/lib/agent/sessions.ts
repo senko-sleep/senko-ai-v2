@@ -6,9 +6,11 @@
 // - Broadcasts live-view frames, cursor moves, steps and logs to subscribers.
 // - The only automatic shutdowns are real resource limits (MAX_LIVE_SESSIONS / low memory);
 //   evicted sessions are saved first and restore when you come back, and the UI is told why.
-import type { BrowserContext, CDPSession, Frame, Page } from "playwright";
+import type { Browser, BrowserContext, CDPSession, Cookie, Frame, Page } from "playwright";
 import { randomUUID } from "node:crypto";
-import { SCREEN, browserMode, browserProxy, desktopUserAgent, freeMemoryMB, getBrowser, isHeaded, isLowMemoryHost, releaseManagedBrowserSession, selectBrowserbaseLivePage } from "./browser";
+import { SCREEN, browserMode, browserProxy, desktopUserAgent, freeMemoryMB, getBrowser, isHeaded, isLowMemoryHost, releaseManagedBrowserSession, restartBrowser, selectBrowserbaseLivePage } from "./browser";
+import { isGoogleHost } from "./google-gate";
+import { TimeoutError, orTimeout, withTimeout } from "./timeouts";
 import { isAdHost, isPrivateUrl } from "./safety";
 import { json, newId, q, q1, toBuffer } from "@/lib/server/db";
 import { INPUT_PROTOCOL_VERSION, type BrowserInput } from "@/lib/live-input";
@@ -78,6 +80,27 @@ const FPS_CAP = () => Math.min(240, Math.max(1, Number(process.env.LIVE_FPS) || 
 const QUALITY = () => Math.min(95, Math.max(20, Number(process.env.LIVE_QUALITY || (smallHost() ? 50 : 60))));
 // Live view size relative to the real screen. Smaller frames encode much faster on weak CPUs.
 const SCALE = () => Math.min(1, Math.max(0.3, Number(process.env.LIVE_SCALE || (smallHost() ? 0.75 : 1))));
+// Each tab is a renderer process. Past this many, the least recently used background tab closes.
+const MAX_TABS = () => Math.max(2, Number(process.env.MAX_TABS_PER_SESSION || (isLowMemoryHost() ? 4 : 8)));
+// The active tab is probed this often; this many failed probes in a row means it is frozen.
+const HEALTH_INTERVAL_MS = () => Math.max(2000, Number(process.env.BROWSER_HEALTH_INTERVAL_MS || 10_000));
+const HEALTH_PROBE_MS = 5000;
+const HEALTH_STRIKES = 3;
+// One input event (click, key, scroll) that takes longer than this means the tab's input
+// pipeline is stuck, even if its scripts still run. The tab is replaced so the queue moves on.
+const INPUT_STALL_MS = () => Math.max(3000, Number(process.env.BROWSER_INPUT_STALL_MS || 15_000));
+// Google's anti-abuse and preference cookies (never login cookies) carry over to a new chat's
+// fresh browser, so its first search doesn't look like a brand-new robot to Google.
+const GOOGLE_TRUST_COOKIES = new Set(["NID", "AEC", "SOCS", "CONSENT", "GOOGLE_ABUSE_EXEMPTION", "__Secure-ENID", "1P_JAR"]);
+const gJar = globalThis as unknown as { __googleJar?: Map<string, Cookie[]> };
+const googleJar = (gJar.__googleJar ??= new Map());
+
+function googleTrustCookies(storage: unknown): Cookie[] {
+  const cookies = (storage as { cookies?: Cookie[] } | null)?.cookies;
+  if (!Array.isArray(cookies)) return [];
+  const now = Date.now() / 1000;
+  return cookies.filter((c) => GOOGLE_TRUST_COOKIES.has(c.name) && isGoogleHost(c.domain.replace(/^\./, "")) && (c.expires === -1 || c.expires > now));
+}
 
 export function liveInfo(): LiveInfo {
   const m = browserMode();
@@ -223,6 +246,18 @@ export class BrowserSession {
   private browserbaseSessionId?: string;
   get controlVersion() { return this.controlGeneration; }
   private heldButtons = new Map<"left" | "right" | "middle", Page>();
+  private browser: Browser | null = null;
+  private onBrowserGone: (() => void) | null = null;
+  private healthTimer: ReturnType<typeof setInterval> | null = null;
+  private healthStrikes = 0;
+  private healthChecking = false;
+  /** Last known tab titles, used when a tab is too busy to answer. */
+  private titles = new WeakMap<Page, string>();
+  /** When each tab was last in front, to pick which background tab to close first. */
+  private lastFront = new WeakMap<Page, number>();
+  private recovering = new Set<Page>();
+  private persisting: Promise<void> | null = null;
+  private persistAgain = false;
   /** Steps/plan of the current or last agent run, replayed to new subscribers. */
   replay: BusEvent[] = [];
 
@@ -238,12 +273,11 @@ export class BrowserSession {
     this.emitStatus();
     const browser = await getBrowser(saved?.browserbaseSessionId);
     this.browserbaseSessionId = browserMode()?.channel === "Browserbase" ? browserMode()?.sessionId : undefined;
-    browser.on("disconnected", () => {
-      if (this.status === "closed" || this.status === "suspended") return;
-      this.status = "suspended";
-      this.emitStatus();
-      void this.persist().catch(() => {});
-    });
+    // One listener per session, removed again when the session ends: the browser is shared
+    // by every chat, so leftover listeners would keep every closed session in memory.
+    this.browser = browser;
+    this.onBrowserGone = () => this.browserLost();
+    browser.on("disconnected", this.onBrowserGone);
     const reconnecting = !!saved?.browserbaseSessionId && browserMode()?.sessionId === saved.browserbaseSessionId;
     const existingContexts = reconnecting ? browser.contexts() : [];
     const matchingSavedUrls = new Set((saved?.tabs || []).map((tab) => tab.url));
@@ -260,6 +294,7 @@ export class BrowserSession {
       proxy: browserProxy(),
       storageState: saved?.storage ? (saved.storage as never) : undefined,
     });
+    if (!existingContext && !saved?.storage) await this.seedGoogleCookies();
     const remoteSessionId = this.browserbaseSessionId;
     if (remoteSessionId) {
       await q(
@@ -310,7 +345,7 @@ export class BrowserSession {
     const tabs = saved?.tabs?.filter((t) => t.url && t.url !== "about:blank") || [];
     if (reconnecting && this.pages.length) {
       this.activeIndex = Math.min(saved?.activeIndex ?? 0, this.pages.length - 1);
-      await this.pages[this.activeIndex]?.bringToFront().catch(() => {});
+      await this.front(this.pages[this.activeIndex]);
     } else if (tabs.length) {
       this.log(`Restoring ${tabs.length} tab${tabs.length > 1 ? "s" : ""} from the saved session…`);
       for (const t of tabs) {
@@ -328,7 +363,7 @@ export class BrowserSession {
           .catch(() => {});
       }
       this.activeIndex = Math.min(saved?.activeIndex ?? 0, this.pages.length - 1);
-      await this.pages[this.activeIndex]?.bringToFront().catch(() => {});
+      await this.front(this.pages[this.activeIndex]);
     } else {
       await this.newTabInternal();
     }
@@ -336,8 +371,196 @@ export class BrowserSession {
     await selectBrowserbaseLivePage(this.active().url());
     await this.persist();
     this.saveTimer = setInterval(() => void this.persist().catch(() => {}), 60_000);
+    this.saveTimer.unref?.();
+    this.healthTimer = setInterval(() => void this.checkHealth(), HEALTH_INTERVAL_MS());
+    this.healthTimer.unref?.();
     this.emitStatus();
     if (this.subs.size) await this.startCast();
+  }
+
+  /** A new chat starts with the owner's Google trust cookies (from a live session, or the newest saved one). */
+  private async seedGoogleCookies() {
+    let cookies = googleJar.get(this.ownerId);
+    if (!cookies) {
+      const row = await q1<{ storage: unknown }>(
+        "SELECT storage FROM browser_sessions WHERE owner_id = $1 AND storage IS NOT NULL ORDER BY updated_at DESC LIMIT 1",
+        [this.ownerId]
+      ).catch(() => null);
+      cookies = googleTrustCookies(json(row?.storage, null));
+    }
+    if (cookies.length) await this.context.addCookies(cookies).catch(() => {});
+  }
+
+  /** The shared browser went away (crashed, restarted, provider timeout). Stop all background work. */
+  private browserLost() {
+    if (this.status === "closed" || this.status === "suspended") return;
+    this.status = "suspended";
+    this.stopTimers();
+    this.detachBrowser();
+    this.publisher?.dispose();
+    this.publisher = null;
+    this.cdp = null;
+    this.castPage = null;
+    this.emitStatus();
+    // Tab URLs are still known locally; cookies keep their last saved copy (see persistOnce()).
+    void this.persist().catch(() => {});
+  }
+
+  private stopTimers() {
+    if (this.saveTimer) clearInterval(this.saveTimer);
+    if (this.persistSoon) clearTimeout(this.persistSoon);
+    if (this.healthTimer) clearInterval(this.healthTimer);
+    this.saveTimer = null;
+    this.persistSoon = null;
+    this.healthTimer = null;
+  }
+
+  private detachBrowser() {
+    if (this.browser && this.onBrowserGone) this.browser.off("disconnected", this.onBrowserGone);
+    this.onBrowserGone = null;
+    this.browser = null;
+  }
+
+  /** Bring a tab to the front without ever waiting on a frozen one. */
+  private async front(p: Page | undefined) {
+    if (p) await withTimeout(p.bringToFront(), 5000, undefined);
+  }
+
+  /** Stop background work without touching the browser (the session is being forgotten). */
+  release() {
+    this.stopTimers();
+    this.detachBrowser();
+  }
+
+  // ---- health: frozen and crashed tabs -------------------------------------------------
+
+  /** Number of live viewers (someone who could solve a robot check). */
+  viewerCount() {
+    return this.subs.size;
+  }
+
+  /**
+   * Does the tab's page still run script? A hung renderer never answers, so only silence (or a
+   * crash) counts. An error such as "execution context was destroyed" just means the page is
+   * navigating, which is alive.
+   */
+  async responsive(p: Page, ms = HEALTH_PROBE_MS): Promise<boolean> {
+    if (p.isClosed()) return false;
+    return withTimeout(
+      p.evaluate(() => 1).then(
+        () => true,
+        (e) => !p.isClosed() && !/crash/i.test(String(e))
+      ),
+      ms,
+      false
+    );
+  }
+
+  /** Periodic check of the active tab, plus memory upkeep. Read-only unless something is wrong. */
+  async checkHealth() {
+    if (this.status !== "active" || this.healthChecking) return;
+    this.healthChecking = true;
+    try {
+      const p = this.pages[this.activeIndex];
+      if (p && !this.recovering.has(p)) {
+        if (await this.responsive(p)) this.healthStrikes = 0;
+        else if (++this.healthStrikes >= HEALTH_STRIKES) {
+          this.healthStrikes = 0;
+          await this.recoverPage(p, "stopped responding");
+        }
+      }
+      // Low on memory: close the least recently used background tab (one per check).
+      if (this.pages.length > 1 && freeMemoryMB() < LOW_MEMORY_MB) {
+        await this.closeOldestBackgroundTab("the server is low on memory");
+      }
+    } finally {
+      this.healthChecking = false;
+    }
+  }
+
+  /**
+   * Replace a crashed or frozen tab with a fresh one at the same address and position. Anything
+   * still waiting on the old tab fails right away instead of hanging, so a running task moves on.
+   * If even a new tab can't be opened, the whole browser is restarted (the session restores).
+   */
+  async recoverPage(p: Page, why: string) {
+    if (this.recovering.has(p) || this.status !== "active" || !this.pages.includes(p)) return;
+    this.recovering.add(p);
+    try {
+      const url = p.url();
+      const slot = this.pages.indexOf(p);
+      const front = this.pages[this.activeIndex];
+      this.log(`A tab${hostOf(url) ? ` (${hostOf(url)})` : ""} ${why}; reopening it.`, "warn");
+      const fresh = await withTimeout(this.newTabInternal(), 15_000, null);
+      if (!fresh) {
+        this.log("The browser itself stopped responding; restarting it. Your tabs will be restored.", "warn");
+        await this.restartBrowser(why);
+        return;
+      }
+      await withTimeout(p.close({ runBeforeUnload: false }), 5000, undefined);
+      // A tab that won't even close is dropped from the list; the browser reclaims it later.
+      const stale = this.pages.indexOf(p);
+      if (stale !== -1) this.pages.splice(stale, 1);
+      const at = this.pages.indexOf(fresh);
+      if (at !== -1 && slot !== -1) {
+        this.pages.splice(at, 1);
+        this.pages.splice(Math.min(slot, this.pages.length), 0, fresh);
+      }
+      this.activeIndex = Math.max(0, this.pages.indexOf(front === p || !this.pages.includes(front) ? fresh : front));
+      if (/^https?:/i.test(url)) {
+        void fresh.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 }).catch((e) => this.log(`Couldn't reopen ${url}: ${String(e).split("\n")[0]}`, "warn"));
+      }
+      if (this.pages[this.activeIndex] === fresh) {
+        await withTimeout(fresh.bringToFront(), 5000, undefined);
+        this.resetView();
+        await this.startCast();
+      }
+      this.emitStatus();
+      this.schedulePersist();
+    } finally {
+      this.recovering.delete(p);
+    }
+  }
+
+  /**
+   * Replace `p` if the work about to run on it hasn't finished within `ms`. Closing the stuck
+   * tab makes every pending call on it fail at once, so nothing waits on it forever.
+   * Returns a function that cancels the watch when the work completes.
+   */
+  watchStall(p: Page | undefined, why: string, ms: number): () => void {
+    if (!p) return () => {};
+    const timer = setTimeout(() => void this.recoverPage(p, why), ms);
+    timer.unref?.();
+    return () => clearTimeout(timer);
+  }
+
+  /** Throw away a browser that no longer answers at all; this session restores on next use. */
+  private async restartBrowser(why: string) {
+    const browser = this.browser;
+    this.browserLost();
+    if (browser) await restartBrowser(`a tab ${why} and no new tab could be opened`);
+  }
+
+  /** Close the background tab that has been out of sight the longest. */
+  private async closeOldestBackgroundTab(why: string) {
+    const front = this.pages[this.activeIndex];
+    const victim = this.pages
+      .filter((t) => t !== front && !this.recovering.has(t))
+      .sort((a, b) => (this.lastFront.get(a) ?? 0) - (this.lastFront.get(b) ?? 0))[0];
+    if (!victim) return;
+    this.log(`Closed a background tab${hostOf(victim.url()) ? ` (${hostOf(victim.url())})` : ""} because ${why}.`);
+    await withTimeout(victim.close({ runBeforeUnload: false }), 5000, undefined);
+    const i = this.pages.indexOf(victim);
+    if (i !== -1) this.pages.splice(i, 1);
+    this.activeIndex = Math.max(0, this.pages.indexOf(front));
+    this.emitStatus();
+  }
+
+  /** Keep the tab count under MAX_TABS (each tab is a whole renderer process). */
+  private async enforceTabLimit() {
+    for (let guard = 0; this.pages.length > MAX_TABS() && guard < 20; guard++) {
+      await this.closeOldestBackgroundTab(`more than ${MAX_TABS()} tabs were open (MAX_TABS_PER_SESSION)`);
+    }
   }
 
   private async newTabInternal(): Promise<Page> {
@@ -346,6 +569,8 @@ export class BrowserSession {
     this.expectingTab = false;
     if (!this.pages.includes(p)) this.adopt(p);
     this.activeIndex = this.pages.indexOf(p);
+    this.lastFront.set(p, Date.now());
+    void this.enforceTabLimit();
     return p;
   }
 
@@ -359,6 +584,14 @@ export class BrowserSession {
       if (this.activeIndex >= this.pages.length) this.activeIndex = Math.max(0, this.pages.length - 1);
       if (this.castPage === p) void this.startCast();
       this.emitStatus();
+    });
+    // A crashed renderer never recovers by itself; every call into it would fail or hang.
+    p.on("crash", () => {
+      this.log(`A tab${hostOf(p.url()) ? ` (${hostOf(p.url())})` : ""} crashed.`, "warn");
+      void this.recoverPage(p, "crashed");
+    });
+    p.on("domcontentloaded", () => {
+      void withTimeout(p.title(), 2000, "").then((t) => { if (t) this.titles.set(p, t); });
     });
     p.on("framenavigated", (f) => {
       if (f !== p.mainFrame()) return;
@@ -386,6 +619,8 @@ export class BrowserSession {
     if (this.takeover) {
       this.adopt(p);
       this.activeIndex = this.pages.indexOf(p);
+      this.lastFront.set(p, Date.now());
+      void this.enforceTabLimit();
       await this.startCast();
       this.emitStatus();
       return;
@@ -396,14 +631,15 @@ export class BrowserSession {
   }
 
   async close(reason: "closed" | "suspended" = "closed") {
-    if (this.saveTimer) clearInterval(this.saveTimer);
-    if (this.persistSoon) clearTimeout(this.persistSoon);
+    this.stopTimers();
+    this.detachBrowser();
     this.controlGeneration++;
     if (reason === "suspended") await this.persist().catch(() => {});
     this.status = reason;
     this.emitStatus();
-    await this.stopCast();
-    await this.context?.close().catch(() => {});
+    await withTimeout(this.stopCast(), 5000, undefined);
+    // A context with a hung tab can take a long time to close; don't hold the caller.
+    if (this.context) await withTimeout(this.context.close(), 15_000, undefined);
     if (reason === "closed") {
       await releaseManagedBrowserSession(this.browserbaseSessionId);
       await q("UPDATE browser_sessions SET status = 'closed', storage = NULL, tabs = '[]', updated_at = now() WHERE chat_id = $1", [this.chatId]);
@@ -425,20 +661,25 @@ export class BrowserSession {
   }
 
   async tabs(): Promise<TabInfo[]> {
+    // A busy or frozen tab must not hold up the status of every other tab.
     return Promise.all(
-      this.pages.map(async (p, i) => ({
-        index: i,
-        title: (await p.title().catch(() => "")) || hostOf(p.url()) || "New tab",
-        url: p.url(),
-        active: i === this.activeIndex,
-      }))
+      this.pages.map(async (p, i) => {
+        const title = await withTimeout(p.title(), 1500, "");
+        if (title) this.titles.set(p, title);
+        return {
+          index: i,
+          title: title || this.titles.get(p) || hostOf(p.url()) || "New tab",
+          url: p.url(),
+          active: i === this.activeIndex,
+        };
+      })
     );
   }
 
   async openTab(url?: string): Promise<Page> {
     const p = await this.newTabInternal();
     if (url) await p.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
-    await p.bringToFront().catch(() => {});
+    await this.front(p);
     await selectBrowserbaseLivePage(p.url());
     await this.startCast();
     this.emitStatus();
@@ -448,7 +689,8 @@ export class BrowserSession {
   async switchTab(index: number) {
     if (index < 0 || index >= this.pages.length) throw new Error(`There is no tab ${index + 1} (${this.pages.length} open).`);
     this.activeIndex = index;
-    await this.active().bringToFront().catch(() => {});
+    this.lastFront.set(this.pages[index], Date.now());
+    await this.front(this.active());
     await selectBrowserbaseLivePage(this.active().url());
     await this.startCast();
     this.emitStatus();
@@ -471,23 +713,53 @@ export class BrowserSession {
     this.persistSoon = setTimeout(() => void this.persist().catch(() => {}), 4000);
   }
 
-  async persist() {
-    if (!this.context || this.status === "closed") return;
-    const storage = await this.context.storageState().catch(() => null);
-    const tabs: SavedTab[] = [];
-    for (const p of this.pages) {
-      const info = await p
-        .evaluate(() => {
-          const v = document.querySelector("video");
-          return { scrollY: window.scrollY, videoTime: v ? v.currentTime : 0 };
-        })
-        .catch(() => ({ scrollY: 0, videoTime: 0 }));
-      tabs.push({ url: p.url(), title: await p.title().catch(() => ""), ...info });
+  /** Save cookies and tabs. Concurrent calls share one save (plus one follow-up), never pile up. */
+  persist(): Promise<void> {
+    if (this.persisting) {
+      this.persistAgain = true;
+      return this.persisting;
     }
+    const run = (async () => {
+      try {
+        do {
+          this.persistAgain = false;
+          await this.persistOnce();
+        } while (this.persistAgain);
+      } finally {
+        this.persisting = null;
+      }
+    })();
+    this.persisting = run;
+    return run;
+  }
+
+  private async persistOnce() {
+    if (!this.context || this.status === "closed") return;
+    // Every browser call is bounded: a frozen tab must not stall saving the others.
+    const storage = await withTimeout(this.context.storageState(), 8000, null);
+    const trust = googleTrustCookies(storage);
+    if (trust.length) googleJar.set(this.ownerId, trust);
+    const tabs: SavedTab[] = await Promise.all(
+      this.pages.map(async (p) => {
+        const [info, title] = await Promise.all([
+          withTimeout(
+            p.evaluate(() => {
+              const v = document.querySelector("video");
+              return { scrollY: window.scrollY, videoTime: v ? v.currentTime : 0 };
+            }),
+            2000,
+            { scrollY: 0, videoTime: 0 }
+          ),
+          withTimeout(p.title(), 1500, ""),
+        ]);
+        return { url: p.url(), title: title || this.titles.get(p) || "", ...info };
+      })
+    );
+    // A failed cookie read keeps the last saved cookies instead of wiping your logins.
     await q(
       `INSERT INTO browser_sessions (chat_id, owner_id, status, storage, tabs, updated_at)
        VALUES ($1, $2, $3, $4, $5, now())
-       ON CONFLICT (chat_id) DO UPDATE SET status = EXCLUDED.status, storage = EXCLUDED.storage, tabs = EXCLUDED.tabs, updated_at = now()`,
+       ON CONFLICT (chat_id) DO UPDATE SET status = EXCLUDED.status, storage = COALESCE(EXCLUDED.storage, browser_sessions.storage), tabs = EXCLUDED.tabs, updated_at = now()`,
       [this.chatId, this.ownerId, this.status === "restoring" ? "active" : this.status, storage ? JSON.stringify(storage) : null, JSON.stringify({ tabs, activeIndex: this.activeIndex, browserbaseSessionId: this.browserbaseSessionId })]
     );
   }
@@ -628,8 +900,10 @@ export class BrowserSession {
   private async openCast(p: Page, generation: number) {
     let cdp: CDPSession | null = null;
     try {
-      cdp = await this.context.newCDPSession(p);
-      if (generation !== this.castGeneration || !this.subs.size) { await cdp.detach().catch(() => {}); return; }
+      // Bounded: the cast steps run in a chain, so one hung step would freeze every later
+      // tab switch and viewer change.
+      cdp = await orTimeout(this.context.newCDPSession(p), 10_000, "starting the live view");
+      if (generation !== this.castGeneration || !this.subs.size) { await withTimeout(cdp.detach(), 3000, undefined); return; }
       this.castPage = p;
       this.cdp = cdp;
       this.lastFrame = null;
@@ -653,17 +927,17 @@ export class BrowserSession {
         if (this.cdp !== cast) return;
         publisher.push({ type: "frame", data: f.data, width: f.metadata.deviceWidth, height: f.metadata.deviceHeight, epoch: this.viewEpoch });
       });
-      await cdp.send("Page.startScreencast", {
+      await orTimeout(cdp.send("Page.startScreencast", {
         format: "jpeg",
         quality: QUALITY(),
         // A ceiling, not a fixed size: frames match the page, which follows the panel.
         maxWidth: Math.round(Math.max(SCREEN.width, 2560) * SCALE()),
         maxHeight: Math.round(Math.max(SCREEN.height, 1600) * SCALE()),
         everyNthFrame: 1,
-      });
+      }), 10_000, "starting the live view");
     } catch {
       if (this.cdp === cdp) { this.publisher?.dispose(); this.publisher = null; this.cdp = null; this.castPage = null; }
-      await cdp?.detach().catch(() => {});
+      if (cdp) await withTimeout(cdp.detach(), 3000, undefined);
     }
   }
 
@@ -680,8 +954,8 @@ export class BrowserSession {
     this.cdp = null;
     this.castPage = null;
     if (c) {
-      await c.send("Page.stopScreencast").catch(() => {});
-      await c.detach().catch(() => {});
+      await withTimeout(c.send("Page.stopScreencast"), 3000, undefined);
+      await withTimeout(c.detach(), 3000, undefined);
     }
   }
 
@@ -717,12 +991,14 @@ export class BrowserSession {
 
   async pageContext(withScreenshot: boolean) {
     const p = this.active();
-    const text = await p
-      .evaluate(() => (document.body?.innerText || "").replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n").trim().slice(0, 5000))
-      .catch(() => "");
+    const text = await withTimeout(
+      p.evaluate(() => (document.body?.innerText || "").replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n").trim().slice(0, 5000)),
+      10_000,
+      ""
+    );
     const tabs = (await this.tabs()).map((t) => `${t.index + 1}. ${t.title}${t.active ? " (active)" : ""}`).join(" | ");
     const screenshot = withScreenshot ? (await this.screenshot(60).catch(() => null))?.toString("base64") : undefined;
-    return { url: p.url(), title: await p.title().catch(() => ""), text, tabs, screenshot };
+    return { url: p.url(), title: await withTimeout(p.title(), 1500, this.titles.get(p) || ""), text, tabs, screenshot };
   }
 
   // ---- user takeover input -----------------------------------------------------------------
@@ -767,7 +1043,19 @@ export class BrowserSession {
           if (!this.takeover || generation !== this.controlGeneration || this.status !== "active" || page !== this.pages[this.activeIndex] || expectedEpoch !== this.viewEpoch) {
             throw new BrowserInputConflict("STALE_VIEW", "The browser view or ownership changed before this input was applied.", this.viewEpoch, this.controlVersion);
           }
-          await this.applyInput(event);
+          // A stuck event must never hold the queue: give up on it after INPUT_STALL_MS and
+          // replace the tab (which also fails anything else still waiting on it).
+          const work = this.applyInput(event);
+          work.catch(() => {});
+          try {
+            await orTimeout(work, INPUT_STALL_MS(), "applying your input");
+          } catch (e) {
+            if (e instanceof TimeoutError) {
+              void this.recoverPage(page, "stopped reacting to input");
+              throw new Error("The page stopped reacting to input, so its tab was reopened. Try again.");
+            }
+            throw e;
+          }
         }
       } finally {
         this.queuedInputs -= events.length;
@@ -948,6 +1236,7 @@ class SessionManager {
     if (!s) return;
     await s.persist();
     this.live.delete(chatId);
+    s.release();
     await s.context.close().catch(() => {});
   }
 }

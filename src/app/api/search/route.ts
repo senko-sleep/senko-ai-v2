@@ -1,4 +1,6 @@
 import { NextRequest } from "next/server";
+import { normalizeSafeSearch, safeParams, type SafeSearch } from "@/lib/content-policy";
+import { TtlCache, googleAvailable, looksLikeGoogleCaptcha, normalizeQuery, paceGoogle, reportGoogleCaptcha } from "@/lib/agent/google-gate";
 
 export const runtime = "nodejs";
 
@@ -141,14 +143,27 @@ const HEADERS: Record<string, string> = {
   "Sec-Fetch-User": "?1",
 };
 
-async function fetchGoogle(query: string): Promise<{ engine: string; results: SearchResult[] } | null> {
+async function fetchGoogle(query: string, level: SafeSearch = "off"): Promise<{ engine: string; results: SearchResult[] } | null> {
+  // Plain-HTTP Google requests leave from the same IP as the agent's browser. They are
+  // spaced out with it, skipped while Google is cooling down after a robot check, and a
+  // robot-check answer starts that cooldown (so the browser's searches stay unblocked).
+  if (!googleAvailable("http")) return null;
+  if (!(await paceGoogle({ maxWaitMs: 3000 }))) return null;
   try {
     const res = await fetch(
-      `https://www.google.com/search?q=${encodeURIComponent(query)}&hl=en&num=15&safe=off`,
+      `https://www.google.com/search?q=${encodeURIComponent(query)}&hl=en&num=15&${safeParams.google(level)}`,
       { headers: { ...HEADERS, Referer: "https://www.google.com/" }, signal: AbortSignal.timeout(10000) }
     );
+    if (res.status === 429 || res.url.includes("/sorry/")) {
+      reportGoogleCaptcha("http");
+      return null;
+    }
     if (!res.ok) return null;
     const html = await res.text();
+    if (looksLikeGoogleCaptcha(html)) {
+      reportGoogleCaptcha("http");
+      return null;
+    }
     const results = extractGoogleResults(html);
     if (results.length > 0) return { engine: "google", results };
   } catch { /* ignore */ }
@@ -175,10 +190,10 @@ async function fetchDDG(query: string): Promise<{ engine: string; results: Searc
   return null;
 }
 
-async function fetchBing(query: string): Promise<{ engine: string; results: SearchResult[] } | null> {
+async function fetchBing(query: string, level: SafeSearch = "off"): Promise<{ engine: string; results: SearchResult[] } | null> {
   try {
     const res = await fetch(
-      `https://www.bing.com/search?q=${encodeURIComponent(query)}&safeSearch=off`,
+      `https://www.bing.com/search?q=${encodeURIComponent(query)}&${safeParams.bing(level)}`,
       { headers: { ...HEADERS, Referer: "https://www.bing.com/" }, signal: AbortSignal.timeout(10000) }
     );
     if (!res.ok) return null;
@@ -191,24 +206,39 @@ async function fetchBing(query: string): Promise<{ engine: string; results: Sear
 
 // ── Main search route — cascades through engines ──
 
+interface SearchPayload {
+  results: SearchResult[];
+  [key: string]: unknown;
+}
+
+// The same query asked again within 10 minutes (a retry, a follow-up, another tab) is answered
+// from memory, and identical queries in flight at once share one request.
+const searchCache = new TtlCache<SearchPayload>(10 * 60_000, 300);
+
 export async function GET(req: NextRequest) {
   const query = req.nextUrl.searchParams.get("q");
+  const level = normalizeSafeSearch(req.nextUrl.searchParams.get("safe"));
   if (!query) {
     return Response.json({ error: "query required" }, { status: 400 });
   }
+  const payload = await searchCache.getOrLoad(`${level}|${normalizeQuery(query)}`, () => searchEngines(query, level), (v) => v.results.length > 0);
+  return Response.json(payload);
+}
+
+async function searchEngines(query: string, level: SafeSearch): Promise<SearchPayload> {
 
   // ── Proxy to Render search-api first (Vercel serverless IPs get blocked by search engines) ──
   const searchApiUrl = process.env.SEARCH_API_URL;
   if (searchApiUrl) {
     try {
-      const proxyRes = await fetch(`${searchApiUrl}/search?q=${encodeURIComponent(query)}`, {
+      const proxyRes = await fetch(`${searchApiUrl}/search?q=${encodeURIComponent(query)}&safe=${level}`, {
         signal: AbortSignal.timeout(15000),
       });
       if (proxyRes.ok) {
         const data = await proxyRes.json();
         if (data.results && data.results.length > 0) {
           console.log(`[search] Proxy returned ${data.results.length} results for "${query}"`);
-          return Response.json(data);
+          return data as SearchPayload;
         }
       }
     } catch (e) {
@@ -223,9 +253,9 @@ export async function GET(req: NextRequest) {
 
   // Try all engines in order: Google first (best results), then DuckDuckGo, then Bing
   const engines = [
-    { name: "google", fn: fetchGoogle },
+    { name: "google", fn: (q: string) => fetchGoogle(q, level) },
     { name: "duckduckgo", fn: fetchDDG },
-    { name: "bing", fn: fetchBing },
+    { name: "bing", fn: (q: string) => fetchBing(q, level) },
   ];
 
   for (const engine of engines) {
@@ -236,12 +266,12 @@ export async function GET(req: NextRequest) {
       if (result && result.results.length > 0) {
         attempts.push({ engine: result.engine, success: true, count: result.results.length, ms });
         console.log(`[search] ✓ ${result.engine}: ${result.results.length} results in ${ms}ms`);
-        return Response.json({
+        return {
           results: result.results,
           engine: result.engine,
           attempts,
           totalMs: Date.now() - start,
-        });
+        };
       }
       attempts.push({ engine: engine.name, success: false, count: 0, ms });
       console.log(`[search] ✗ ${engine.name}: 0 results in ${ms}ms`);
@@ -253,10 +283,10 @@ export async function GET(req: NextRequest) {
   }
 
   console.log(`[search] All engines failed for "${query}" in ${Date.now() - start}ms`);
-  return Response.json({
+  return {
     results: [],
     error: "All search engines failed",
     attempts,
     totalMs: Date.now() - start,
-  });
+  };
 }

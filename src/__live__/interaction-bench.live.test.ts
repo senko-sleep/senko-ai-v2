@@ -53,7 +53,7 @@ vi.mock("@/lib/llm", () => {
     },
   };
 });
-vi.mock("@/lib/server/persona", () => ({ agentVoice: async () => "" }));
+vi.mock("@/lib/server/persona", () => ({ agentVoice: async () => "", safeSearchFor: async () => "off" }));
 vi.mock("@/lib/server/chats", () => ({ saveImage: async () => "img" }));
 
 function parseCtx(prompt: string): Ctx {

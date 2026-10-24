@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({ complete: vi.fn(), open: vi.fn(), save: vi.fn(
 vi.mock("@/lib/llm", () => ({ complete: mocks.complete, headroom: async () => 1, LlmBusyError: class extends Error {} }));
 vi.mock("@/lib/agent/sessions", () => ({ sessions: { get: () => undefined, open: mocks.open } }));
 vi.mock("@/lib/agent/checkpoint", () => ({ checkpointLease: () => Symbol(), saveCheckpoint: mocks.save, clearCheckpoint: mocks.clear }));
-vi.mock("@/lib/server/persona", () => ({ agentVoice: async () => "" }));
+vi.mock("@/lib/server/persona", () => ({ agentVoice: async () => "", safeSearchFor: async () => "off" }));
 vi.mock("@/lib/server/chats", () => ({ saveImage: vi.fn() }));
 vi.mock("@/lib/server/db", () => ({ q: vi.fn(), q1: vi.fn(), newId: () => "test" }));
 import { runAgent, type RunEvent } from "@/lib/agent/runner";
@@ -34,7 +34,8 @@ function fixture(clickable = false) {
     }),
   };
   const session = { pages: [page], active: () => page, isActive: () => true, viewport: () => ({ width: 1280, height: 800 }), beginAgent: vi.fn(), endAgent: vi.fn(), startCast: async () => {}, emitStatus: vi.fn(), emit: vi.fn(),
-    tabs: async () => [{ index: 0, title: "Fixture", url, active: true }], screenshot: async () => Buffer.from("test"), recordShot: async () => "shot", persist: async () => {}, schedulePersist: vi.fn(), log: vi.fn(), replay: [] };
+    tabs: async () => [{ index: 0, title: "Fixture", url, active: true }], screenshot: async () => Buffer.from("test"), recordShot: async () => "shot", persist: async () => {}, schedulePersist: vi.fn(), log: vi.fn(), replay: [],
+    status: "active", watchStall: () => () => {}, responsive: async () => true, recoverPage: vi.fn(), viewerCount: () => 0 };
   mocks.open.mockResolvedValue(session);
   return { session, page };
 }

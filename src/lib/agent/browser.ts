@@ -67,6 +67,16 @@ export function isHeaded(): boolean {
   return process.platform === "linux" && !!process.env.DISPLAY && process.env.BROWSER_HEADLESS !== "1";
 }
 
+/** Clear the shared browser slot if it still holds `b`. True when it did (or the slot was empty). */
+async function forgetBrowser(b: Browser): Promise<boolean> {
+  const slot = g.__agentBrowser;
+  if (!slot) return true;
+  const current = await slot.catch(() => null);
+  if (current !== b && current !== null) return false;
+  if (g.__agentBrowser === slot) g.__agentBrowser = undefined;
+  return true;
+}
+
 function markRemoteBrowser(b: Browser, provider: string, onDisconnect?: () => void) {
   g.__agentBrowserMode = {
     headed: false,
@@ -75,13 +85,10 @@ function markRemoteBrowser(b: Browser, provider: string, onDisconnect?: () => vo
     sessionId: provider === "Browserbase" ? g.__browserbaseSessionId : undefined,
   };
   console.log(`[browser] connected to ${provider} Chromium v${b.version()}`);
-  const clearKeepalive = () => {
-    if (g.__remoteKeepalive) clearInterval(g.__remoteKeepalive);
-    g.__remoteKeepalive = undefined;
-  };
   // Remote browser providers close CDP sessions that sit completely idle. A
   // single lightweight command every four minutes preserves the user's open tab.
-  g.__remoteKeepalive = setInterval(() => {
+  // The timer belongs to this browser, so a replaced browser's timer always stops.
+  const keepalive = setInterval(() => {
     try {
       const page = b.contexts().flatMap((context) => context.pages()).find((p) => !p.isClosed());
       if (page) void page.evaluate(() => undefined).catch(() => {});
@@ -89,15 +96,19 @@ function markRemoteBrowser(b: Browser, provider: string, onDisconnect?: () => vo
       /* the connection is already gone */
     }
   }, 4 * 60_000);
-  g.__remoteKeepalive.unref?.();
-  b.on("disconnected", () => {
-    clearKeepalive();
-    g.__agentBrowser = undefined;
+  keepalive.unref?.();
+  g.__remoteKeepalive = keepalive;
+  b.on("disconnected", async () => {
+    clearInterval(keepalive);
+    if (g.__remoteKeepalive === keepalive) g.__remoteKeepalive = undefined;
+    // Release the provider session even when a replacement browser is already running.
+    void onDisconnect?.();
+    // A replacement may already be starting (restartBrowser): leave its state alone.
+    if (!(await forgetBrowser(b))) return;
     g.__browserbaseLiveViewUrl = undefined;
     g.__browserbaseSessionId = undefined;
     g.__browserbaseLivePageId = undefined;
     g.__agentBrowserMode = undefined;
-    void onDisconnect?.();
   });
 }
 
@@ -280,10 +291,13 @@ async function launch(browserbaseSessionId?: string): Promise<Browser> {
       name: "Steel",
       key: steelApiKey,
       connect: (key) => connectSteel(chromium, key),
-      released: (key) => () => {
-        // Steel's session id is attached to the CDP URL but is never logged.
+      released: (key) => {
+        // Steel's session id is attached to the CDP URL but is never logged. It's captured
+        // now (right after connecting), so a later replacement's session is never released.
         const id = steelSessionIdFromBrowser;
-        if (id) void releaseSteelSession(key, id);
+        return () => {
+          if (id) void releaseSteelSession(key, id);
+        };
       },
     });
   }
@@ -361,7 +375,7 @@ async function launch(browserbaseSessionId?: string): Promise<Browser> {
       g.__agentBrowserMode = { headed: headed && name !== "chromium-headless-shell", channel: name };
       console.log(`[browser] launched ${name} (${g.__agentBrowserMode.headed ? "headed on " + process.env.DISPLAY : "headless"}) v${b.version()}`);
       b.on("disconnected", () => {
-        g.__agentBrowser = undefined;
+        void forgetBrowser(b);
       });
       return b;
     } catch (e) {
@@ -402,12 +416,31 @@ export async function getBrowser(browserbaseSessionId?: string): Promise<Browser
       throw e;
     });
   }
-  const b = await g.__agentBrowser;
+  const pending = g.__agentBrowser;
+  const b = await pending;
   if (!b.isConnected()) {
-    g.__agentBrowser = undefined;
+    // Only clear the slot we read: a concurrent caller may already have started a new launch.
+    if (g.__agentBrowser === pending) g.__agentBrowser = undefined;
     return getBrowser();
   }
   return b;
+}
+
+/**
+ * Throw away a browser that stopped answering (its tabs can't even be replaced). Sessions on
+ * it are told through their "disconnected" handlers, save what they can, and restore on a
+ * fresh browser next time they're used.
+ */
+export async function restartBrowser(reason: string): Promise<void> {
+  const pending = g.__agentBrowser;
+  g.__agentBrowser = undefined;
+  g.__agentBrowserMode = undefined;
+  if (!pending) return;
+  const b = await pending.catch(() => null);
+  if (!b) return;
+  console.warn(`[browser] restarting the browser: ${reason}`);
+  // close() kills a local Chrome; on a remote provider it drops the CDP connection.
+  await Promise.race([b.close().catch(() => {}), new Promise((r) => setTimeout(r, 10_000))]);
 }
 
 /** Release the current managed Browserbase session when a user explicitly closes the browser. */

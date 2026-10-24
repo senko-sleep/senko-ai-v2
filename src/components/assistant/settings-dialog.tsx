@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Brain, Cpu, Monitor, Moon, Sparkles, Sun, Trash2, X } from "lucide-react";
-import { forgetMemory, getMemories } from "./api";
+import { Brain, Cpu, Monitor, Moon, ShieldCheck, Sparkles, Sun, Trash2, X } from "lucide-react";
+import { forgetMemory, getMemories, getSettings, saveSettings, type Settings } from "./api";
 import type { ProviderInfo } from "./lib";
 
 export type Theme = "system" | "light" | "dark";
@@ -44,11 +44,15 @@ export function SettingsDialog({
   const ref = useRef<HTMLDivElement>(null);
   const [memories, setMemories] = useState<{ key: string; value: string }[] | null>(null);
   const [memError, setMemError] = useState<string | null>(null);
+  const [safeSearch, setSafeSearch] = useState<NonNullable<Settings["safeSearch"]>>("off");
 
   useEffect(() => {
     if (!open) return;
     const before = document.activeElement as HTMLElement | null;
     ref.current?.querySelector<HTMLElement>("button, select, input")?.focus();
+    getSettings()
+      .then((s) => setSafeSearch(s.safeSearch === "moderate" || s.safeSearch === "strict" ? s.safeSearch : "off"))
+      .catch(() => {});
     getMemories()
       .then((m) => {
         setMemories(m);
@@ -123,6 +127,47 @@ export function SettingsDialog({
                 <span className="sr-only">{personalized ? "On" : "Off"}</span>
               </button>
             </Row>
+
+            <div>
+              <Row
+                icon={<ShieldCheck size={14} />}
+                title="SafeSearch"
+                desc={
+                  safeSearch === "off"
+                    ? "Off: searches return everything, adult results included."
+                    : safeSearch === "moderate"
+                      ? "Moderate: explicit images are filtered from searches."
+                      : "Strict: explicit results are filtered and adult sites stay closed unless you ask."
+                }
+              />
+              <div role="radiogroup" aria-label="SafeSearch" className="-mt-1 grid grid-cols-3 gap-1.5 pb-3 pl-8.5">
+                {(
+                  [
+                    ["off", "Off"],
+                    ["moderate", "Moderate"],
+                    ["strict", "Strict"],
+                  ] as const
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="radio"
+                    aria-checked={safeSearch === id}
+                    onClick={() => {
+                      setSafeSearch(id);
+                      void saveSettings({ safeSearch: id }).catch(() => {});
+                    }}
+                    className={`sk-btn h-7.5 border text-[12px] ${
+                      safeSearch === id
+                        ? "border-[var(--sk-accent-line)] bg-[var(--sk-accent-soft)] text-[var(--sk-accent-ink)]"
+                        : "border-[var(--sk-line)] text-[var(--sk-muted)]"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
             <div>
               <Row icon={<Moon size={14} />} title="Appearance" desc="Warm ember dark, daylight, or follow your device." />
