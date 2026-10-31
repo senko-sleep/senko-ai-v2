@@ -1,12 +1,11 @@
-import { createContext, memo, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeHighlight from "rehype-highlight";
+import { memo, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Bot, Check, CheckCircle2, Copy, ExternalLink, Grid3X3, PauseCircle, PawPrint, Pencil, RotateCcw, Square } from "lucide-react";
 import { FoxMark } from "./fox-mark";
 import { activitySources } from "./activity";
 import { AgentTrail } from "./activity-trail";
 import { ImageGallery } from "../chat/image-gallery";
+import { RichMessageContent } from "../ui-renderer/dynamic-ui-renderer";
+import { MiniAgentPanel } from "./mini-agent-panel";
 import type { Msg } from "./lib";
 
 function TypingDots() {
@@ -41,92 +40,6 @@ function useCopy() {
   return { copied, copy };
 }
 
-/** Lets a code block hand its text straight to Agent mode (set per reply). */
-const RunPromptContext = createContext<((text: string) => void) | undefined>(undefined);
-
-// Plain-text blocks are prompts or notes, not code, so they can be run as agent tasks.
-const PROMPT_LANGS = new Set(["text", "txt", "plaintext", "prompt"]);
-
-function CodeBlock({ children }: { children: ReactNode }) {
-  const ref = useRef<HTMLPreElement>(null);
-  const { copied, copy } = useCopy();
-  const runPrompt = useContext(RunPromptContext);
-  // rehype-highlight puts "language-xyz" on the inner <code>.
-  const child = Array.isArray(children) ? children[0] : children;
-  const cls = (child as { props?: { className?: string } })?.props?.className || "";
-  const lang = /language-([\w+-]+)/.exec(cls)?.[1] || "text";
-  const canRun = !!runPrompt && PROMPT_LANGS.has(lang.toLowerCase());
-  return (
-    <div className="sk-code">
-      <div className="sk-code-head">
-        <span>{lang}</span>
-        {canRun && (
-          <button
-            type="button"
-            onClick={() => {
-              const text = ref.current?.innerText.trim();
-              if (text) runPrompt(text);
-            }}
-            className="ml-auto mr-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] transition hover:bg-white/10 hover:text-white"
-            aria-label="Run this prompt in Agent mode"
-          >
-            <Bot size={11} />
-            Run in Agent
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={() => copy(ref.current?.innerText || "")}
-          className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] transition hover:bg-white/10 hover:text-white"
-          aria-label={copied ? "Copied" : "Copy code"}
-        >
-          {copied ? <Check size={11} /> : <Copy size={11} />}
-          {copied ? "Copied" : "Copy"}
-        </button>
-      </div>
-      <pre ref={ref}>{children}</pre>
-    </div>
-  );
-}
-
-function ReplyImage({ src, alt }: { src?: string; alt?: string }) {
-  const [failed, setFailed] = useState(false);
-  if (!src) return null;
-  return (
-    <span className="sk-message-image">
-      {failed ? (
-        <span className="flex h-36 items-center justify-center text-xs text-[var(--sk-muted)]">Image unavailable</span>
-      ) : (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={src} alt={alt || "Image from the source page"} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
-      )}
-      {alt && <span className="mt-1 block text-[11px] text-[var(--sk-muted)]">{alt}</span>}
-    </span>
-  );
-}
-
-const Markdown = memo(function Markdown({ text }: { text: string }) {
-  return (
-    <div className="sk-md">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-        components={{
-          img: ({ src, alt }) => <ReplyImage key={typeof src === "string" ? src : ""} src={typeof src === "string" ? src : undefined} alt={alt} />,
-          a: ({ href, children }) => (
-            <a href={href} target="_blank" rel="noopener noreferrer">
-              {children}
-            </a>
-          ),
-          pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-        }}
-      >
-        {text}
-      </ReactMarkdown>
-    </div>
-  );
-});
-
 /** Horizontal preview strip + "View all images" gallery button for chat-mode image results. */
 function ScrapedImageStrip({
   images,
@@ -156,7 +69,9 @@ function ScrapedImageStrip({
               loading="lazy"
               referrerPolicy="no-referrer"
               className="h-24 w-24 object-cover"
-              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+              onError={(e) => {
+                (e.target as HTMLImageElement).style.display = "none";
+              }}
             />
           </button>
         ))}
@@ -215,12 +130,25 @@ function Images({ ids, align }: { ids: string[]; align: "start" | "end" }) {
   );
 }
 
+/** Strips hidden [DOCUMENT CONTEXT] blocks from user message display while keeping them for the LLM. */
+function splitUserDisplayContent(raw: string): { visibleText: string; uiPreviewBlock?: string } {
+  const docCtxIdx = raw.indexOf("\n\n<!-- SENKO_DOC_CONTEXT");
+  const base = docCtxIdx !== -1 ? raw.slice(0, docCtxIdx).trim() : raw;
+  const uiMatch = /```(?:ui|senko-ui)\r?\n[\s\S]*?```/i.exec(base);
+  if (uiMatch) {
+    const visibleText = base.replace(uiMatch[0], "").trim();
+    return { visibleText, uiPreviewBlock: uiMatch[0] };
+  }
+  return { visibleText: base };
+}
+
 export const MessageBubble = memo(function MessageBubble({
   msg,
   streaming,
   onRetry,
   onRunAgent,
   onRunPrompt,
+  onSendMessage,
   onEdit,
 }: {
   msg: Msg;
@@ -228,6 +156,7 @@ export const MessageBubble = memo(function MessageBubble({
   onRetry?: (id: string) => void;
   onRunAgent?: (id: string) => void;
   onRunPrompt?: (text: string) => void;
+  onSendMessage?: (text: string) => void;
   onEdit?: (id: string, newContent: string) => void;
 }) {
   const { copied, copy } = useCopy();
@@ -254,9 +183,15 @@ export const MessageBubble = memo(function MessageBubble({
   }, [draft, editing]);
 
   if (msg.role === "user") {
+    const { visibleText, uiPreviewBlock } = splitUserDisplayContent(msg.content);
     return (
       <div className="sk-in group flex flex-col items-end gap-1.5">
         {msg.imageIds?.length ? <Images ids={msg.imageIds} align="end" /> : null}
+        {uiPreviewBlock && (
+          <div className="w-full max-w-[92%] sm:max-w-[78%]">
+            <RichMessageContent messageId={msg.id} text={uiPreviewBlock} onSendMessage={onSendMessage} />
+          </div>
+        )}
         {editing ? (
           <form
             onSubmit={(e) => {
@@ -309,13 +244,13 @@ export const MessageBubble = memo(function MessageBubble({
             </div>
           </form>
         ) : (
-          msg.content && (
+          visibleText && (
             <div className="flex w-full items-center justify-end gap-1.5">
               {onEdit && (
                 <button
                   type="button"
                   onClick={() => {
-                    setDraft(msg.content);
+                    setDraft(visibleText);
                     setEditing(true);
                   }}
                   className="sk-btn h-6 w-6 shrink-0 rounded-md text-[var(--sk-faint)] opacity-100 transition-opacity hover:text-[var(--sk-text)] sm:opacity-0 sm:focus-visible:opacity-100 sm:group-hover:opacity-100"
@@ -329,7 +264,7 @@ export const MessageBubble = memo(function MessageBubble({
                 className="max-w-[82%] whitespace-pre-wrap break-words rounded-2xl rounded-tr-xs border px-3.5 py-2 text-[13.5px] leading-relaxed text-[var(--sk-text)] sm:max-w-[68%]"
                 style={{ background: "var(--sk-user)", borderColor: "var(--sk-user-border)" }}
               >
-                {msg.content}
+                {visibleText}
               </div>
             </div>
           )
@@ -393,11 +328,24 @@ export const MessageBubble = memo(function MessageBubble({
 
         {thinking && <TypingDots />}
 
+        {msg.miniAgentSteps && msg.miniAgentSteps.length > 0 && (
+          <MiniAgentPanel
+            steps={msg.miniAgentSteps}
+            running={!!msg.miniAgentRunning}
+            taskLabel={msg.miniAgentLabel}
+          />
+        )}
+
         {msg.content && !msg.error && (
           <div>
-            <RunPromptContext.Provider value={streaming ? undefined : onRunPrompt}>
-              <Markdown text={msg.content} />
-            </RunPromptContext.Provider>
+            <RichMessageContent
+              messageId={msg.id}
+              text={msg.content}
+              streaming={streaming}
+              uiImages={msg.uiImages}
+              onSendMessage={streaming ? undefined : onSendMessage}
+              onRunPrompt={streaming ? undefined : onRunPrompt}
+            />
             {streaming && <span className="ml-0.5 inline-block h-3.5 w-[2px] translate-y-0.5 rounded-full bg-[var(--sk-accent)] sk-pulse" aria-hidden />}
           </div>
         )}

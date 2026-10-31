@@ -18,6 +18,8 @@ export interface MessageMeta {
   scrapedImages?: { url: string; alt?: string; source?: string; engine?: string }[];
   /** Search query used for scrapedImages (the gallery fetches more pages with it). */
   imageQuery?: string;
+  /** Pre-resolved image URLs keyed by imageQuery for dynamic UI components. */
+  uiImages?: Record<string, string[]>;
 }
 
 export interface StoredMessage {

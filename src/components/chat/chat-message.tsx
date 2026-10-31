@@ -168,7 +168,7 @@ function CompletedSearchCard({ activity }: { activity: { query: string; sourceCo
           <Search className="h-4 w-4 text-emerald-400 shrink-0" />
           <div className="flex-1 text-left">
             <div className="text-[13px] font-medium text-emerald-400">
-              Searched "{activity.query}"
+              Searched &ldquo;{activity.query}&rdquo;
             </div>
             <div className="text-[11px] text-[var(--muted-foreground)] mt-0.5">
               {results.length} results found • {activity.duration}s
@@ -305,6 +305,7 @@ interface ChatMessageProps {
   onEdit: (id: string, newContent: string) => void;
   onRegenerate?: (id: string) => void;
   onOpenLink?: (url: string) => void;
+  onSendMessage?: (prompt: string) => void;
   isStreaming?: boolean;
 }
 
@@ -318,7 +319,7 @@ function getFaviconUrl(url: string): string {
 }
 
 
-export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink, isStreaming }: ChatMessageProps) {
+export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink, onSendMessage, isStreaming }: ChatMessageProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content);
   const [copied, setCopied] = useState(false);
@@ -369,8 +370,8 @@ export function ChatMessage({ message, onEdit, onRegenerate, onOpenLink, isStrea
   const hasWebEmbeds = message.webEmbeds && message.webEmbeds.length > 0;
   const hasMap = !!message.mapEmbed;
 function hasRichContent(content: string): boolean {
-  // Trigger markdown rendering for any structured content
-  return /```|^#{1,6}\s|^\s*[-*]\s\S|^\s*\d+\.\s\S|\|.+\||\*\*[^*]+\*\*|\*[^*]+\*|^>\s|[\u2022\u2023\u25E6]|\/\/\/<|\[.+\]\(.+\)/m.test(content);
+  // Trigger markdown/UI rendering for any structured content, Dynamic UI blocks, citations, or math
+  return /```|^#{1,6}\s|^\s*[-*]\s\S|^\s*\d+\.\s\S|\|.+\||\*\*[^*]+\*\*|\*[^*]+\*|^>\s|[\u2022\u2023\u25E6]|\/\/\/<|\[.+\]\(.+\)|\[\[cite:|\$\$[^$]+\$\$/m.test(content);
 }
 
   const isRich = !isUser && hasRichContent(message.content);
@@ -457,7 +458,12 @@ function hasRichContent(content: string): boolean {
         <div className="w-full animate-fade-in">
           {isRich ? (
             <div className={cn("text-[15px] leading-[1.8] text-[var(--foreground)]/95", isStreaming && "typing-cursor")}>
-              <MarkdownRenderer content={message.content} />
+              <MarkdownRenderer
+                content={message.content}
+                messageId={message.id}
+                onSendMessage={onSendMessage}
+                isStreaming={isStreaming}
+              />
             </div>
           ) : (
             <p className={cn("whitespace-pre-wrap text-[15px] leading-[1.75] text-[var(--foreground)]/95", isStreaming && "typing-cursor")}>

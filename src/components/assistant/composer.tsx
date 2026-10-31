@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { ArrowUp, ImagePlus, Loader2, Square, X } from "lucide-react";
+import { ArrowUp, Box, FileText, ImagePlus, Loader2, Square, X } from "lucide-react";
+import type { ExtractedDocument } from "@/lib/document-extractor";
 import type { Mode } from "./lib";
 
 export interface Attachment {
   key: string;
   preview: string;
   id?: string;
+  doc?: ExtractedDocument;
+  fileName?: string;
   error?: string;
 }
 
@@ -45,8 +48,8 @@ export function Composer({
     t.style.height = `${Math.min(Math.max(t.scrollHeight, 28), 160)}px`;
   }, [value, inputRef]);
 
-  const uploading = attachments.some((a) => !a.id && !a.error);
-  const ready = attachments.filter((a) => a.id);
+  const uploading = attachments.some((a) => !a.id && !a.doc && !a.error);
+  const ready = attachments.filter((a) => a.id || a.doc);
   const canSend = !busy && !uploading && (value.trim().length > 0 || ready.length > 0);
 
   return (
@@ -65,7 +68,7 @@ export function Composer({
       onDrop={(e) => {
         e.preventDefault();
         setDragging(false);
-        const files = [...e.dataTransfer.files].filter((f) => f.type.startsWith("image/"));
+        const files = [...e.dataTransfer.files];
         if (files.length) onAddFiles(files);
       }}
       className={`sk-composer relative rounded-2xl px-2.5 py-1.5 ${
@@ -73,16 +76,40 @@ export function Composer({
       }`}
     >
       {attachments.length > 0 && (
-        <ul className="flex flex-wrap gap-1.5 pb-1.5 pt-1" aria-label="Attached images">
+        <ul className="flex flex-wrap gap-1.5 pb-1.5 pt-1" aria-label="Attached files">
           {attachments.map((a) => (
             <li key={a.key} className="sk-pop group relative">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={a.preview}
-                alt="Attached image"
-                className={`h-11 w-11 rounded-lg border object-cover ${a.error ? "border-[var(--sk-danger)] opacity-50" : "border-[var(--sk-line)]"}`}
-              />
-              {!a.id && !a.error && (
+              {a.doc || (a.fileName && !a.preview) ? (
+                <div
+                  className={`flex h-11 max-w-[200px] items-center gap-2 rounded-lg border bg-[var(--sk-raised)] px-2.5 ${
+                    a.error ? "border-[var(--sk-danger)] opacity-50" : "border-[var(--sk-line)]"
+                  }`}
+                >
+                  {a.doc?.is3DModel ? (
+                    <Box size={15} className="shrink-0 text-[var(--sk-accent-ink)]" />
+                  ) : (
+                    <FileText size={15} className="shrink-0 text-[var(--sk-accent-ink)]" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[11.5px] font-medium text-[var(--sk-text)]">
+                      {a.doc?.fileName || a.fileName || "Document"}
+                    </div>
+                    <div className="text-[10px] text-[var(--sk-muted)]">
+                      {a.doc ? `${a.doc.fileType} · ${a.doc.pageCount}p` : "Reading…"}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={a.preview}
+                  alt="Attached image"
+                  className={`h-11 w-11 rounded-lg border object-cover ${
+                    a.error ? "border-[var(--sk-danger)] opacity-50" : "border-[var(--sk-line)]"
+                  }`}
+                />
+              )}
+              {!a.id && !a.doc && !a.error && (
                 <span className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/50">
                   <Loader2 size={13} className="sk-spin text-white" aria-label="Uploading" />
                 </span>
@@ -91,7 +118,7 @@ export function Composer({
                 type="button"
                 onClick={() => onRemoveAttachment(a.key)}
                 className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full border border-[var(--sk-line)] bg-[var(--sk-bg)] text-[var(--sk-muted)] transition hover:text-[var(--sk-text)]"
-                aria-label="Remove image"
+                aria-label="Remove attachment"
                 title={a.error || "Remove"}
               >
                 <X size={10} />
@@ -105,7 +132,7 @@ export function Composer({
         <input
           ref={fileRef}
           type="file"
-          accept="image/*"
+          accept="image/*,.pdf,.txt,.md,.csv,.json,.yaml,.yml,.xml,.html,.js,.ts,.py,.obj,.stl"
           multiple
           hidden
           onChange={(e) => {
@@ -118,8 +145,8 @@ export function Composer({
           type="button"
           onClick={() => fileRef.current?.click()}
           className="sk-btn h-7 w-7 shrink-0 rounded-lg text-[var(--sk-muted)] hover:text-[var(--sk-text)]"
-          aria-label="Attach images"
-          title="Attach images (or paste / drop them)"
+          aria-label="Attach images, documents, or 3D models"
+          title="Attach images, PDFs, documents, or 3D models (.obj)"
         >
           <ImagePlus size={15} />
         </button>
@@ -135,7 +162,7 @@ export function Composer({
             }
           }}
           onPaste={(e) => {
-            const files = [...e.clipboardData.files].filter((f) => f.type.startsWith("image/"));
+            const files = [...e.clipboardData.files];
             if (files.length) {
               e.preventDefault();
               onAddFiles(files);

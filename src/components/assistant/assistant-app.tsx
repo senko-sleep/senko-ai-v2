@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Bot, Cpu, Globe, KeyRound, Loader2, MessageSquare, PanelLeftOpen, SquarePen } from "lucide-react";
 import { extractOpenTags, parseBrowserCommand } from "@/lib/browser-commands";
+import { extractDocumentFromFile } from "@/lib/document-extractor";
 import { MessageBubble } from "./message-bubble";
 import { BrowserPanel, type BrowserState } from "./browser-panel";
 import type { PageOp } from "./reader-view";
@@ -583,17 +584,24 @@ export default function AssistantApp() {
   const addFiles = useCallback((files: File[]) => {
     for (const file of files.slice(0, 8)) {
       const key = uid();
-      const preview = URL.createObjectURL(file);
-      setAttachments((as) => [...as, { key, preview }]);
-      API.uploadImage(file)
-        .then((id) => setAttachments((as) => as.map((a) => (a.key === key ? { ...a, id } : a))))
-        .catch((e) => setAttachments((as) => as.map((a) => (a.key === key ? { ...a, error: networkError(e) } : a))));
+      if (file.type.startsWith("image/")) {
+        const preview = URL.createObjectURL(file);
+        setAttachments((as) => [...as, { key, preview }]);
+        API.uploadImage(file)
+          .then((id) => setAttachments((as) => as.map((a) => (a.key === key ? { ...a, id } : a))))
+          .catch((e) => setAttachments((as) => as.map((a) => (a.key === key ? { ...a, error: networkError(e) } : a))));
+      } else {
+        setAttachments((as) => [...as, { key, preview: "", fileName: file.name }]);
+        extractDocumentFromFile(file)
+          .then((doc) => setAttachments((as) => as.map((a) => (a.key === key ? { ...a, doc } : a))))
+          .catch((e) => setAttachments((as) => as.map((a) => (a.key === key ? { ...a, error: networkError(e) } : a))));
+      }
     }
   }, []);
   const removeAttachment = (key: string) =>
     setAttachments((as) => {
       const a = as.find((x) => x.key === key);
-      if (a) URL.revokeObjectURL(a.preview);
+      if (a?.preview) URL.revokeObjectURL(a.preview);
       return as.filter((x) => x.key !== key);
     });
 
@@ -650,6 +658,7 @@ export default function AssistantApp() {
             userMessageId?: string;
             query?: string;
             images?: { url: string; alt: string; source: string; engine: string }[];
+            step?: AgentStep;
           };
           if (e.type === "images" && e.images?.length) {
             patch(replyId, (m) => ({ ...m, scrapedImages: e.images, imageQuery: e.query }));
@@ -658,14 +667,23 @@ export default function AssistantApp() {
               patch(opts.userId, (m) => ({ ...m, id: e.userMessageId! }));
             }
             patch(replyId, (m) => ({ ...m, provider: e.providerLabel ? `${e.providerLabel} · ${e.model}` : undefined }));
+          } else if (e.type === "mini_agent_step" && e.step) {
+            patch(replyId, (m) => {
+              const existing = m.miniAgentSteps ?? [];
+              const idx = existing.findIndex((s) => s.id === e.step!.id);
+              const updated = idx >= 0
+                ? existing.map((s, i) => (i === idx ? { ...s, ...e.step! } : s))
+                : [...existing, e.step!];
+              return { ...m, miniAgentSteps: updated, miniAgentRunning: true };
+            });
           } else if (e.type === "delta" && e.text) {
             gotFirst = true;
             text += e.text;
             const shown = extractOpenTags(stripLiveTags(text)).clean;
-            patch(replyId, (m) => ({ ...m, content: shown }));
+            patch(replyId, (m) => ({ ...m, content: shown, miniAgentRunning: false }));
           } else if (e.type === "done" && e.message) {
             const final = fromStored(e.message);
-            patch(replyId, (m) => ({ ...final, id: m.id, provider: final.provider || m.provider }));
+            patch(replyId, (m) => ({ ...final, id: m.id, provider: final.provider || m.provider, miniAgentSteps: m.miniAgentSteps, miniAgentRunning: false, miniAgentLabel: m.miniAgentLabel }));
             if (final.actions?.[0]) openTab(final.actions[0].url); // may be blocked; the card stays
           } else if (e.type === "error") {
             failed = e.error || "Something went wrong.";
@@ -1050,19 +1068,52 @@ export default function AssistantApp() {
     async (raw: string, forceMode?: Mode) => {
       const text = raw.trim();
       const imageIds = attachments.filter((a) => a.id).map((a) => a.id!);
-      if ((!text && !imageIds.length) || busy) return;
+      const docs = attachments.filter((a) => a.doc).map((a) => a.doc!);
+      if ((!text && !imageIds.length && !docs.length) || busy) return;
       const m = forceMode || mode;
       chattedSinceSuggest.current = true;
       setInput("");
-      attachments.forEach((a) => URL.revokeObjectURL(a.preview));
+      attachments.forEach((a) => a.preview && URL.revokeObjectURL(a.preview));
       setAttachments([]);
 
-      const user: Msg = { id: uid(), role: "user", content: text, imageIds };
+      let fullPayload = text;
+      if (docs.length) {
+        const uiBlocks = docs.map((d) =>
+          d.is3DModel
+            ? `\`\`\`ui\n${JSON.stringify({
+                type: "model_viewer",
+                title: d.fileName,
+                subtitle: d.summary,
+                objData: d.objData,
+              })}\n\`\`\``
+            : `\`\`\`ui\n${JSON.stringify({
+                type: "document_preview",
+                title: d.fileName,
+                fileName: d.fileName,
+                fileType: d.fileType,
+                pageCount: d.pageCount,
+                summary: d.summary,
+                sections: d.sections.slice(0, 12),
+              })}\n\`\`\``
+        );
+        const docContext = docs
+          .map((d) => `[UPLOADED DOCUMENT: ${d.fileName} (${d.fileType}, ${d.pageCount} pages)]\n${d.rawText}`)
+          .join("\n\n");
+        fullPayload = [
+          uiBlocks.join("\n\n"),
+          text || `Please analyze the attached file (${docs.map((d) => d.fileName).join(", ")}).`,
+          `<!-- SENKO_DOC_CONTEXT\n${docContext}\n-->`,
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+      }
+
+      const user: Msg = { id: uid(), role: "user", content: fullPayload, imageIds };
       const reply: Msg = { id: uid(), role: "assistant", content: "", pending: true };
-      if (m === "agent") reply.agent = { goal: text, status: "running", trail: [] };
+      if (m === "agent") reply.agent = { goal: fullPayload, status: "running", trail: [] };
 
       // Quick "open X" commands open right inside the click/Enter, so the tab isn't blocked as a pop-up.
-      const cmd = m === "chat" && !imageIds.length ? parseBrowserCommand(text) : null;
+      const cmd = m === "chat" && !imageIds.length && !docs.length ? parseBrowserCommand(text) : null;
       if (cmd) {
         const win = openTab(cmd.url);
         const what = cmd.query ? `${cmd.site} results for “${cmd.query}”` : cmd.label;
@@ -1089,15 +1140,15 @@ export default function AssistantApp() {
         const res = await fetch(`/api/chats/${chatId}/messages`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: text, record: { content: reply.content, actions: [cmd] } }),
+          body: JSON.stringify({ content: fullPayload, record: { content: reply.content, actions: [cmd] } }),
         }).catch(() => null);
         const saved = (await res?.json().catch(() => null)) as { userMessageId?: string } | null;
         if (saved?.userMessageId) patch(user.id, (m) => ({ ...m, id: saved.userMessageId! }));
         void refreshChats();
         return;
       }
-      if (m === "agent") void runAgent(chatId, text, imageIds, reply.id, false, { userId: user.id });
-      else void runChat(chatId, text, imageIds, reply.id, { userId: user.id });
+      if (m === "agent") void runAgent(chatId, fullPayload, imageIds, reply.id, false, { userId: user.id });
+      else void runChat(chatId, fullPayload, imageIds, reply.id, { userId: user.id });
     },
     [attachments, busy, chats, mode, ensureChat, patch, refreshChats, runAgent, runChat]
   );
@@ -1389,6 +1440,7 @@ export default function AssistantApp() {
                         onRetry={busy ? undefined : retry}
                         onRunAgent={busy ? undefined : runSuggestedAgent}
                         onRunPrompt={busy ? undefined : runPromptInAgent}
+                        onSendMessage={busy ? undefined : (prompt) => void send(prompt, "chat")}
                         onEdit={busy ? undefined : (id, next) => void editMessage(id, next)}
                       />
                     ))

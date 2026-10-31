@@ -1,12 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Copy, Check, ExternalLink } from "lucide-react";
+import { parseMessageSegments, type UIValue } from "@/lib/ui-schema";
+import { CitationPill, DynamicUIRenderer, UIPendingSkeleton } from "@/components/ui-renderer/dynamic-ui-renderer";
+import { DiagramView, MathView } from "@/components/ui-renderer/charts-and-diagrams";
 
 interface MarkdownRendererProps {
   content: string;
+  messageId?: string;
+  isStreaming?: boolean;
+  onSendMessage?: (content: string) => void;
 }
 
 function CodeBlock({
@@ -61,61 +67,48 @@ function preprocessMarkdown(text: string): string {
   let result = text;
 
   // Safety net: strip any <think> blocks that leaked through upstream stripping
-  result = result.replace(/<\s*think\s*>[\s\S]*?<\s*\/\s*think\s*>/gi, '');
-  result = result.replace(/<\s*think[^>]*>[\s\S]*$/gi, '');
-  result = result.replace(/<\s*\/\s*think\s*>/gi, '');
+  result = result.replace(/<\s*think\s*>[\s\S]*?<\s*\/\s*think\s*>/gi, "");
+  result = result.replace(/<\s*think[^>]*>[\s\S]*$/gi, "");
+  result = result.replace(/<\s*\/\s*think\s*>/gi, "");
 
-  // ── Protect code spans from preprocessing ──
-  // Extract fenced code blocks and inline code so regexes below don't mangle them
+  // Convert [[cite: Label | url]] into special anchor syntax
+  result = result.replace(/\[\[\s*cite\s*:\s*([^\]|]+?)(?:\s*\|\s*([^\]]+?))?\s*\]\]/gi, (_, label: string, url?: string) => {
+    const cleanLabel = label.trim();
+    const cleanUrl = url?.trim() || `https://citation.local/${encodeURIComponent(cleanLabel)}`;
+    return `[cite:${cleanLabel}](${cleanUrl})`;
+  });
+
+  // Protect code spans from preprocessing
   const codeSlots: string[] = [];
-  const PLACEHOLDER = '\x00CODE';
+  const PLACEHOLDER = "\x00CODE";
 
-  // Fenced code blocks (``` ... ```)
   result = result.replace(/```[\s\S]*?```/g, (m) => {
     codeSlots.push(m);
     return `${PLACEHOLDER}${codeSlots.length - 1}\x00`;
   });
 
-  // Inline code (`...`) — non-greedy, single backtick pairs
   result = result.replace(/`[^`\n]+`/g, (m) => {
     codeSlots.push(m);
     return `${PLACEHOLDER}${codeSlots.length - 1}\x00`;
   });
 
-  // Strip stray kaomoji/emoticon fragments that break markdown (e.g. "///< text")
-  result = result.replace(/\/\/\/<\s*/g, '');
-  result = result.replace(/;w;/g, '');
+  result = result.replace(/\/\/\/<\s*/g, "");
+  result = result.replace(/;w;/g, "");
+  result = result.replace(/\t/g, "    ");
+  result = result.replace(/^\s*[\u2022\u2023\u25E6\u2043\u2219]\s*/gm, "- ");
+  result = result.replace(/^(\*\*[^*\n]+\*\*)\n(?!\n)/gm, "$1\n\n");
+  result = result.replace(/([^\n])\n(#{1,6} )/g, "$1\n\n$2");
+  result = result.replace(/([^\n])(#{1,6} )/g, "$1\n\n$2");
+  result = result.replace(/\n{3,}/g, "\n\n");
+  result = result.replace(/^([^\n>]+)>[^\S\n]+/gm, "$1\n\n> ");
 
-  // Convert tabs to 4 spaces — tab indentation confuses markdown parsers
-  result = result.replace(/\t/g, '    ');
-
-  // Convert unicode bullet points to markdown list items
-  result = result.replace(/^\s*[\u2022\u2023\u25E6\u2043\u2219]\s*/gm, '- ');
-
-  // Bold "headers": **text** alone on a line needs a blank line after it
-  // so it doesn't run into the next paragraph
-  result = result.replace(/^(\*\*[^*\n]+\*\*)\n(?!\n)/gm, '$1\n\n');
-
-  // 1. Ensure blank line before ## headers that aren't at document start
-  result = result.replace(/([^\n])\n(#{1,6} )/g, '$1\n\n$2');
-
-  // 2. Headers running into text on same line (no newline at all)
-  result = result.replace(/([^\n])(#{1,6} )/g, '$1\n\n$2');
-
-  // 3. Clean up excessive consecutive newlines
-  result = result.replace(/\n{3,}/g, '\n\n');
-
-  // 4. Fix blockquote markers that appear mid-line (not at line start)
-  result = result.replace(/^([^\n>]+)>[^\S\n]+/gm, '$1\n\n> ');
-
-  // ── Restore code spans ──
   result = result.replace(/\x00CODE(\d+)\x00/g, (_, idx) => codeSlots[parseInt(idx, 10)]);
 
   return result;
 }
 
-export function MarkdownRenderer({ content }: MarkdownRendererProps) {
-  const processed = preprocessMarkdown(content);
+function SingleMarkdownSegment({ content }: { content: string }) {
+  const processed = useMemo(() => preprocessMarkdown(content), [content]);
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -188,6 +181,12 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
           );
         },
         a({ href, children }) {
+          const childText = String(children);
+          if (childText.startsWith("cite:")) {
+            const label = childText.slice(5).trim();
+            const isPlaceholder = href?.startsWith("https://citation.local/");
+            return <CitationPill citation={{ label, url: isPlaceholder ? undefined : href }} />;
+          }
           return (
             <a
               href={href}
@@ -201,7 +200,6 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
           );
         },
         img() {
-          // Block all raw image output from AI - images are shown via the ImageCarousel UI only
           return null;
         },
         hr() {
@@ -244,5 +242,47 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
     >
       {processed}
     </ReactMarkdown>
+  );
+}
+
+export function MarkdownRenderer({ content, messageId, isStreaming = false, onSendMessage }: MarkdownRendererProps) {
+  const [uiState, setUiState] = useState<Record<string, UIValue>>({});
+  const handleStateChange = useCallback((key: string, val: UIValue) => {
+    if (key === "__reset__") setUiState({});
+    else setUiState((prev) => ({ ...prev, [key]: val }));
+  }, []);
+
+  const segments = useMemo(() => parseMessageSegments(content, isStreaming), [content, isStreaming]);
+
+  return (
+    <div className="space-y-3">
+      {segments.map((seg, idx) => {
+        if (seg.kind === "markdown") {
+          return <SingleMarkdownSegment key={idx} content={seg.text} />;
+        }
+        if (seg.kind === "ui") {
+          return (
+            <DynamicUIRenderer
+              key={idx}
+              node={seg.node}
+              messageId={messageId}
+              state={uiState}
+              onStateChange={handleStateChange}
+              onSendMessage={onSendMessage}
+            />
+          );
+        }
+        if (seg.kind === "ui_pending") {
+          return <UIPendingSkeleton key={idx} previewTitle={seg.previewTitle} previewType={seg.previewType} />;
+        }
+        if (seg.kind === "mermaid") {
+          return <DiagramView key={idx} mermaid={seg.code} />;
+        }
+        if (seg.kind === "math") {
+          return <MathView key={idx} latex={seg.latex} block />;
+        }
+        return null;
+      })}
+    </div>
   );
 }

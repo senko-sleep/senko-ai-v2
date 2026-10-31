@@ -242,6 +242,7 @@
 }
 
 /* ── Motion ───────────────────────────────────────────────────────────────── */
+@keyframes sk-slide { from { transform: translateX(-100%); opacity: 0.4; } to { transform: translateX(200%); opacity: 0; } }
 @keyframes sk-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 @keyframes sk-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes sk-pop { from { opacity: 0; transform: translateY(6px) scale(.985); } to { opacity: 1; transform: none; } }
@@ -259,6 +260,7 @@
 .sk-pulse { animation: sk-pulse 1.4s infinite ease-in-out; }
 .sk-spin { animation: sk-spin .9s linear infinite; }
 .sk-thinking { animation: sk-tail 1.6s ease-in-out infinite; transform-origin: 50% 80%; }
+.sk-slide { animation: sk-slide 1.8s linear infinite; }
 .sk-scan::after {
   content: ""; position: absolute; inset: 0; pointer-events: none;
   background: linear-gradient(180deg, transparent, var(--sk-accent-soft), transparent);

@@ -3,10 +3,13 @@
 import { openStream, type LlmMessage } from "@/lib/llm";
 import { extractOpenTags } from "@/lib/browser-commands";
 import { sessions } from "@/lib/agent/sessions";
+import { extractUIImageQueries } from "@/lib/ui-schema";
 import { addMessage, getMessages, maybeTitle, toLlmHistory, type MessageMeta, type StoredMessage } from "./chats";
 import { newId } from "./db";
 import { absorbMemories, chatSystemPrompt, stripMemoryTags, takeStatusTag } from "./persona";
 import { detectImageIntentQuery, extractImagesTag, searchMultiEngineImages, type ScrapedImage } from "./images";
+import { gatherLiveGroundingNote } from "./grounding";
+import { sanitizeYouTubeInReply, verifyYouTubeVideo } from "./youtube";
 
 const AGENT_TAG = /\[\[\s*agent\s*\]\]/gi;
 const ABOUT_PAGE =
@@ -30,6 +33,8 @@ export interface ReplyOptions {
   onDelta?: (text: string) => void;
   /** Fired as soon as images scraped for an image request are ready. */
   onImages?: (info: { query: string; images: ScrapedImage[] }) => void;
+  /** Fired for each live mini-agent task step during grounding (YouTube search, verification, etc.). */
+  onMiniAgentStep?: (step: { id: number; label: string; status: "running" | "done" | "error"; detail?: string; url?: string }) => void;
 }
 
 async function scrapeForChat(query: string): Promise<ScrapedImage[]> {
@@ -85,6 +90,11 @@ export async function reply(o: ReplyOptions): Promise<StoredMessage> {
         .join("\n\n");
     }
 
+    const groundingNote = await gatherLiveGroundingNote(o.content, o.signal, o.onMiniAgentStep).catch(() => "");
+    if (groundingNote) {
+      pageNote = [pageNote, groundingNote].filter(Boolean).join("\n\n");
+    }
+
     const [system, compactSystem] = await Promise.all([
       chatSystemPrompt(o.ownerId, pageNote, { timeZone: o.timeZone }),
       chatSystemPrompt(o.ownerId, pageNote, { compact: true, timeZone: o.timeZone }),
@@ -113,6 +123,15 @@ export async function reply(o: ReplyOptions): Promise<StoredMessage> {
   let clean = await absorbMemories(o.ownerId, text).catch(() => stripMemoryTags(text));
   const status = takeStatusTag(clean);
   clean = status.text;
+
+  // Sanitize YouTube links: verify IDs via oEmbed, strip dead links, correct wrong titles.
+  if (!o.signal?.aborted && clean) {
+    const { text: sanitized } = await sanitizeYouTubeInReply(clean, {
+      verify: verifyYouTubeVideo,
+      signal: o.signal,
+    }).catch(() => ({ text: clean }));
+    clean = sanitized;
+  }
   if (status.mood) meta.mood = status.mood;
   meta.suggestAgent = AGENT_TAG.test(clean);
   AGENT_TAG.lastIndex = 0;
@@ -133,6 +152,25 @@ export async function reply(o: ReplyOptions): Promise<StoredMessage> {
     if (images.length) {
       meta.scrapedImages = images.slice(0, STORED_IMAGES);
       meta.imageQuery = finalQuery;
+    }
+  }
+
+  // Pre-resolve imageQuery fields inside any dynamic ```ui blocks so portrait/media cards load immediately.
+  if (process.env.SENKO_DISABLE_IMAGE_SCRAPE !== "1" && !o.signal?.aborted) {
+    const uiQueries = extractUIImageQueries(clean);
+    if (uiQueries.length) {
+      const uiImages: Record<string, string[]> = {};
+      await Promise.allSettled(
+        uiQueries.slice(0, 6).map(async (qStr) => {
+          const imgs = await scrapeForChat(qStr);
+          if (imgs.length) {
+            uiImages[qStr] = imgs.slice(0, 12).map((i) => i.url);
+          }
+        })
+      );
+      if (Object.keys(uiImages).length) {
+        meta.uiImages = uiImages;
+      }
     }
   }
 

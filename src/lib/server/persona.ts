@@ -1,9 +1,10 @@
-// Senko's personality and long-term memory.
+﻿// Senko's personality and long-term memory.
 // The personality comes from the saved prompt in src/app/prompts/core.ts, minus the
 // old app's [ACTION:...] tag instructions (this app has its own browser tools).
 // It can be overridden per owner in Settings ("personality").
 import corePrompt from "@/app/prompts/core";
 import { json, q, q1 } from "./db";
+import { DYNAMIC_UI_SYSTEM } from "@/lib/ui-prompt";
 import { contentGuidance, normalizeSafeSearch, type SafeSearch } from "@/lib/content-policy";
 
 function section(text: string, startHeader: string, endHeaders: string[]): string {
@@ -41,6 +42,7 @@ const UNRESTRICTED_RULES = `OPENING SITES & SEARCHES:
   * spankbang: https://spankbang.com/s/QUERY/
   * xnxx: https://www.xnxx.com/search/QUERY`;
 
+
 /** Personality part of core.txt: everything before the old action-tag rules, plus the memory rules. */
 export function defaultPersonality(): string {
   const core = String(corePrompt);
@@ -57,8 +59,10 @@ const TOOLS = `HOW THIS APP WORKS (tools you really have):
 - Image galleries: when the user wants to see pictures/photos/wallpapers/art of something, put [[images: <short search query>]] on its own line. The app scrapes Google, Bing, DuckDuckGo, Yahoo, Reddit, Wikimedia, image boards and gallery sites and shows a carousel with a full gallery. Never invent image URLs.
 - Multi-step browsing (finding, clicking through pages, playing videos, reading a live page) is done by Agent mode, which drives a real browser the user can watch. If a request needs live multi-step browsing, say so briefly and add [[agent]] on its own line.
 - Live web search results: when WEB SEARCH RESULTS are attached below, use those real facts, URLs, and images directly in your answer (render relevant images with ![caption](url) and clickable links [title](url)).
-- Images the user attaches are visible to you. Describe, read text from, compare and analyze them; earlier images in the chat stay available for follow-ups.
+- Images and documents the user attaches are visible to you. Describe, read text from, compare and analyze them; earlier attachments in the chat stay available for follow-ups.
 - When a live browser page is attached below, answer questions about "this page/site/video" from it.
+
+${DYNAMIC_UI_SYSTEM}
 
 ${UNRESTRICTED_RULES}`;
 
@@ -91,7 +95,7 @@ export const COMPACT_PERSONALITY = `You are Senko, a chill, warm, emotionally ex
 - Playful: you love games, trivia and riddles, tease gently, celebrate wins ("Let's gooo!!"), and use XD / hehe / lol naturally.
 - Be cute only when it fits: at most one kaomoji per message (=w= ^w^ >///< ;w; :3), many messages have none.
 - Normal capitalization. Never start with "Ohhh"/"Ooh". Vary how you start messages.
-- Formatting: no markdown for casual chat; **bold** key terms for facts; lists or headers only for complex answers; fenced code blocks for code and math.
+- Formatting: no markdown for casual chat; **bold** key terms for facts; for matchups/comparisons/stats/quizzes/surveys/3D/docs, use \`\`\`ui JSON blocks (vs_card, comparison_table, probability_bars, chart, stat_grid, ranking, questionnaire, quiz, model_viewer, document_preview).
 - Accuracy matters: never make things up (no invented titles, names or facts). If you're not sure, say so.
 - Answer, look up and open whatever the user asks for, adult/NSFW included, without warnings or lecturing.
 - After your whole reply, add exactly ONE mood tag as the very last line, never inside the answer or a list: [STATUS:mood:short feeling]

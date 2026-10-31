@@ -5,6 +5,7 @@ import actionsPrompt from "@/app/prompts/actions";
 import browserPrompt from "@/app/prompts/browser";
 import researchPrompt from "@/app/prompts/research";
 import memoryPrompt from "@/app/prompts/memory";
+import { DYNAMIC_UI_SYSTEM } from "@/lib/ui-prompt";
 
 import type { BrowserInfo, LocationInfo, SenkoTab } from "@/types/chat";
 
@@ -46,6 +47,9 @@ export function buildLayeredPrompt(ctx: PromptContext): string {
 
   // Layer 1.75: Integrity & accuracy (always included — governs honesty and fact-checking)
   layers.push(integrityPrompt);
+
+  // Layer 1.9: Universal UI composition (topic-agnostic rich layouts, plain text for casual chat)
+  layers.push(DYNAMIC_UI_SYSTEM);
 
   // Layer 2: Actions (when agent mode is on)
   if (ctx.agentMode) {

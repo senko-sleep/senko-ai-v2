@@ -24,6 +24,14 @@ export interface Msg {
   scrapedImages?: ScrapedImage[];
   /** Query the gallery uses to load more images. */
   imageQuery?: string;
+  /** Pre-resolved image URLs keyed by imageQuery for dynamic UI components. */
+  uiImages?: Record<string, string[]>;
+  /** Live task steps shown in the mini-agent panel during a chat-mode research task. */
+  miniAgentSteps?: AgentStep[];
+  /** Whether the mini-agent is still running (steps not yet finalised). */
+  miniAgentRunning?: boolean;
+  /** Short label for the mini-agent task (e.g. "Searching YouTube"). */
+  miniAgentLabel?: string;
 }
 
 export interface ScrapedImage {
@@ -55,6 +63,7 @@ export interface StoredMessage {
     mood?: string;
     scrapedImages?: ScrapedImage[];
     imageQuery?: string;
+    uiImages?: Record<string, string[]>;
   };
 }
 
@@ -75,6 +84,7 @@ export function fromStored(m: StoredMessage): Msg {
     mood: meta.mood || legacyMood || undefined,
     scrapedImages: meta.scrapedImages?.length ? meta.scrapedImages : undefined,
     imageQuery: meta.imageQuery || undefined,
+    uiImages: meta.uiImages || undefined,
     provider: meta.providerLabel ? `${meta.providerLabel}${meta.model ? ` · ${meta.model}` : ""}` : undefined,
     agent: meta.agent
       ? {

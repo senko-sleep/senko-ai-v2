@@ -85,6 +85,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           onStart: (info) => send({ type: "start", ...info }),
           onDelta: (text) => send({ type: "delta", text }),
           onImages: (info) => send({ type: "images", ...info }),
+          onMiniAgentStep: (step) => send({ type: "mini_agent_step", step }),
         });
         if (message.meta.error && !message.content) send({ type: "error", error: message.meta.error, assistantMessageId: message.id });
         else send({ type: "done", message });

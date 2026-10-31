@@ -244,6 +244,7 @@ export function ChatArea({
                           : undefined
                       }
                       onOpenLink={onOpenLink}
+                      onSendMessage={onSendMessage}
                       isStreaming={isLastAssistant && isStreaming && !message.isThinking}
                     />
                   </div>
