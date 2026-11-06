@@ -26,7 +26,7 @@ export async function GET(req: NextRequest) {
   }
 
   const start = Date.now();
-  const res = await searchMultiEngineImages(query, page, limit);
+  const res = await searchMultiEngineImages(query, page, limit, AbortSignal.any([req.signal, AbortSignal.timeout(12_000)]));
   const ms = Date.now() - start;
 
   return Response.json({

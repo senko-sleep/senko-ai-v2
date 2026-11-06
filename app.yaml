@@ -9,7 +9,7 @@ capabilities:
 enableDatabase: true
 annotations:
   anybuild.run/provider: node
-  anybuild.run/version: 0.33.0
+  anybuild.run/version: 0.33.2
   wasmer.io/version: 7.5.0
   anybuild.run/config:
     commands:

@@ -689,7 +689,8 @@ async function scrapeGalleryImages(query: string): Promise<ScrapedImage[]> {
 export async function searchMultiEngineImages(
   rawQuery: string,
   page = 1,
-  limit = IMAGES_BATCH_SIZE
+  limit = IMAGES_BATCH_SIZE,
+  signal?: AbortSignal,
 ): Promise<{
   images: ScrapedImage[];
   query: string;
@@ -716,32 +717,42 @@ export async function searchMultiEngineImages(
     : Promise.resolve([]);
 
   const nsfw = /\b(r34|rule\s*34|nsfw|hentai|porn|xxx|lewd|nude|naked|explicit|ecchi)\b/i.test(query);
-  const [proxyResults, bingResults, ddgResults, redditResults, wikimediaResults, wallhavenResults, booruResults, galleryResults] =
-    await Promise.all([
-      proxyPromise,
-      fetchBingImages(pagedQuery, page),
-      fetchDDGImages(pagedQuery, page),
-      fetchRedditImages(query, page),
-      fetchWikimediaImages(query, page),
-      fetchWallhavenImages(query, page, nsfw),
-      fetchBooruEngines(query, page),
-      scrapeGalleryImages(pagedQuery),
-    ]);
+  const jobs = [
+    fetchBingImages(pagedQuery, page),
+    fetchDDGImages(pagedQuery, page),
+    fetchWallhavenImages(query, page, nsfw),
+    fetchBooruEngines(query, page),
+    scrapeGalleryImages(pagedQuery),
+    fetchRedditImages(query, page),
+    fetchWikimediaImages(query, page),
+    proxyPromise,
+  ];
+  const results: ScrapedImage[][] = jobs.map(() => []);
+  const settled = Promise.all(jobs.map(async (job, index) => {
+    results[index] = await job.catch(() => []);
+  }));
+  // Keep batches that finished before the caller's deadline.
+  if (signal) {
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        signal.removeEventListener("abort", finish);
+        resolve();
+      };
+      if (signal.aborted) finish();
+      else {
+        signal.addEventListener("abort", finish, { once: true });
+        void settled.then(finish);
+      }
+    });
+  } else {
+    await settled;
+  }
 
   const images: ScrapedImage[] = [];
   const seen = new Set<string>();
 
   // Interleave all engine batches so the first ~255 images represent every browser/source
-  const batches: ScrapedImage[][] = [
-    bingResults,
-    ddgResults,
-    wallhavenResults,
-    booruResults,
-    galleryResults,
-    redditResults,
-    wikimediaResults,
-    proxyResults,
-  ].filter((b) => b.length > 0);
+  const batches = results.filter((b) => b.length > 0);
 
   const maxLen = batches.length ? Math.max(...batches.map((b) => b.length)) : 0;
   for (let i = 0; i < maxLen && images.length < limit; i++) {
@@ -836,6 +847,30 @@ export function detectImageIntentQuery(userMessage: string): string | undefined 
   }
 
   return undefined;
+}
+
+export function detectCollageRequest(message: string) {
+  // Leave ambiguous follow-ups and requests to write code to the conversation model.
+  const raw = message.trim();
+  if (raw.length > 400) return;
+  const request = raw.replace(/^(?:please\s+)?(?:(?:can|could) you\s+)?/i, "");
+  const direct = /^(?:make|build|create|show(?: me)?|put together|find)\s+(?:an?\s+|the\s+)?(?:(?:ui|image|photo|art|responsive|visual|pinterest-style)\s+)*(?:collage|gallery)\s+(?:of|for|featuring|with)\s+([^\n]+)/i.exec(request);
+  const retrievalFirst = /^(?:find|get|search for|show(?: me)?)\s+(?:\d+\s+)?(?:images?|pictures?|photos?|pics?)\s+of\s+(.+?)\s+(?:and|then)\s+(?:make|build|create|arrange|put)\b[^\n]*\b(?:collage|gallery)\b/i.exec(request);
+  const description = direct?.[1] || retrievalFirst?.[1];
+  if (!description) return;
+  if (/\b(?:and|then)\s+(?:add|include|compare|explain)\b/i.test(description)) return;
+  const [subjectPhrase] = description.split(/\s*[,;]\s*|\s+(?:using|with|(?:and\s+)?find|(?:but|and)\s+make|(?:i\s+)?want you to|in an?\s|as an?\s)\b/i);
+  const leadingCount = /^([1-9]\d{0,3})\s+/.exec(subjectPhrase);
+  const subject = subjectPhrase.replace(/\s+(?:like|in the style of)\s+(?:a\s+)?(?:pinterest|printest)\b.*$/i, "").replace(/[.!?]+$/, "").replace(/^\d+\s+|\s+(?:images?|pics?|pictures?|photos?)$/gi, "").trim();
+  if (!subject || /^(?:these|those|the attached|my)\b/i.test(subject)) return;
+  const countMatch = /\b([1-9]\d{0,3})\s*[- ]\s*(?:images?|pics?|pictures?|photos?)\b/i.exec(raw);
+  const count = Number(countMatch?.[1] ?? leadingCount?.[1] ?? 10);
+  const colsMatch = /\b([2-4])\s*[- ]?\s*columns?\b/i.exec(raw);
+  const cols = colsMatch ? Number(colsMatch[1]) : /\b(?:strip|single column)\b/i.test(raw) ? 1 : Math.min(3, count);
+  const masonry = /\b(?:pinterest|printest|masonry|staggered)\b/i.test(raw);
+  const uniform = /\b(?:grid|uniform|contact sheet)\b/i.test(raw);
+  const layout = masonry ? "masonry" : uniform || cols === 1 ? "grid" : /\bmosaic\b/i.test(raw) ? "mosaic" : "auto";
+  return { query: subject, count, cols, layout };
 }
 
 function cleanExtractedSubject(input: string): string {

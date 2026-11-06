@@ -272,6 +272,9 @@ export function MarkdownRenderer({ content, messageId, isStreaming = false, onSe
             />
           );
         }
+        if (seg.kind === "ui_error") {
+          return <p key={idx} role="status" className="text-sm text-[var(--sk-muted)]">The interactive layout could not be rendered.</p>;
+        }
         if (seg.kind === "ui_pending") {
           return <UIPendingSkeleton key={idx} previewTitle={seg.previewTitle} previewType={seg.previewType} />;
         }

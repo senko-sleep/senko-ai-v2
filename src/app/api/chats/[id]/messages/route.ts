@@ -84,6 +84,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           signal: ctl.signal,
           onStart: (info) => send({ type: "start", ...info }),
           onDelta: (text) => send({ type: "delta", text }),
+          onPreview: (content) => send({ type: "preview", content }),
           onImages: (info) => send({ type: "images", ...info }),
           onMiniAgentStep: (step) => send({ type: "mini_agent_step", step }),
         });

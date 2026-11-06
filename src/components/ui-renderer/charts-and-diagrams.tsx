@@ -36,6 +36,8 @@ export function resolveColor(color?: string, index = 0): string {
 
 export function ChartView({
   chartType: initialChartType,
+  appearance,
+  switchable = true,
   title,
   subtitle,
   labels,
@@ -45,6 +47,8 @@ export function ChartView({
   height = 240,
 }: {
   chartType: "bar" | "horizontal_bar" | "line" | "area" | "radar" | "donut";
+  appearance?: "plain";
+  switchable?: boolean;
   title?: string;
   subtitle?: string;
   labels: string[];
@@ -53,7 +57,8 @@ export function ChartView({
   caption?: string;
   height?: number;
 }) {
-  const [chartType, setChartType] = useState(initialChartType);
+  const [selectedType, setChartType] = useState<typeof initialChartType>();
+  const chartType = (switchable && selectedType) || initialChartType;
   const [hiddenSeries, setHiddenSeries] = useState<Set<number>>(new Set());
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
@@ -78,7 +83,7 @@ export function ChartView({
   const maxVal = Math.max(1, ...allValues, 0);
 
   return (
-    <div className="my-3 rounded-2xl border border-[var(--sk-line)] bg-[var(--sk-glass)] p-4">
+    <div className={appearance === "plain" ? "my-3 min-w-0" : "my-3 min-w-0 rounded-2xl border border-[var(--sk-line)] bg-[var(--sk-glass)] p-4"}>
       <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div>
           {title && <h4 className="text-[14.5px] font-semibold text-[var(--sk-text)]">{title}</h4>}
@@ -106,8 +111,8 @@ export function ChartView({
               );
             })}
 
-          {labels.length >= 2 && (
-            <div className="flex items-center gap-1 rounded-full border border-[var(--sk-line)] bg-white/[0.02] p-0.5">
+          {switchable && labels.length >= 2 && (
+            <div className="flex max-w-full flex-wrap items-center gap-1 rounded-xl border border-[var(--sk-line)] bg-white/[0.02] p-0.5">
               {(
                 [
                   { id: "bar", label: "Bar" },
@@ -120,8 +125,9 @@ export function ChartView({
                 <button
                   key={t.id}
                   type="button"
+                  aria-pressed={chartType === t.id}
                   onClick={() => setChartType(t.id)}
-                  className={`rounded-full px-2 py-0.5 text-[10.5px] font-medium transition ${
+                  className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-medium transition ${
                     chartType === t.id
                       ? "bg-[var(--sk-accent-soft)] text-[var(--sk-accent-ink)]"
                       : "text-[var(--sk-muted)] hover:text-[var(--sk-text)]"

@@ -336,7 +336,7 @@ export const MessageBubble = memo(function MessageBubble({
           />
         )}
 
-        {msg.content && !msg.error && (
+        {msg.content && (
           <div>
             <RichMessageContent
               messageId={msg.id}

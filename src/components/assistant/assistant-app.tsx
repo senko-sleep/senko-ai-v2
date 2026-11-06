@@ -624,14 +624,15 @@ export default function AssistantApp() {
       replyId: string,
       opts?: { userId?: string; truncateFrom?: { messageId?: string; index?: number } }
     ) => {
+      abortRef.current?.abort("replaced");
       const ctl = new AbortController();
       abortRef.current = ctl;
       setBusy(true);
       setStreamingId(replyId);
       let text = "";
-      let gotFirst = false;
-      // Local models can take a while to load; give up after 3 minutes of silence.
-      const timer = setTimeout(() => !gotFirst && ctl.abort("timeout"), 180_000);
+      // Local models can take a while to load. Bound silence before and during a reply.
+      const onIdle = () => ctl.abort("timeout");
+      let timer = setTimeout(onIdle, 180_000);
       try {
         const res = await fetch(`/api/chats/${chatId}/messages`, {
           method: "POST",
@@ -647,10 +648,14 @@ export default function AssistantApp() {
         });
         if (!res.ok) throw new Error(await errorFromResponse(res));
         let failed: string | null = null;
+        let finished = false;
+        let previewed = false;
         await readSSE(res, (d) => {
+          if (ctl.signal.aborted || abortRef.current !== ctl) return;
           const e = d as {
             type: string;
             text?: string;
+            content?: string;
             error?: string;
             message?: StoredMessage;
             providerLabel?: string;
@@ -676,32 +681,42 @@ export default function AssistantApp() {
                 : [...existing, e.step!];
               return { ...m, miniAgentSteps: updated, miniAgentRunning: true };
             });
+          } else if (e.type === "preview" && e.content) {
+            previewed = true;
+            clearTimeout(timer);
+            timer = setTimeout(onIdle, 180_000);
+            patch(replyId, (m) => ({ ...m, content: e.content! }));
           } else if (e.type === "delta" && e.text) {
-            gotFirst = true;
+            clearTimeout(timer);
+            timer = setTimeout(onIdle, 180_000);
             text += e.text;
             const shown = extractOpenTags(stripLiveTags(text)).clean;
             patch(replyId, (m) => ({ ...m, content: shown, miniAgentRunning: false }));
           } else if (e.type === "done" && e.message) {
+            finished = true;
             const final = fromStored(e.message);
-            patch(replyId, (m) => ({ ...final, id: m.id, provider: final.provider || m.provider, miniAgentSteps: m.miniAgentSteps, miniAgentRunning: false, miniAgentLabel: m.miniAgentLabel }));
+            patch(replyId, (m) => ({ ...final, id: m.id, provider: final.provider || m.provider, miniAgentSteps: previewed ? undefined : m.miniAgentSteps, miniAgentRunning: false, miniAgentLabel: m.miniAgentLabel }));
             if (final.actions?.[0]) openTab(final.actions[0].url); // may be blocked; the card stays
           } else if (e.type === "error") {
             failed = e.error || "Something went wrong.";
           }
         });
         if (failed) throw new Error(failed);
+        if (!finished && !ctl.signal.aborted) throw new Error("The reply ended before it was saved. Try again.");
         patch(replyId, (m) => ({ ...m, pending: false }));
       } catch (e) {
         const reason = ctl.signal.reason;
+        if (reason === "switch" || reason === "replaced") return;
         patch(replyId, (m) =>
           ctl.signal.aborted && reason !== "timeout"
-            ? { ...m, pending: false, content: m.content || "_Stopped._" }
+            ? { ...m, pending: false, miniAgentRunning: false, miniAgentSteps: undefined, content: m.content || "_Stopped._" }
             : {
                 ...m,
                 pending: false,
+                miniAgentRunning: false,
                 error:
                   reason === "timeout"
-                    ? "No reply after 3 minutes. The model may still be loading or busy. Try again, or pick another model in Settings."
+                    ? "The reply stalled for 3 minutes. Try again, or pick another model in Settings."
                     : networkError(e),
               }
         );

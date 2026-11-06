@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Bookmark, Expand, ImageOff, RefreshCw, X, ExternalLink } from "lucide-react";
 
 interface CandidateImage {
@@ -45,11 +45,11 @@ async function resolveImageQuery(query: string): Promise<CandidateImage[]> {
   if (queryCache.has(key)) return queryCache.get(key)!;
   if (inflightQueries.has(key)) return inflightQueries.get(key)!;
 
-  const job = fetch(`/api/images?q=${encodeURIComponent(query.trim())}&limit=20`)
+  const job = fetch(`/api/images?q=${encodeURIComponent(query.trim())}&limit=20`, { signal: AbortSignal.timeout(15_000) })
     .then((r) => (r.ok ? r.json() : { images: [] }))
     .then((data: { images?: CandidateImage[] }) => {
       const list = Array.isArray(data?.images) ? data.images.filter((i) => i && typeof i.url === "string") : [];
-      queryCache.set(key, list);
+      if (list.length) queryCache.set(key, list);
       return list;
     })
     .catch(() => [])
@@ -74,75 +74,133 @@ export function seedUIImageCache(map?: Record<string, string[]>) {
   }
 }
 
-export function SmartImage({
-  imageUrl,
-  imageQuery,
-  alt,
-  aspect = "portrait",
-  showBookmark = true,
-  className = "",
-}: {
+export type ImageDisplayStatus = "loading" | "ready" | "unavailable";
+
+interface SmartImageProps {
   imageUrl?: string;
   imageQuery?: string;
+  sourceUrl?: string;
   alt: string;
-  aspect?: "portrait" | "video" | "square" | "auto";
+  width?: number;
+  height?: number;
+  aspect?: "portrait" | "video" | "square" | "auto" | "natural";
   showBookmark?: boolean;
+  quietActions?: boolean;
+  eager?: boolean;
+  onDisplayStatus?: (status: ImageDisplayStatus) => void;
   className?: string;
-}) {
+}
+
+export function SmartImage(props: SmartImageProps) {
+  // A new URL or search gets a fresh attempt, including preview and bookmark state.
+  return <ImageAttempt key={JSON.stringify([props.imageUrl, props.imageQuery])} {...props} />;
+}
+
+function ImageAttempt({
+  imageUrl,
+  imageQuery,
+  sourceUrl,
+  alt,
+  width,
+  height,
+  aspect = "portrait",
+  showBookmark = true,
+  quietActions = false,
+  eager = false,
+  onDisplayStatus,
+  className = "",
+}: SmartImageProps) {
   const [candidates, setCandidates] = useState<CandidateImage[]>(() =>
-    imageUrl ? [{ url: imageUrl, alt }] : []
+    imageUrl ? [{ url: imageUrl }] : []
   );
-  const [idx, setIdx] = useState(0);
-  const [loading, setLoading] = useState(!imageUrl && Boolean(imageQuery));
-  const [imgLoaded, setImgLoaded] = useState(false);
+  const [attempt, setAttempt] = useState({ index: 0, retries: 2 });
+  const [searching, setSearching] = useState(Boolean(imageQuery));
+  const [loadedUrl, setLoadedUrl] = useState<string>();
   const [saved, setSaved] = useState(false);
-  const [lightbox, setLightbox] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const imageRef = useRef<HTMLImageElement>(null);
+  const previewRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const closePreviewRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
+    if (!imageQuery) return;
     let active = true;
-    const initial: CandidateImage[] = imageUrl ? [{ url: imageUrl, alt }] : [];
-    setCandidates(initial);
-    setIdx(0);
-    setImgLoaded(false);
-
-    if (imageQuery) {
-      if (!imageUrl) setLoading(true);
-      resolveImageQuery(imageQuery).then((fetched) => {
-        if (!active) return;
-        const combined = [...initial];
-        for (const item of fetched) {
-          if (!combined.some((c) => c.url === item.url)) combined.push(item);
-        }
-        setCandidates(combined);
-        setLoading(false);
-      });
-    } else {
-      setLoading(false);
-    }
-
+    resolveImageQuery(imageQuery).then((fetched) => {
+      if (!active) return;
+      const distinct = new Map<string, CandidateImage>();
+      if (imageUrl) distinct.set(imageUrl, { url: imageUrl });
+      for (const item of fetched) {
+        if (!distinct.has(item.url)) distinct.set(item.url, item);
+      }
+      setCandidates([...distinct.values()]);
+      setSearching(false);
+    });
     return () => {
       active = false;
     };
-  }, [imageUrl, imageQuery, alt]);
+  }, [imageUrl, imageQuery]);
 
+  const idx = attempt.index;
   const current = candidates[idx];
   const currentUrl = current?.url;
+  const currentSource = current?.source || (currentUrl === imageUrl ? sourceUrl : undefined);
+  const imgLoaded = Boolean(currentUrl && loadedUrl === currentUrl);
+  const status: ImageDisplayStatus = imgLoaded ? "ready" : currentUrl || searching ? "loading" : "unavailable";
+
+  useEffect(() => {
+    onDisplayStatus?.(status);
+  }, [onDisplayStatus, status]);
 
   useEffect(() => {
     setSaved(currentUrl ? isBookmarked(currentUrl) : false);
   }, [currentUrl]);
 
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!previewOpen || !dialog || dialog.open) return;
+    dialog.showModal();
+    closePreviewRef.current?.focus({ preventScroll: true });
+  }, [previewOpen]);
+
   const handleError = useCallback(() => {
-    setImgLoaded(false);
-    setIdx((prev) => (prev + 1 < candidates.length ? prev + 1 : candidates.length));
-  }, [candidates.length]);
+    setAttempt((prev) => prev !== attempt ? prev : {
+      index: prev.retries > 0 ? prev.index + 1 : -1,
+      retries: prev.retries - 1,
+    });
+  }, [attempt]);
+
+  useEffect(() => {
+    const image = imageRef.current;
+    if (!image || !currentUrl || imgLoaded) return;
+    // The image may have finished while React was hydrating server-rendered markup.
+    if (image.complete) {
+      if (image.naturalWidth > 0) setLoadedUrl(currentUrl);
+      else handleError();
+      return;
+    }
+    // Lazy images only start their deadline once the browser is close to showing them.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const observer = !eager && typeof IntersectionObserver !== "undefined"
+      ? new IntersectionObserver((entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        observer?.disconnect();
+        timer = setTimeout(handleError, 9_000);
+      }, { rootMargin: "200px" })
+      : undefined;
+    if (observer) observer.observe(image);
+    else timer = setTimeout(handleError, 9_000);
+    return () => {
+      observer?.disconnect();
+      clearTimeout(timer);
+    };
+  }, [currentUrl, eager, handleError, imgLoaded]);
 
   const cycleImage = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
       if (candidates.length <= 1) return;
-      setImgLoaded(false);
-      setIdx((prev) => (prev + 1) % candidates.length);
+      setAttempt((prev) => ({ index: (prev.index + 1) % candidates.length, retries: 2 }));
     },
     [candidates.length]
   );
@@ -154,18 +212,17 @@ export function SmartImage({
       ? "aspect-video"
       : aspect === "square"
       ? "aspect-square"
+      : aspect === "natural"
+      ? "min-h-24"
       : "min-h-[180px] max-h-[360px]";
 
   return (
     <>
       <div
-        onClick={() => currentUrl && setLightbox(true)}
-        className={`group/img relative w-full overflow-hidden rounded-2xl border border-[var(--sk-line)] bg-[var(--sk-raised)] ${
-          currentUrl ? "cursor-pointer" : ""
-        } ${aspectCls} ${className}`}
+        style={aspect === "natural" && width && height ? { aspectRatio: `${width} / ${height}` } : undefined}
+        className={`group/img relative w-full overflow-hidden rounded-2xl border border-[var(--sk-line)] bg-[var(--sk-raised)] ${aspectCls} ${className}`}
       >
-        {/* Shimmer while loading */}
-        {(loading || (currentUrl && !imgLoaded)) && (
+        {status === "loading" && (
           <div className="sk-skel absolute inset-0 flex items-center justify-center">
             <span className="sr-only">Loading {alt}</span>
           </div>
@@ -175,25 +232,40 @@ export function SmartImage({
           // eslint-disable-next-line @next/next/no-img-element
           <img
             key={currentUrl}
+            ref={imageRef}
             src={currentUrl}
             alt={alt}
-            loading="lazy"
+            width={width}
+            height={height}
+            loading={eager ? "eager" : "lazy"}
+            decoding="async"
             referrerPolicy="no-referrer"
-            onLoad={() => setImgLoaded(true)}
+            onLoad={() => setLoadedUrl(currentUrl)}
             onError={handleError}
-            className={`h-full w-full object-cover transition-all duration-300 group-hover/img:scale-[1.015] ${
+            className={`${aspect === "natural" ? "block h-auto w-full" : "h-full w-full object-cover"} motion-safe:transition-[opacity,transform] motion-safe:duration-300 motion-safe:group-hover/img:scale-[1.015] ${
               imgLoaded ? "opacity-100" : "opacity-0"
             }`}
           />
-        ) : !loading ? (
-          <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 p-4 text-center text-[var(--sk-muted)]">
+        ) : status === "unavailable" ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 px-2 text-center text-[var(--sk-muted)]">
             <ImageOff size={20} className="opacity-50" aria-hidden />
-            <span className="text-[11.5px] font-medium">{alt}</span>
+            <span className="text-[11.5px] font-medium" title={alt}>Image unavailable</span>
           </div>
         ) : null}
 
+        {imgLoaded && (
+          <button
+            ref={previewRef}
+            type="button"
+            aria-haspopup="dialog"
+            aria-label={`Open preview for ${alt}`}
+            onClick={() => setPreviewOpen(true)}
+            className="absolute inset-0 cursor-zoom-in rounded-[inherit] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--sk-accent)]"
+          />
+        )}
+
         {/* Top-right floating action controls (Bookmark like ChatGPT screenshot + cycle image) */}
-        {currentUrl && (
+        {currentUrl && imgLoaded && (
           <div className="absolute right-2.5 top-2.5 z-10 flex items-center gap-1.5">
             {candidates.length > 1 && (
               <button
@@ -216,7 +288,9 @@ export function SmartImage({
                 className={`flex h-7 w-7 items-center justify-center rounded-full backdrop-blur-md transition ${
                   saved
                     ? "bg-[var(--sk-accent)] text-white opacity-100"
-                    : "bg-black/55 text-white/85 opacity-85 hover:bg-black/75 hover:text-white group-hover/img:opacity-100"
+                    : quietActions
+                      ? "bg-black/55 text-white/90 hover:bg-black/75 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/img:opacity-100 focus-visible:opacity-100"
+                      : "bg-black/55 text-white/85 opacity-85 hover:bg-black/75 hover:text-white group-hover/img:opacity-100"
                 }`}
                 title={saved ? "Saved" : "Save image"}
                 aria-label={saved ? "Saved image" : "Save image"}
@@ -229,7 +303,7 @@ export function SmartImage({
         )}
 
         {/* Subtle expand icon on hover */}
-        {currentUrl && (
+        {imgLoaded && (
           <div className="pointer-events-none absolute bottom-2.5 right-2.5 flex h-6 w-6 items-center justify-center rounded-full bg-black/50 text-white/80 opacity-0 backdrop-blur-sm transition group-hover/img:opacity-100">
             <Expand size={11} />
           </div>
@@ -237,24 +311,25 @@ export function SmartImage({
       </div>
 
       {/* Lightbox Modal */}
-      {lightbox && currentUrl && (
-        <div
-          className="sk-fade fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-md"
-          onClick={() => setLightbox(false)}
-          role="dialog"
-          aria-modal="true"
+      {previewOpen && currentUrl && (
+        <dialog
+          ref={dialogRef}
+          className="m-auto max-h-[92dvh] max-w-[min(92vw,64rem)] overflow-auto rounded-2xl border border-white/15 bg-[#0e0a08] p-2 text-white backdrop:bg-black/85"
+          onClick={(e) => { if (e.target === e.currentTarget) e.currentTarget.close(); }}
+          onClose={() => {
+            setPreviewOpen(false);
+            previewRef.current?.focus({ preventScroll: true });
+          }}
           aria-label={alt}
         >
-          <div
-            className="relative flex max-h-[90vh] max-w-4xl flex-col items-center overflow-hidden rounded-2xl border border-white/15 bg-[#0e0a08] p-2 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
+          <div className="flex flex-col items-center">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={currentUrl}
               alt={alt}
               referrerPolicy="no-referrer"
-              className="max-h-[78vh] w-auto rounded-xl object-contain"
+              loading="lazy"
+              className="max-h-[78dvh] max-w-full rounded-xl object-contain"
             />
             <div className="mt-2 flex w-full items-center justify-between gap-3 px-2 py-1 text-xs text-white/80">
               <span className="truncate font-medium">{alt}</span>
@@ -268,9 +343,9 @@ export function SmartImage({
                     <RefreshCw size={11} /> Next image ({idx + 1}/{candidates.length})
                   </button>
                 )}
-                {current?.source && (
+                {currentSource && (
                   <a
-                    href={current.source}
+                    href={currentSource}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] hover:bg-white/10"
@@ -279,8 +354,9 @@ export function SmartImage({
                   </a>
                 )}
                 <button
+                  ref={closePreviewRef}
                   type="button"
-                  onClick={() => setLightbox(false)}
+                  onClick={() => dialogRef.current?.close()}
                   className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-white/15 bg-white/10 hover:bg-white/20"
                   aria-label="Close preview"
                 >
@@ -289,7 +365,7 @@ export function SmartImage({
               </div>
             </div>
           </div>
-        </div>
+        </dialog>
       )}
     </>
   );

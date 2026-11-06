@@ -60,6 +60,7 @@ describe("identity + linking", { timeout: 30_000 }, () => {
     const m1 = await addMessage(chat.id, "user", "First question");
     await addMessage(chat.id, "assistant", "First answer");
     const m3 = await addMessage(chat.id, "user", "Second question");
+    await expect(addMessage(chat.id, "assistant", "Stale reply", [], {}, "m_stale", m1)).rejects.toThrow("newer message");
     await addMessage(chat.id, "assistant", "Second answer");
     await addMessage(chat.id, "user", "Third question");
     await addMessage(chat.id, "assistant", "Third answer");

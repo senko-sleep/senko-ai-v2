@@ -3,13 +3,13 @@
 import { openStream, type LlmMessage } from "@/lib/llm";
 import { extractOpenTags } from "@/lib/browser-commands";
 import { sessions } from "@/lib/agent/sessions";
-import { extractUIImageQueries } from "@/lib/ui-schema";
-import { addMessage, getMessages, maybeTitle, toLlmHistory, type MessageMeta, type StoredMessage } from "./chats";
+import { addMessage, getMessages, maybeTitle, saveImage, toLlmHistory, type MessageMeta, type StoredMessage } from "./chats";
 import { newId } from "./db";
 import { absorbMemories, chatSystemPrompt, stripMemoryTags, takeStatusTag } from "./persona";
-import { detectImageIntentQuery, extractImagesTag, searchMultiEngineImages, type ScrapedImage } from "./images";
+import { detectCollageRequest, detectImageIntentQuery, extractImagesTag, searchMultiEngineImages, type ScrapedImage } from "./images";
 import { gatherLiveGroundingNote } from "./grounding";
 import { sanitizeYouTubeInReply, verifyYouTubeVideo } from "./youtube";
+import { verifyGalleryImages } from "./gallery-images";
 
 const AGENT_TAG = /\[\[\s*agent\s*\]\]/gi;
 const ABOUT_PAGE =
@@ -29,18 +29,20 @@ export interface ReplyOptions {
   signal?: AbortSignal;
   /** Tests only: pretend these providers fail. */
   simulateFail?: string[];
-  onStart?: (info: { userMessageId: string; assistantMessageId: string; provider: string; providerLabel: string; model: string }) => void;
+  onStart?: (info: { userMessageId: string; assistantMessageId: string; provider?: string; providerLabel?: string; model?: string }) => void;
   onDelta?: (text: string) => void;
+  onPreview?: (content: string) => void;
   /** Fired as soon as images scraped for an image request are ready. */
   onImages?: (info: { query: string; images: ScrapedImage[] }) => void;
   /** Fired for each live mini-agent task step during grounding (YouTube search, verification, etc.). */
   onMiniAgentStep?: (step: { id: number; label: string; status: "running" | "done" | "error"; detail?: string; url?: string }) => void;
 }
 
-async function scrapeForChat(query: string): Promise<ScrapedImage[]> {
+async function scrapeForChat(query: string, signal?: AbortSignal): Promise<ScrapedImage[]> {
   if (process.env.SENKO_DISABLE_IMAGE_SCRAPE === "1") return [];
   try {
-    return (await searchMultiEngineImages(query, 1)).images;
+    const deadline = AbortSignal.timeout(12_000);
+    return (await searchMultiEngineImages(query, 1, STORED_IMAGES, signal ? AbortSignal.any([signal, deadline]) : deadline)).images;
   } catch {
     return [];
   }
@@ -51,14 +53,59 @@ export async function reply(o: ReplyOptions): Promise<StoredMessage> {
   await maybeTitle(o.chatId, o.content || "Image", o.provider);
   const assistantMessageId = newId("m_");
 
+  const collage = o.imageIds?.length ? undefined : detectCollageRequest(o.content);
+  if (collage) {
+    o.onStart?.({ userMessageId, assistantMessageId });
+    o.onMiniAgentStep?.({ id: 1, label: `Finding images of ${collage.query}`, status: "running" });
+    const images = await scrapeForChat(collage.query, o.signal);
+    const items: { title: string; imageUrl: string; sourceUrl?: string; width: number; height: number }[] = [];
+    const verifyDeadline = AbortSignal.timeout(16_000);
+    const signal = o.signal ? AbortSignal.any([o.signal, verifyDeadline]) : verifyDeadline;
+    const label = "Checking and preparing images";
+    o.onMiniAgentStep?.({ id: 1, label: `Finding images of ${collage.query}`, status: images.length ? "done" : "error" });
+    if (images.length) o.onMiniAgentStep?.({ id: 2, label, status: "running" });
+    let layout = collage.layout;
+    const galleryContent = () => {
+      const gallery = { type: "gallery", curated: true, title: collage.query, cols: collage.cols, layout, items };
+      return "```ui\n" + JSON.stringify(gallery) + "\n```";
+    };
+    for await (const batch of verifyGalleryImages(collage.query, images, Math.min(collage.count, 30), signal)) {
+      if (o.signal?.aborted) break;
+      const saved = await Promise.allSettled(batch.map(async ({ candidate, data, width, height }) => ({
+        title: candidate.alt.slice(0, 180) || collage.query,
+        imageUrl: `/api/uploads/${await saveImage(o.ownerId, "image/webp", data)}`,
+        sourceUrl: candidate.source || candidate.url,
+        width,
+        height,
+      })));
+      for (const result of saved) if (result.status === "fulfilled") items.push(result.value);
+      if (items.length && !o.signal?.aborted) {
+        if (layout === "auto") {
+          const ratios = items.map(({ width, height }) => width / height);
+          layout = Math.max(...ratios) - Math.min(...ratios) > 0.45 ? "masonry" : "grid";
+        }
+        o.onPreview?.(galleryContent());
+      }
+    }
+    const stopped = o.signal?.aborted;
+    if (images.length) o.onMiniAgentStep?.({ id: 2, label, status: !stopped && items.length ? "done" : "error" });
+    const summary = items.length < collage.count ? `\n\n${items.length} of ${collage.count} requested images were usable.` : "";
+    const content = items.length ? galleryContent() + summary
+      : stopped ? "Stopped the image search." : "I couldn’t verify any usable images for this gallery. Try a more specific search.";
+    const meta: MessageMeta = stopped ? { interrupted: true } : {};
+    await addMessage(o.chatId, "assistant", content, [], meta, assistantMessageId, userMessageId);
+    return { id: assistantMessageId, role: "assistant", content, imageIds: [], meta, createdAt: new Date().toISOString() };
+  }
+
   let text = "";
   const meta: MessageMeta = {};
 
   // Image requests ("show me pics of X") scrape every engine in parallel with the reply.
-  const imageQuery = o.imageIds?.length ? undefined : detectImageIntentQuery(o.content);
+  const composedUI = /\b(?:make|build|design|create|compose)\b[\s\S]*\b(?:dashboard|workspace|interface|layout|catalog|profile|page)\b/i.test(o.content);
+  const imageQuery = o.imageIds?.length || composedUI ? undefined : detectImageIntentQuery(o.content);
   let imagesJob: Promise<ScrapedImage[]> | null = null;
   if (imageQuery) {
-    imagesJob = scrapeForChat(imageQuery).then((images) => {
+    imagesJob = scrapeForChat(imageQuery, o.signal).then((images) => {
       if (images.length) o.onImages?.({ query: imageQuery, images: images.slice(0, STORED_IMAGES) });
       return images;
     });
@@ -145,7 +192,7 @@ export async function reply(o: ReplyOptions): Promise<StoredMessage> {
   let finalQuery = imageQuery;
   if (!imagesJob && tagged.query && !o.signal?.aborted) {
     finalQuery = tagged.query;
-    imagesJob = scrapeForChat(tagged.query);
+    imagesJob = scrapeForChat(tagged.query, o.signal);
   }
   if (imagesJob && finalQuery) {
     const images = await imagesJob.catch(() => [] as ScrapedImage[]);
@@ -155,25 +202,6 @@ export async function reply(o: ReplyOptions): Promise<StoredMessage> {
     }
   }
 
-  // Pre-resolve imageQuery fields inside any dynamic ```ui blocks so portrait/media cards load immediately.
-  if (process.env.SENKO_DISABLE_IMAGE_SCRAPE !== "1" && !o.signal?.aborted) {
-    const uiQueries = extractUIImageQueries(clean);
-    if (uiQueries.length) {
-      const uiImages: Record<string, string[]> = {};
-      await Promise.allSettled(
-        uiQueries.slice(0, 6).map(async (qStr) => {
-          const imgs = await scrapeForChat(qStr);
-          if (imgs.length) {
-            uiImages[qStr] = imgs.slice(0, 12).map((i) => i.url);
-          }
-        })
-      );
-      if (Object.keys(uiImages).length) {
-        meta.uiImages = uiImages;
-      }
-    }
-  }
-
-  await addMessage(o.chatId, "assistant", clean, [], meta, assistantMessageId);
+  await addMessage(o.chatId, "assistant", clean, [], meta, assistantMessageId, userMessageId);
   return { id: assistantMessageId, role: "assistant", content: clean, imageIds: [], meta, createdAt: new Date().toISOString() };
 }

@@ -7,6 +7,8 @@ import {
   evaluateCondition,
 } from "@/lib/ui-schema";
 import { extractDocumentFromFile } from "@/lib/document-extractor";
+import { detectCollageRequest } from "@/lib/server/images";
+import { relevantImageCandidates } from "@/lib/server/gallery-images";
 
 describe("Dynamic UI Schema & Intelligent Message Rendering System", () => {
   describe("parseTolerantJSON", () => {
@@ -264,6 +266,44 @@ describe("Dynamic UI Schema & Intelligent Message Rendering System", () => {
       expect(segments).toHaveLength(2);
       expect(segments[0].kind).toBe("markdown");
       expect(segments[1].kind).toBe("ui_pending");
+      expect(parseMessageSegments(partialStream)[1].kind).toBe("ui_error");
+    });
+
+    it("preserves completed blocks and renders complete JSON even when its closing fence is missing", () => {
+      const complete = '```ui\n{"type":"text","content":"First panel"}\n```';
+      const trailing = '```ui\n{"type":"text","content":"Second panel"}';
+      expect(parseMessageSegments(`${complete}\n${trailing}`, true).map((s) => s.kind)).toEqual(["ui", "ui"]);
+      expect(parseMessageSegments(`${complete}\n${trailing.slice(0, -3)}`).map((s) => s.kind)).toEqual(["ui", "ui_error"]);
+      expect(parseMessageSegments(`\`\`\`\`md\n${complete}\n\`\`\`\``).map((s) => s.kind)).toEqual(["markdown"]);
+    });
+
+    it("keeps column spans paired with valid children", () => {
+      expect(validateUINode({ type: "grid", cols: 3, children: [null, { type: "text", content: "Lead", colSpan: 2 }, "Detail"] }))
+        .toMatchObject({ type: "grid", spans: [2, 1] });
+      expect(validateUINode({ type: "grid", cols: 2, tracks: [9, -1], children: ["Main", "Aside"] }))
+        .toMatchObject({ type: "grid", tracks: [4, 1] });
+    });
+
+    it("extracts a collage subject, count, and requested layout", () => {
+      expect(detectCollageRequest("make a UI image collage of Eevee want you to find 10 images"))
+        .toEqual({ query: "Eevee", count: 10, cols: 3, layout: "auto" });
+      expect(detectCollageRequest("Create a collage of red foxes using 8 photos in a 4-column grid"))
+        .toEqual({ query: "red foxes", count: 8, cols: 4, layout: "grid" });
+      expect(detectCollageRequest("Make an image collage of Anya Forger but make the environment feel like a printest gallery"))
+        .toEqual({ query: "Anya Forger", count: 10, cols: 3, layout: "masonry" });
+      expect(detectCollageRequest("How do I make an image collage of Eevee?")).toBeUndefined();
+    });
+
+    it("keeps the masonry layout when rendering a generated gallery", () => {
+      const items = [{ imageUrl: "/api/uploads/i_a", width: 640, height: 960 }];
+      expect(validateUINode({ type: "gallery", layout: "masonry", curated: true, cols: 4, items }))
+        .toMatchObject({ type: "gallery", layout: "masonry", curated: true, cols: 4, items });
+    });
+
+    it("uses subject metadata rather than unrelated results to fill a gallery", () => {
+      const hit = { url: "https://example.test/art/anya-forger.webp", alt: "Illustration", source: "", engine: "test" };
+      const wrong = { ...hit, url: "https://example.test/art/yor.webp", alt: "Yor Forger" };
+      expect(relevantImageCandidates("Anya Forger fanart", [wrong, hit])).toEqual([hit]);
     });
   });
 

@@ -114,7 +114,7 @@ export const MiniAgentPanel = memo(function MiniAgentPanel({
 
   const doneCount = steps.filter((s) => s.status === "done").length;
   const hasError = steps.some((s) => s.status === "error");
-  const label = taskLabel || "Working on it…";
+  const label = taskLabel || (running ? "Working on it…" : hasError ? "Task finished with issues" : "Task complete");
   const summary =
     steps.length === 0
       ? "Starting…"

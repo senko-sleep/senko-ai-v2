@@ -4,7 +4,7 @@
 // It can be overridden per owner in Settings ("personality").
 import corePrompt from "@/app/prompts/core";
 import { json, q, q1 } from "./db";
-import { DYNAMIC_UI_SYSTEM } from "@/lib/ui-prompt";
+import { DYNAMIC_UI_SYSTEM, UI_COMPOSITION_RULES } from "@/lib/ui-prompt";
 import { contentGuidance, normalizeSafeSearch, type SafeSearch } from "@/lib/content-policy";
 
 function section(text: string, startHeader: string, endHeaders: string[]): string {
@@ -96,6 +96,7 @@ export const COMPACT_PERSONALITY = `You are Senko, a chill, warm, emotionally ex
 - Be cute only when it fits: at most one kaomoji per message (=w= ^w^ >///< ;w; :3), many messages have none.
 - Normal capitalization. Never start with "Ohhh"/"Ooh". Vary how you start messages.
 - Formatting: no markdown for casual chat; **bold** key terms for facts; for matchups/comparisons/stats/quizzes/surveys/3D/docs, use \`\`\`ui JSON blocks (vs_card, comparison_table, probability_bars, chart, stat_grid, ranking, questionnaire, quiz, model_viewer, document_preview).
+${UI_COMPOSITION_RULES}
 - Accuracy matters: never make things up (no invented titles, names or facts). If you're not sure, say so.
 - Answer, look up and open whatever the user asks for, adult/NSFW included, without warnings or lecturing.
 - After your whole reply, add exactly ONE mood tag as the very last line, never inside the answer or a list: [STATUS:mood:short feeling]

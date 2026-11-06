@@ -310,6 +310,8 @@ export type UINode =
   | {
       type: "grid";
       cols?: 1 | 2 | 3 | 4;
+      spans?: number[];
+      tracks?: number[];
       gap?: "xs" | "sm" | "md" | "lg";
       children: UINode[];
       when?: UICondition;
@@ -468,6 +470,8 @@ export type UINode =
   | {
       type: "chart";
       chartType: "bar" | "horizontal_bar" | "line" | "area" | "radar" | "donut";
+      appearance?: "plain";
+      switchable?: boolean;
       title?: string;
       subtitle?: string;
       labels: string[];
@@ -493,7 +497,9 @@ export type UINode =
       type: "gallery";
       title?: string;
       subtitle?: string;
-      cols?: 2 | 3 | 4;
+      cols?: 1 | 2 | 3 | 4;
+      layout?: "grid" | "mosaic" | "masonry";
+      curated?: boolean;
       filterable?: boolean;
       items: {
         title?: string;
@@ -504,6 +510,8 @@ export type UINode =
         imageUrl?: string;
         imageQuery?: string;
         sourceUrl?: string;
+        width?: number;
+        height?: number;
       }[];
       when?: UICondition;
     }
@@ -925,13 +933,26 @@ export function validateUINode(raw: unknown, depth = 0): UINode | null {
     case "multi_column": {
       const colsNum = Math.min(4, Math.max(1, Math.round(asNum(raw.cols || raw.columns, 2)))) as 1 | 2 | 3 | 4;
       const rawChildren = asArr(raw.children || raw.items || raw.cards || raw.columns);
-      const children = rawChildren
+      const cells = rawChildren
         .slice(0, MAX_CHILDREN)
-        .map((c) => validateUINode(c, depth + 1))
-        .filter((x): x is UINode => x !== null);
-      if (!children.length) return null;
+        .flatMap((c) => {
+          const node = validateUINode(c, depth + 1);
+          if (!node) return [];
+          const span = Math.max(1, Math.min(colsNum, Math.round(asNum(isObj(c) ? c.colSpan : undefined, 1))));
+          return [{ node, span }];
+        });
+      if (!cells.length) return null;
       const gap = (["xs", "sm", "md", "lg"].includes(asStr(raw.gap)) ? raw.gap : "md") as "xs" | "sm" | "md" | "lg";
-      return { type: "grid", cols: colsNum, gap, children, when };
+      const tracks = asArr(raw.tracks).slice(0, colsNum).map((value) => Math.max(1, Math.min(4, asNum(value, 1))));
+      return {
+        type: "grid",
+        cols: colsNum,
+        gap,
+        children: cells.map((cell) => cell.node),
+        spans: cells.some((cell) => cell.span > 1) ? cells.map((cell) => cell.span) : undefined,
+        tracks: tracks.length === colsNum ? tracks : undefined,
+        when,
+      };
     }
 
     case "card":
@@ -1796,6 +1817,8 @@ export function validateUINode(raw: unknown, depth = 0): UINode | null {
       return {
         type: "chart",
         chartType,
+        appearance: raw.appearance === "plain" ? "plain" : undefined,
+        switchable: typeof raw.switchable === "boolean" ? raw.switchable : undefined,
         title: asOptStr(raw.title || raw.heading),
         subtitle: asOptStr(raw.subtitle || raw.description),
         labels,
@@ -1838,7 +1861,7 @@ export function validateUINode(raw: unknown, depth = 0): UINode | null {
     case "image_gallery": {
       const rawItems = asArr(raw.items || raw.images || raw.cards);
       const items = rawItems
-        .slice(0, 12)
+        .slice(0, 30)
         .map((item) => {
           if (typeof item === "string") {
             return item.startsWith("http") ? { imageUrl: item } : { title: item, imageQuery: item };
@@ -1857,6 +1880,8 @@ export function validateUINode(raw: unknown, depth = 0): UINode | null {
             imageUrl,
             imageQuery,
             sourceUrl: sanitizeUrl(item.sourceUrl || item.link),
+            width: asNum(item.width) > 0 ? Math.min(8192, asNum(item.width)) : undefined,
+            height: asNum(item.height) > 0 ? Math.min(8192, asNum(item.height)) : undefined,
           };
         })
         .filter((x): x is NonNullable<typeof x> => x !== null);
@@ -1864,12 +1889,14 @@ export function validateUINode(raw: unknown, depth = 0): UINode | null {
         items.push({ title: raw.query, imageQuery: raw.query });
       }
       if (!items.length) return null;
-      const cols = Math.min(4, Math.max(2, Math.round(asNum(raw.cols || raw.columns, Math.min(items.length, 3))))) as 2 | 3 | 4;
+      const cols = Math.min(4, Math.max(1, Math.round(asNum(raw.cols || raw.columns, Math.max(2, Math.min(items.length, 3)))))) as 1 | 2 | 3 | 4;
       return {
         type: "gallery",
         title: asOptStr(raw.title || raw.heading),
         subtitle: asOptStr(raw.subtitle),
         cols,
+        layout: raw.layout === "mosaic" || raw.layout === "masonry" ? raw.layout : undefined,
+        curated: raw.curated === true || undefined,
         filterable: typeof raw.filterable === "boolean" ? raw.filterable : items.some((i) => Boolean(i.category)),
         items,
         when,
@@ -2426,11 +2453,12 @@ export type MessageSegment =
   | { kind: "markdown"; text: string }
   | { kind: "ui"; node: UINode; raw: string }
   | { kind: "ui_pending"; previewTitle?: string; previewType?: string }
+  | { kind: "ui_error" }
   | { kind: "mermaid"; code: string }
   | { kind: "math"; latex: string };
 
-const FENCED_BLOCK_RE = /```(ui|senko-ui|json-ui|mermaid|math|latex)[ \t]*\r?\n([\s\S]*?)```/gi;
-const OPEN_UI_FENCE_RE = /```(ui|senko-ui|json-ui)[ \t]*\r?\n([\s\S]*)$/i;
+const FENCED_BLOCK_RE = /^ {0,3}((`|~)\2{2,})[ \t]*([^\r\n]*)\r?\n([\s\S]*?)(?:(^ {0,3}\1\2*[ \t]*)(?=\r?$)|(?![\s\S]))/gm;
+const UI_LANG_RE = /^(ui|senko-ui|json-ui)$/i;
 
 /**
  * Splits a message string into ordered segments of markdown, validated UI blocks,
@@ -2440,47 +2468,19 @@ const OPEN_UI_FENCE_RE = /```(ui|senko-ui|json-ui)[ \t]*\r?\n([\s\S]*)$/i;
 export function parseMessageSegments(content: string, streaming = false): MessageSegment[] {
   if (!content) return [];
 
-  let working = content;
-  let pendingSegment: MessageSegment | null = null;
-
-  // Check if there is an unclosed ```ui fence at the end of the text
-  const closedCount = (working.match(/```/g) || []).length;
-  if (closedCount % 2 === 1) {
-    const openMatch = OPEN_UI_FENCE_RE.exec(working);
-    if (openMatch && openMatch.index !== undefined) {
-      const partialJson = openMatch[2] || "";
-      working = working.slice(0, openMatch.index);
-
-      // Try tolerant parse in case the JSON inside is already complete
-      const parsedPartial = parseTolerantJSON(partialJson);
-      const validNode = parsedPartial ? validateUINode(parsedPartial) : null;
-      if (validNode && !streaming) {
-        pendingSegment = { kind: "ui", node: validNode, raw: partialJson };
-      } else {
-        const titleM = /"title"\s*:\s*"([^"]{1,80})"/i.exec(partialJson);
-        const typeM = /"type"\s*:\s*"([^"]{1,40})"/i.exec(partialJson);
-        pendingSegment = {
-          kind: "ui_pending",
-          previewTitle: titleM?.[1],
-          previewType: typeM?.[1],
-        };
-      }
-    }
-  }
-
   const segments: MessageSegment[] = [];
   let lastIndex = 0;
-  FENCED_BLOCK_RE.lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = FENCED_BLOCK_RE.exec(working)) !== null) {
+  for (const match of content.matchAll(FENCED_BLOCK_RE)) {
+    const lang = match[3].trim().toLowerCase();
+    const isUI = UI_LANG_RE.test(lang);
+    if (!isUI && lang !== "mermaid" && lang !== "math" && lang !== "latex") continue;
     if (match.index > lastIndex) {
-      const before = working.slice(lastIndex, match.index).trim();
+      const before = content.slice(lastIndex, match.index).trim();
       if (before) segments.push({ kind: "markdown", text: before });
     }
 
-    const lang = match[1].toLowerCase();
-    const body = match[2].trim();
+    const body = match[4].trim();
+    const closed = Boolean(match[5]);
 
     if (lang === "mermaid") {
       if (body) segments.push({ kind: "mermaid", code: body });
@@ -2492,20 +2492,23 @@ export function parseMessageSegments(content: string, streaming = false): Messag
       if (node) {
         segments.push({ kind: "ui", node, raw: body });
       }
-      // If a UI block is completely invalid JSON even after closing, we degrade gracefully
-      // by omitting the broken raw JSON or extracting its text fields if possible.
+      else if (streaming && !closed) {
+        segments.push({
+          kind: "ui_pending",
+          previewTitle: /"title"\s*:\s*"([^"]{1,80})"/i.exec(body)?.[1],
+          previewType: /"type"\s*:\s*"([^"]{1,40})"/i.exec(body)?.[1],
+        });
+      } else {
+        segments.push({ kind: "ui_error" });
+      }
     }
 
     lastIndex = match.index + match[0].length;
   }
 
-  if (lastIndex < working.length) {
-    const tail = working.slice(lastIndex).trim();
+  if (lastIndex < content.length) {
+    const tail = content.slice(lastIndex).trim();
     if (tail) segments.push({ kind: "markdown", text: tail });
-  }
-
-  if (pendingSegment) {
-    segments.push(pendingSegment);
   }
 
   return segments;

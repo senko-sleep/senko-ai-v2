@@ -417,19 +417,35 @@ function compatProvider(c: CompatConfig): Provider {
 /** POST with a 45s limit on *connecting* only (long answers can keep streaming). */
 async function connect(url: string, body: unknown, headers: Record<string, string>, signal?: AbortSignal) {
   const ctl = new AbortController();
-  const onAbort = () => ctl.abort();
-  signal?.addEventListener("abort", onAbort, { once: true });
   const timer = setTimeout(() => ctl.abort(), 45_000);
   try {
     return await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify(body),
-      signal: ctl.signal,
+      signal: signal ? AbortSignal.any([signal, ctl.signal]) : ctl.signal,
     });
   } catch (e) {
     if (signal?.aborted) throw e;
     throw new ProviderError(`couldn't connect (${e instanceof Error ? e.message : e})`, 0, 30_000);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Bound silence after a provider has opened its response body. */
+async function readStreamChunk(reader: ReadableStreamDefaultReader<Uint8Array>) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new ProviderError("model stream stopped sending data", 408, null));
+          void reader.cancel().catch(() => {});
+        }, 60_000);
+      }),
+    ]);
   } finally {
     clearTimeout(timer);
   }
@@ -455,7 +471,7 @@ async function* sseContent(body: ReadableStream<Uint8Array>): AsyncGenerator<str
   let buf = "";
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readStreamChunk(reader);
       if (done) break;
       buf += decoder.decode(value, { stream: true });
       const lines = buf.split("\n");
@@ -464,7 +480,8 @@ async function* sseContent(body: ReadableStream<Uint8Array>): AsyncGenerator<str
         const line = raw.trim();
         if (!line.startsWith("data:")) continue;
         const data = line.slice(5).trim();
-        if (!data || data === "[DONE]") continue;
+        if (data === "[DONE]") return;
+        if (!data) continue;
         let j: { error?: { message?: string } | string; choices?: { delta?: { content?: string }; finish_reason?: string | null }[] };
         try {
           j = JSON.parse(data);
@@ -484,6 +501,7 @@ async function* sseContent(body: ReadableStream<Uint8Array>): AsyncGenerator<str
       }
     }
   } finally {
+    void reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }
@@ -533,14 +551,14 @@ async function* ollamaLines(body: ReadableStream<Uint8Array>): AsyncGenerator<st
   let buf = "";
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readStreamChunk(reader);
       if (done) break;
       buf += decoder.decode(value, { stream: true });
       const lines = buf.split("\n");
       buf = lines.pop() || "";
       for (const line of lines) {
         if (!line.trim()) continue;
-        let j: { error?: string; message?: { content?: string } };
+        let j: { done?: boolean; error?: string; message?: { content?: string } };
         try {
           j = JSON.parse(line);
         } catch {
@@ -551,6 +569,7 @@ async function* ollamaLines(body: ReadableStream<Uint8Array>): AsyncGenerator<st
       }
     }
   } finally {
+    void reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }

@@ -22,7 +22,7 @@ interface FakeProvider {
 }
 
 /** A Groq-like API: rpm/tpm per model over a trailing minute, counting input + max_tokens. */
-function fakeGroq(o: { rpm: number; tpm?: number; latencyMs?: number; retryAfterS?: number }): FakeProvider {
+function fakeGroq(o: { rpm: number; tpm?: number; latencyMs?: number; retryAfterS?: number; onStreamCancel?: () => void }): FakeProvider {
   const st: FakeProvider = { served: 0, rejected: 0, maxInFlight: 0, hits: [] };
   const log = new Map<string, { at: number; tokens: number }[]>();
   let inFlight = 0;
@@ -53,7 +53,11 @@ function fakeGroq(o: { rpm: number; tpm?: number; latencyMs?: number; retryAfter
     inFlight--;
     st.served++;
     const sse = `data: ${JSON.stringify({ choices: [{ delta: { content: '{"action":"scroll","direction":"down","thought":"looking further"}' } }] })}\n\ndata: [DONE]\n\n`;
-    return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+    const bodyStream = o.onStreamCancel ? new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode(sse)); },
+      cancel: o.onStreamCancel,
+    }) : sse;
+    return new Response(bodyStream, { status: 200, headers: { "content-type": "text/event-stream" } });
   });
   return st;
 }
@@ -105,6 +109,15 @@ afterEach(() => {
 });
 
 describe("LLM pacing under realistic workloads", () => {
+  it("completes on the SSE terminal marker even if the provider never closes the connection", async () => {
+    const cancel = vi.fn();
+    fakeGroq({ rpm: 10, onStreamCancel: cancel });
+    const llm = await freshLlm("rpm=10,tpm=100000,concurrency=2");
+    const result = await llm.complete(step(0), { maxTokens: 100 });
+    expect(result.text).toContain('"action":"scroll"');
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it("a burst never goes over the limit: extra requests wait instead of getting 429s", async () => {
     const api = fakeGroq({ rpm: 5 });
     const llm = await freshLlm("rpm=5,tpm=100000,concurrency=20");

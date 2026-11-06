@@ -1,6 +1,6 @@
 "use client";
 
-import React, { Component, memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import React, { Component, memo, useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Copy,
   ExternalLink,
+  ImageOff,
   Info,
   Lightbulb,
   Quote,
@@ -39,7 +40,7 @@ import {
   type UIValue,
   type UIVerdict,
 } from "@/lib/ui-schema";
-import { SmartImage, seedUIImageCache } from "./smart-image";
+import { SmartImage, seedUIImageCache, type ImageDisplayStatus } from "./smart-image";
 import { ChartView, DiagramView, MathView, formatLatexToReadable, resolveColor } from "./charts-and-diagrams";
 import { DocumentPreviewCard, ModelViewer3D } from "./model-and-doc-viewer";
 import { InteractiveControlsWidget, QuestionnaireWidget, QuizWidget } from "./interactive-widgets";
@@ -198,11 +199,15 @@ export const EnhancedMarkdown = memo(function EnhancedMarkdown({
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
         components={{
+          p: ({ node, children }) => node?.children.some((child) => child.type === "element" && child.tagName === "img")
+            ? <div className="my-2 flex flex-wrap items-start gap-2">{children}</div>
+            : <p>{children}</p>,
           img: ({ src, alt }) =>
             typeof src === "string" ? (
-              <span className="my-2 block max-w-sm">
+              <figure className="sk-message-image">
                 <SmartImage imageUrl={src} alt={alt || "Image"} aspect="auto" />
-              </span>
+                {alt && <figcaption className="mt-1 text-xs text-[var(--sk-muted)]"><span>{alt}</span></figcaption>}
+              </figure>
             ) : null,
           a: ({ href, children }) => {
             const childText = String(children);
@@ -1055,24 +1060,76 @@ function RankingWidget({
   );
 }
 
-// ── Gallery: captioned image grid with optional category filter ──────────────
-function GalleryWidget({ node }: { node: Extract<UINode, { type: "gallery" }> }) {
+type GalleryNode = Extract<UINode, { type: "gallery" }>;
+
+function GalleryPhoto({ item, id, index, aspect, className, onStatus }: {
+  item: GalleryNode["items"][number];
+  id: string;
+  index: number;
+  aspect: "natural" | "video";
+  className?: string;
+  onStatus?: (id: string, status: ImageDisplayStatus) => void;
+}) {
+  const report = useCallback((status: ImageDisplayStatus) => onStatus?.(id, status), [id, onStatus]);
+  return (
+    <SmartImage
+      imageUrl={item.imageUrl}
+      imageQuery={item.imageQuery}
+      sourceUrl={item.sourceUrl}
+      width={item.width}
+      height={item.height}
+      alt={item.title || `Gallery image ${index + 1}`}
+      aspect={aspect}
+      className={className}
+      eager={Boolean(onStatus)}
+      quietActions={Boolean(onStatus)}
+      onDisplayStatus={onStatus ? report : undefined}
+    />
+  );
+}
+
+// ── Gallery: art-first collection or captioned media grid ──────────────────
+function GalleryWidget({ node }: { node: GalleryNode }) {
   const [cat, setCat] = useState("ALL");
+  const [display, setDisplay] = useState<Record<string, ImageDisplayStatus>>({});
+  const reportDisplay = useCallback((id: string, status: ImageDisplayStatus) => {
+    setDisplay((current) => current[id] === status ? current : { ...current, [id]: status });
+  }, []);
   const cats = useMemo(
     () => [...new Set(node.items.map((i) => i.category).filter((c): c is string => Boolean(c)))],
     [node.items]
   );
-  const items = cat === "ALL" ? node.items : node.items.filter((i) => i.category === cat);
-  const gCols =
-    node.cols === 2 ? "grid-cols-2" : node.cols === 4 ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-2 sm:grid-cols-3";
+  const items = node.items.map((item, index) => ({
+    item,
+    index,
+    id: JSON.stringify([index, item.imageUrl, item.imageQuery]),
+  })).filter(({ item }) => cat === "ALL" || !cats.includes(cat) || item.category === cat);
+  const gCols = node.cols === 1 ? "grid-cols-1" : node.cols === 2 ? "grid-cols-2" : node.cols === 4
+    ? "grid-cols-2 @min-[34rem]:grid-cols-4" : "grid-cols-2 @min-[28rem]:grid-cols-3";
+  const mosaic = node.layout === "mosaic" && node.cols === 3 && items.length >= 4;
+  const masonry = node.layout === "masonry";
+  const masonryCols = node.cols === 1 ? "columns-1" : node.cols === 2 ? "columns-2" : node.cols === 4
+    ? "columns-2 @min-[34rem]:columns-4" : "columns-2 @min-[28rem]:columns-3";
+  const loaded = items.filter(({ id }) => display[id] === "ready").length;
+  const unavailable = items.filter(({ id }) => display[id] === "unavailable").length;
+  const pending = items.length - loaded - unavailable;
+  const visible = node.curated && !pending && unavailable > loaded
+    ? items.filter(({ id }) => display[id] !== "unavailable")
+    : items;
   return (
-    <div className="my-3">
-      {(node.title || node.subtitle || (node.filterable && cats.length > 1)) && (
-        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+    <section aria-label={node.title || "Image gallery"} className="@container my-3">
+      {(node.title || node.subtitle || node.curated || (node.filterable && cats.length > 1)) && (
+        <header className={`flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 ${node.curated ? "mb-3 border-b border-[var(--sk-line)] pb-2.5" : "mb-2"}`}>
           <div>
-            {node.title && <h4 className="text-[14.5px] font-semibold text-[var(--sk-text)]">{node.title}</h4>}
-            {node.subtitle && <p className="text-[12px] text-[var(--sk-muted)]">{node.subtitle}</p>}
+            {node.title && <h4 className={`font-semibold text-[var(--sk-text)] ${node.curated ? "text-[17px] tracking-tight" : "text-[14.5px]"}`}>{node.title}</h4>}
+            {node.subtitle && !node.curated && <p className="text-[12px] text-[var(--sk-muted)]">{node.subtitle}</p>}
           </div>
+          {node.curated && (
+            <p className="text-xs tabular-nums text-[var(--sk-muted)]">
+              {pending ? `${loaded} of ${items.length} displayed` : `${loaded} ${loaded === 1 ? "image" : "images"} displayed`}
+              {unavailable > 0 && ` · ${unavailable} unavailable`}
+            </p>
+          )}
           {node.filterable && cats.length > 1 && (
             <div className="flex flex-wrap gap-1">
               {["ALL", ...cats].map((c) => (
@@ -1080,6 +1137,7 @@ function GalleryWidget({ node }: { node: Extract<UINode, { type: "gallery" }> })
                   key={c}
                   type="button"
                   onClick={() => setCat(c)}
+                  aria-pressed={cat === c}
                   className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium transition ${
                     cat === c
                       ? "bg-[var(--sk-accent-soft)] text-[var(--sk-accent-ink)]"
@@ -1091,47 +1149,63 @@ function GalleryWidget({ node }: { node: Extract<UINode, { type: "gallery" }> })
               ))}
             </div>
           )}
-        </div>
+        </header>
       )}
-      <div className={`grid gap-3 ${gCols}`}>
-        {items.map((item, i) => (
-          <div key={i} className="flex flex-col">
-            <SmartImage
-              imageUrl={item.imageUrl}
-              imageQuery={item.imageQuery}
-              alt={item.title || "Gallery image"}
-              aspect="video"
-            />
-            {(item.title || item.subtitle || item.description) && (
-              <div className="mt-2">
-                <div className="flex items-center gap-1.5">
-                  {item.title && <div className="text-[13px] font-semibold text-[var(--sk-text)]">{item.title}</div>}
-                  {item.badge && (
-                    <span className="rounded-full bg-white/[0.07] px-1.5 text-[10px] text-[var(--sk-accent-ink)]">
-                      {item.badge}
-                    </span>
+      {!visible.length && (
+        <p className="flex items-center gap-2 rounded-xl bg-[var(--sk-raised)] px-3 py-3 text-sm text-[var(--sk-muted)]">
+          <ImageOff size={16} aria-hidden />
+          The gallery images could not be displayed.
+        </p>
+      )}
+      <div className={masonry ? `gap-2.5 @min-[28rem]:gap-3 ${masonryCols}` : `grid gap-3 ${gCols}`}>
+        {visible.map(({ item, id, index }, i) => {
+          const wide = mosaic && ((i === 0 && visible.length % 3 !== 0) || (i === visible.length - 1 && visible.length % 3 === 1));
+          return (
+            <div key={id} className={`min-w-0 ${masonry ? "mb-2.5 break-inside-avoid @min-[28rem]:mb-3" : ""} ${wide ? "@min-[28rem]:col-span-2" : ""}`}>
+              <GalleryPhoto
+                id={id}
+                item={item}
+                index={index}
+                aspect={masonry ? "natural" : "video"}
+                className={`${wide ? "@min-[28rem]:aspect-[32/9]" : ""} ${node.curated ? "!rounded-xl !border-0" : ""}`}
+                onStatus={node.curated ? reportDisplay : undefined}
+              />
+              {!node.curated && (item.title || item.subtitle || item.description || item.sourceUrl) && (
+                <div className="mt-2">
+                  <div className="flex items-center gap-1.5">
+                    {item.title && <div className="text-[13px] font-semibold text-[var(--sk-text)]">{item.title}</div>}
+                    {item.badge && (
+                      <span className="rounded-full bg-white/[0.07] px-1.5 text-[10px] text-[var(--sk-accent-ink)]">
+                        {item.badge}
+                      </span>
+                    )}
+                  </div>
+                  {item.subtitle && <div className="text-[11px] text-[var(--sk-muted)]">{item.subtitle}</div>}
+                  {item.description && (
+                    <p className="mt-0.5 text-[12px] leading-snug text-[var(--sk-text)]/80">{item.description}</p>
+                  )}
+                  {item.sourceUrl && (
+                    <a
+                      href={item.sourceUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[11px] text-[var(--sk-accent-ink)] hover:underline"
+                    >
+                      Source ↗
+                    </a>
                   )}
                 </div>
-                {item.subtitle && <div className="text-[11px] text-[var(--sk-muted)]">{item.subtitle}</div>}
-                {item.description && (
-                  <p className="mt-0.5 text-[12px] leading-snug text-[var(--sk-text)]/80">{item.description}</p>
-                )}
-                {item.sourceUrl && (
-                  <a
-                    href={item.sourceUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[11px] text-[var(--sk-accent-ink)] hover:underline"
-                  >
-                    Source ↗
-                  </a>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
+              )}
+            </div>
+          );
+        })}
       </div>
-    </div>
+      {node.curated && !pending && (
+        <span role="status" className="sr-only">
+          {loaded} {loaded === 1 ? "image" : "images"} displayed{unavailable > 0 && `, ${unavailable} unavailable`}.
+        </span>
+      )}
+    </section>
   );
 }
 
@@ -1420,7 +1494,7 @@ export function DynamicUIRenderer({
       if (!evaluateCondition(n.when, state)) return null;
 
       return (
-        <UINodeBoundary key={keyIdx}>
+        <UINodeBoundary key={keyIdx} fallbackText={n.type === "gallery" ? "The image gallery could not be displayed." : undefined}>
           {(() => {
             switch (n.type) {
               case "stack": {
@@ -1443,17 +1517,38 @@ export function DynamicUIRenderer({
               }
 
               case "grid": {
+                const tracks = n.tracks && n.tracks.length === n.cols
+                  ? n.tracks.map((weight) => `minmax(0, ${weight}fr)`).join(" ")
+                  : undefined;
+                const weightedCols = n.cols === 2
+                  ? "@min-[24rem]:grid-cols-(--ui-grid-tracks)"
+                  : "@min-[32rem]:grid-cols-(--ui-grid-tracks)";
                 const colsCls =
                   n.cols === 1
                     ? "grid-cols-1"
+                    : tracks
+                    ? `${n.cols === 4 ? "grid-cols-2" : "grid-cols-1"} ${weightedCols}`
                     : n.cols === 3
-                    ? "grid-cols-1 sm:grid-cols-3"
+                    ? "grid-cols-1 @min-[32rem]:grid-cols-3"
                     : n.cols === 4
-                    ? "grid-cols-2 sm:grid-cols-4"
-                    : "grid-cols-1 sm:grid-cols-2";
+                    ? "grid-cols-2 @min-[32rem]:grid-cols-4"
+                    : "grid-cols-1 @min-[24rem]:grid-cols-2";
                 const gapCls =
                   n.gap === "xs" ? "gap-2" : n.gap === "sm" ? "gap-2.5" : n.gap === "lg" ? "gap-4" : "gap-3";
-                return <div className={`my-2.5 grid ${colsCls} ${gapCls}`}>{n.children.map((c, i) => renderNode(c, i))}</div>;
+                const spanClasses = n.cols === 2
+                  ? ["", "", "@min-[24rem]:col-span-2"]
+                  : ["", "", "@min-[32rem]:col-span-2", "@min-[32rem]:col-span-3", "@min-[32rem]:col-span-4"];
+                return (
+                  <div className="@container my-2.5">
+                    <div className={`grid ${colsCls} ${gapCls} ${tracks ? "items-start" : ""}`} style={tracks ? { "--ui-grid-tracks": tracks } as CSSProperties : undefined}>
+                      {n.children.map((child, i) => n.spans
+                        ? evaluateCondition(child.when, state) && (
+                          <div key={i} className={`min-w-0 ${spanClasses[n.spans[i]] || ""}`}>{renderNode(child, i)}</div>
+                        )
+                        : renderNode(child, i))}
+                    </div>
+                  </div>
+                );
               }
 
               case "card": {
@@ -1620,6 +1715,8 @@ export function DynamicUIRenderer({
                 return (
                   <ChartView
                     chartType={n.chartType}
+                    appearance={n.appearance}
+                    switchable={n.switchable}
                     title={n.title}
                     subtitle={n.subtitle}
                     labels={n.labels}
@@ -1900,6 +1997,9 @@ export const RichMessageContent = memo(function RichMessageContent({
               onRunPrompt={onRunPrompt}
             />
           );
+        }
+        if (seg.kind === "ui_error") {
+          return <p key={idx} role="status" className="text-sm text-[var(--sk-muted)]">The interactive layout could not be rendered.</p>;
         }
         if (seg.kind === "ui_pending") {
           return <UIPendingSkeleton key={idx} previewTitle={seg.previewTitle} previewType={seg.previewType} />;

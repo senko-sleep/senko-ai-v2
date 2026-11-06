@@ -78,16 +78,23 @@ export async function addMessage(
   content: string,
   imageIds: string[] = [],
   meta: MessageMeta = {},
-  id = newId("m_")
+  id = newId("m_"),
+  replyTo?: string
 ) {
-  await q("INSERT INTO messages (id, chat_id, role, content, image_ids, meta) VALUES ($1, $2, $3, $4, $5, $6)", [
+  const rows = await q<{ id: string }>(`INSERT INTO messages (id, chat_id, role, content, image_ids, meta)
+    SELECT $1, $2, $3, $4, $5::jsonb, $6::jsonb
+    WHERE $7::text IS NULL OR $7 = (
+      SELECT id FROM messages WHERE chat_id = $2 AND role = 'user' ORDER BY seq DESC LIMIT 1
+    ) RETURNING id`, [
     id,
     chatId,
     role,
     content,
     JSON.stringify(imageIds),
     JSON.stringify(meta),
+    replyTo ?? null,
   ]);
+  if (!rows.length) throw new HttpError(409, "A newer message replaced this reply.");
   await q("UPDATE chats SET updated_at = now() WHERE id = $1", [chatId]);
   return id;
 }
