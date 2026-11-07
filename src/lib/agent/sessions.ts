@@ -25,9 +25,16 @@ export interface TabInfo {
   active: boolean;
 }
 
+export interface VerificationState {
+  active: boolean;
+  provider: string;
+  host: string;
+  summary: string;
+}
+
 export type BusEvent =
   | { type: "reset"; epoch?: number }
-  | { type: "status"; status: SessionStatus; tabs: TabInfo[]; takeover: boolean; live: LiveInfo; running: boolean; control: number; epoch: number; sessionId: string }
+  | { type: "status"; status: SessionStatus; tabs: TabInfo[]; takeover: boolean; live: LiveInfo; running: boolean; control: number; epoch: number; sessionId: string; verification?: VerificationState | null }
   | { type: "frame"; data: string; width: number; height: number; epoch?: number }
   | { type: "cursor"; x: number; y: number; kind: "move" | "click"; box?: { x: number; y: number; w: number; h: number } | null; width: number; height: number }
   | { type: "log"; text: string; level: "info" | "warn" | "error"; at: number }
@@ -89,17 +96,28 @@ const HEALTH_STRIKES = 3;
 // One input event (click, key, scroll) that takes longer than this means the tab's input
 // pipeline is stuck, even if its scripts still run. The tab is replaced so the queue moves on.
 const INPUT_STALL_MS = () => Math.max(3000, Number(process.env.BROWSER_INPUT_STALL_MS || 15_000));
-// Google's anti-abuse and preference cookies (never login cookies) carry over to a new chat's
-// fresh browser, so its first search doesn't look like a brand-new robot to Google.
+// Anti-abuse and verification clearance cookies (never login cookies) carry over to a new chat's
+// fresh browser so its first search or page visit doesn't look like a brand-new robot.
 const GOOGLE_TRUST_COOKIES = new Set(["NID", "AEC", "SOCS", "CONSENT", "GOOGLE_ABUSE_EXEMPTION", "__Secure-ENID", "1P_JAR"]);
+const CLEARANCE_COOKIES = new Set(["cf_clearance", "__cf_bm", "_cfuvid", "datadome", "_px3", "_pxvid", "_pxde"]);
 const gJar = globalThis as unknown as { __googleJar?: Map<string, Cookie[]> };
 const googleJar = (gJar.__googleJar ??= new Map());
 
-function googleTrustCookies(storage: unknown): Cookie[] {
+export function extractTrustCookies(storage: unknown): Cookie[] {
   const cookies = (storage as { cookies?: Cookie[] } | null)?.cookies;
   if (!Array.isArray(cookies)) return [];
   const now = Date.now() / 1000;
-  return cookies.filter((c) => GOOGLE_TRUST_COOKIES.has(c.name) && isGoogleHost(c.domain.replace(/^\./, "")) && (c.expires === -1 || c.expires > now));
+  return cookies.filter((c) => {
+    if (!(c.expires === -1 || c.expires > now)) return false;
+    const host = (c.domain || "").replace(/^\./, "");
+    if (GOOGLE_TRUST_COOKIES.has(c.name) && isGoogleHost(host)) return true;
+    if (CLEARANCE_COOKIES.has(c.name) && host.length > 0) return true;
+    return false;
+  });
+}
+
+function googleTrustCookies(storage: unknown): Cookie[] {
+  return extractTrustCookies(storage);
 }
 
 export function liveInfo(): LiveInfo {
@@ -113,9 +131,23 @@ export function liveInfo(): LiveInfo {
   };
 }
 
-// Runs in every page: keep navigation in the same tab and remember that the
-// agent's own clicks shouldn't spawn pop-ups.
+// Runs in every page: keep navigation in the same tab, remember that the agent's own clicks
+// shouldn't spawn pop-ups, and normalize standard desktop browser properties in headless mode.
 const INIT_SCRIPT = () => {
+  try {
+    if (navigator.webdriver) {
+      Object.defineProperty(navigator, "webdriver", { get: () => false, configurable: true });
+    }
+    const win = window as unknown as { chrome?: Record<string, unknown> };
+    if (!win.chrome) {
+      win.chrome = { runtime: {} };
+    }
+    if (!navigator.languages || navigator.languages.length === 0) {
+      Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"], configurable: true });
+    }
+  } catch {
+    /* ignore property descriptor restrictions */
+  }
   document.addEventListener(
     "click",
     (e) => {
@@ -225,6 +257,7 @@ export class BrowserSession {
   // An idle browser belongs to the user, including restored sessions.
   takeover = true;
   running = false;
+  verification: VerificationState | null = null;
   private agentLease: AbortSignal | null = null;
   viewEpoch = 0;
   lastUsed = Date.now();
@@ -293,6 +326,7 @@ export class BrowserSession {
       viewport: headed ? null : SCREEN,
       userAgent: desktopUserAgent(browser),
       locale: "en-US",
+      extraHTTPHeaders: { "Accept-Language": "en-US,en;q=0.9" },
       colorScheme: "dark",
       acceptDownloads: false, // never download files
       proxy: browserProxy(),
@@ -781,7 +815,7 @@ export class BrowserSession {
   subscribe(fn: (e: BusEvent) => void, refreshRate = FPS_CAP()): () => void {
     this.subs.add(fn);
     this.viewerRates.set(fn, Math.min(FPS_CAP(), Math.max(1, Number.isFinite(refreshRate) ? refreshRate : FPS_CAP())));
-    void this.tabs().then((tabs) => { if (this.subs.has(fn)) fn({ type: "status", status: this.status, tabs, takeover: this.takeover, live: liveInfo(), running: this.running, control: this.controlVersion, epoch: this.viewEpoch, sessionId: this.sessionId }); });
+    void this.tabs().then((tabs) => { if (this.subs.has(fn)) fn({ type: "status", status: this.status, tabs, takeover: this.takeover, live: liveInfo(), running: this.running, control: this.controlVersion, epoch: this.viewEpoch, sessionId: this.sessionId, verification: this.verification }); });
     for (const l of this.logs.slice(-20)) fn(l);
     for (const e of this.replay) fn(e);
     if (this.lastFrame) fn({ type: "frame", ...this.lastFrame });
@@ -827,8 +861,13 @@ export class BrowserSession {
   emitStatus() {
     if (!this.subs.size) return;
     void this.tabs().then((tabs) =>
-      this.emit({ type: "status", status: this.status, tabs, takeover: this.takeover, live: liveInfo(), running: this.running, control: this.controlVersion, epoch: this.viewEpoch, sessionId: this.sessionId })
+      this.emit({ type: "status", status: this.status, tabs, takeover: this.takeover, live: liveInfo(), running: this.running, control: this.controlVersion, epoch: this.viewEpoch, sessionId: this.sessionId, verification: this.verification })
     );
+  }
+
+  setVerification(info: Omit<VerificationState, "active"> | null) {
+    this.verification = info ? { active: true, ...info } : null;
+    this.emitStatus();
   }
 
   // ---- sound ------------------------------------------------------------------------------
@@ -1019,6 +1058,10 @@ export class BrowserSession {
     if (this.takeover === on && !resetInput) return;
     this.controlGeneration++;
     this.takeover = on;
+    if (!on) {
+      this.verification = null;
+      this.schedulePersist();
+    }
     // Release a drag before handing control to the agent, even if the viewer vanished.
     if (!on || resetInput) void this.releaseButtons();
     this.log(on ? "You took control of the browser." : "Control handed back to the agent.");
@@ -1029,6 +1072,7 @@ export class BrowserSession {
   beginAgent(signal: AbortSignal) {
     this.agentLease = signal;
     this.running = true;
+    this.verification = null;
     this.setTakeover(false);
     this.emitStatus();
   }

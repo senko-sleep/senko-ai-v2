@@ -9,6 +9,7 @@
 import type { BrowserContext, Page } from "playwright";
 import { safeParams, type SafeSearch } from "@/lib/content-policy";
 import {
+  detectPageBotChallenge,
   googleAvailable,
   googleRetryIn,
   isGoogleSorryUrl,
@@ -18,6 +19,7 @@ import {
   parseResultsUrl,
   reportGoogleCaptcha,
   reportGoogleOk,
+  type BotChallengeInfo,
   type SearchEngine,
   type SearchKind,
 } from "./google-gate";
@@ -42,6 +44,8 @@ export interface SearchSession {
   log(text: string, level?: "info" | "warn" | "error"): void;
   setTakeover(on: boolean): void;
   viewerCount(): number;
+  setVerification?(info: { provider: string; host: string; summary: string } | null): void;
+  persist?(): Promise<void>;
 }
 
 export interface SearchOptions {
@@ -130,6 +134,11 @@ export async function handOffGoogleCaptcha(s: SearchSession, signal: AbortSignal
   }
   const hadControl = s.takeover;
   s.setTakeover(true);
+  s.setVerification?.({
+    provider: "google",
+    host: "google.com",
+    summary: "Google requested a robot check. Solve it in the live browser and Senko will continue automatically.",
+  });
   s.log("Google wants to confirm you're not a robot. Please solve the check in the browser view; I'll continue by myself as soon as it's done.", "warn");
   const deadline = Date.now() + wait;
   let solved = false;
@@ -150,14 +159,110 @@ export async function handOffGoogleCaptcha(s: SearchSession, signal: AbortSignal
       }
     }
   } finally {
+    s.setVerification?.(null);
     // A user who pressed "Take control" aborted the run: the browser stays theirs.
     if (!signal.aborted && !hadControl) s.setTakeover(false);
   }
   if (solved) {
     reportGoogleOk("browser");
+    await s.persist?.().catch(() => {});
     s.log("Robot check done, thanks! Continuing the task.");
   } else if (!signal.aborted) {
     s.log(`The robot check wasn't solved in time, so I'm using Bing for now and will return to Google in ~${fmtMin(googleRetryIn("browser"))}.`, "warn");
+  }
+  return solved;
+}
+
+/**
+ * Universal bot-verification handoff for any site (Cloudflare Turnstile, PerimeterX, DataDome,
+ * CAPTCHA interstitials). If the challenge is auto-resolvable (e.g., Cloudflare JS check), waits
+ * briefly first; if interactive and a viewer is watching, hands control to the user in the live
+ * browser and resumes automatically as soon as the challenge clears, saving clearance cookies.
+ */
+export async function handOffBotChallenge(
+  s: SearchSession,
+  challenge: BotChallengeInfo,
+  signal: AbortSignal,
+  status?: (t: string) => void,
+): Promise<boolean> {
+  if (challenge.provider === "google") {
+    return handOffGoogleCaptcha(s, signal, status);
+  }
+
+  // Give auto-resolvable JS checks (like non-interactive Cloudflare interstitials) up to 4.5s to clear on their own.
+  if (challenge.autoResolvable) {
+    status?.(`Waiting for ${challenge.host} security check to complete…`);
+    for (let i = 0; i < 3 && !signal.aborted; i++) {
+      await sleep(1500, signal);
+      try {
+        const next = await detectPageBotChallenge(s.active());
+        if (!next) {
+          await s.persist?.().catch(() => {});
+          return true;
+        }
+      } catch {
+        /* page navigating */
+      }
+    }
+  }
+
+  const wait = CAPTCHA_WAIT_MS();
+  // If the client live-stream SSE is still connecting right at the start of a task, wait briefly (up to 2s) for a viewer.
+  if (s.viewerCount() === 0 && wait > 0 && !signal.aborted) {
+    for (let i = 0; i < 4 && s.viewerCount() === 0 && !signal.aborted; i++) {
+      await sleep(500, signal);
+    }
+  }
+
+  if (!wait || s.viewerCount() === 0) {
+    s.setVerification?.({
+      provider: challenge.provider,
+      host: challenge.host,
+      summary: challenge.summary,
+    });
+    s.log(`${challenge.summary} Open the live browser view to complete verification and resume.`, "warn");
+    return false;
+  }
+
+  const hadControl = s.takeover;
+  s.setTakeover(true);
+  s.setVerification?.({
+    provider: challenge.provider,
+    host: challenge.host,
+    summary: challenge.summary,
+  });
+  s.log(`${challenge.summary} I've handed you browser control and will continue automatically once it's cleared.`, "warn");
+  const deadline = Date.now() + Math.min(wait, 3 * 60_000);
+  let solved = false;
+  try {
+    while (!signal.aborted && Date.now() < deadline) {
+      status?.(`Verification needed on ${challenge.host} — complete the check in the browser (${fmtMin(deadline - Date.now())} left)…`);
+      await sleep(1500, signal);
+      if (signal.aborted) break;
+      let page: Page;
+      try {
+        page = s.active();
+      } catch {
+        continue;
+      }
+      const stillBlocked = await detectPageBotChallenge(page);
+      if (!stillBlocked) {
+        solved = true;
+        break;
+      }
+    }
+  } finally {
+    if (solved) {
+      s.setVerification?.(null);
+    }
+    if (!signal.aborted && !hadControl && solved) {
+      s.setTakeover(false);
+    }
+  }
+
+  if (solved) {
+    await s.persist?.().catch(() => {});
+    s.log(`Verification on ${challenge.host} complete — saved session cookies and resuming task.`);
   }
   return solved;
 }

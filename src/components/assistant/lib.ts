@@ -12,6 +12,8 @@ export interface Msg {
   actions?: BrowserCommand[];
   /** Assistant suggested running this request in Agent mode. */
   suggestAgent?: boolean;
+  /** A coding job this reply started in the workspace. */
+  codeTask?: string;
   /** Set on assistant messages produced by an agent run. */
   agent?: { goal: string; status: "running" | "done" | "stopped" | "error" | "paused"; trail?: ({ label: string; url?: string } | string)[]; url?: string };
   /** e.g. "Groq · openai/gpt-oss-120b" */
@@ -57,6 +59,7 @@ export interface StoredMessage {
     model?: string;
     actions?: BrowserCommand[];
     suggestAgent?: boolean;
+    codeTask?: string;
     error?: string;
     agent?: { goal: string; status: string; trail?: ({ label: string; url?: string } | string)[]; url?: string };
     interrupted?: boolean;
@@ -81,6 +84,7 @@ export function fromStored(m: StoredMessage): Msg {
     error: meta.error && !m.content ? meta.error : undefined,
     actions: meta.actions,
     suggestAgent: meta.suggestAgent,
+    codeTask: meta.codeTask,
     mood: meta.mood || legacyMood || undefined,
     scrapedImages: meta.scrapedImages?.length ? meta.scrapedImages : undefined,
     imageQuery: meta.imageQuery || undefined,
@@ -112,6 +116,29 @@ export interface AgentStep {
   status: "running" | "done" | "error";
   detail?: string;
   url?: string;
+  shotId?: string;
+}
+
+export interface BrowserTabInfo {
+  index: number;
+  title: string;
+  url: string;
+  active: boolean;
+}
+
+export interface VerificationInfo {
+  active: boolean;
+  provider: string;
+  host: string;
+  summary: string;
+}
+
+export interface ApprovalInfo {
+  key: string;
+  summary: string;
+  category: "financial" | "destructive" | "security" | "external" | "none";
+  reasons: string[];
+  url: string;
 }
 
 export interface ProviderInfo {
@@ -193,8 +220,9 @@ export function networkError(e: unknown): string {
 export const AGENT_TAG_RE = /\[\[\s*agent\s*\]\]/gi;
 const MEMORY_TAG_RE = /\[(?:MEMORY|STATUS):[^\]\n]*\]?/gi;
 const IMAGES_TAG_RE = /\[\[\s*images?\s*:[^\]\n]*(?:\]\]?)?/gi;
+const CODE_TAG_RE = /\[\[\s*code\s*:[^\]\n]*(?:\]\]?)?/gi;
 
 /** Hide tags the server strips anyway ([[agent]], [[images: ..]], [MEMORY:..]) while a reply is still streaming. */
 export function stripLiveTags(text: string): string {
-  return text.replace(AGENT_TAG_RE, "").replace(MEMORY_TAG_RE, "").replace(IMAGES_TAG_RE, "");
+  return text.replace(AGENT_TAG_RE, "").replace(MEMORY_TAG_RE, "").replace(IMAGES_TAG_RE, "").replace(CODE_TAG_RE, "");
 }

@@ -71,7 +71,7 @@ describe("gatherSignals", () => {
     await q("INSERT INTO memories (owner_id, key, value) VALUES ('o_t', 'favorite_anime', 'Steins;Gate'), ('o_t', 'name', 'Robin'), ('o_t', 'city', 'Maple Grove')");
     await q("INSERT INTO chats (id, owner_id, title) VALUES ('c_t', 'o_t', 'Sourdough help')");
     await q("INSERT INTO messages (id, chat_id, role, content) VALUES ('m_t', 'c_t', 'user', 'call me at 555-123-4567 about bouldering')");
-  });
+  }, 30_000);
   it("uses interests and topics, but keeps identity facts out", async () => {
     const s = await gatherSignals("o_t");
     expect(s.interests.join(" ")).toContain("Steins;Gate");

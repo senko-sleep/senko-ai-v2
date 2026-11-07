@@ -12,6 +12,7 @@
 //   provider's per-minute limits in the first place.
 import { scheduler, type Priority } from "./scheduler";
 import { startsLikeRefusal } from "@/lib/refusal";
+import { knownProviderHealth, modelUnavailable, providerHealth, recordProviderFailure, recordProviderSuccess, resetProviderHealth, type ProviderHealth } from "./provider-health";
 export { scheduler } from "./scheduler";
 
 export type Role = "system" | "user" | "assistant";
@@ -27,6 +28,10 @@ export interface LlmMessage {
 }
 
 export interface LlmOptions {
+  /** Task-local exclusions after repeated invalid tool output; explicit model pins never fall back. */
+  excludeModels?: string[];
+  /** Pin an available model exactly; never silently benchmark a fallback model. */
+  model?: string;
   /** Provider id to try first ("auto" = configured order). */
   provider?: string;
   signal?: AbortSignal;
@@ -50,6 +55,8 @@ export interface LlmOptions {
   onWait?: (ms: number) => void;
   /** Latency over cleverness: try each provider's quickest models first (browser agent steps). */
   fast?: boolean;
+  /** Quality over speed: try each provider's most capable models first (coding jobs). */
+  strong?: boolean;
   /**
    * "background" work (agent steps) only uses part of each provider's limits, so a chat
    * message sent while the agent runs still gets through. Default "interactive".
@@ -154,6 +161,7 @@ export interface ProviderStatus {
   visionModel?: string;
   detail?: string;
   coolingUntil?: number;
+  health?: ProviderHealth;
 }
 
 function env(key: string, fallback = ""): string {
@@ -249,12 +257,20 @@ interface Candidate {
   vision: boolean;
 }
 
+/** Most capable models per provider, best first, for work where quality beats speed. */
+const STRONG_MODELS: Record<string, string[]> = {
+  deepseek: ["deepseek-v4-pro"],
+  gemini: ["gemini-3-pro", "gemini-3-pro-preview", "gemini-2.5-pro"],
+  groq: ["openai/gpt-oss-120b"],
+};
+const STRONG_PROVIDER_ORDER = ["deepseek", "gemini", "groq", "paid", "sambanova", "openrouter"];
+
 interface Provider {
   id: string;
   label: string;
   configured(): boolean;
   /** Models to try, best first. */
-  candidates(needVision: boolean, fast?: boolean): Promise<Candidate[]>;
+  candidates(needVision: boolean, fast?: boolean, strong?: boolean): Promise<Candidate[]>;
   open(c: Candidate, messages: LlmMessage[], opts: LlmOptions): Promise<AsyncGenerator<string>>;
   missingDetail: string;
   /** What one request may use. Free tiers count input + max output against a per-minute limit. */
@@ -342,7 +358,7 @@ function compatProvider(c: CompatConfig): Provider {
     budget: c.budget,
     local: c.local,
     configured: () => !!c.key(),
-    async candidates(needVision, fast) {
+    async candidates(needVision, fast, strong) {
       if (c.modelFallbackOnly) {
         const model = c.envModel();
         return model ? [{ provider: c.id, label: c.label, model, vision: false }] : [];
@@ -355,8 +371,14 @@ function compatProvider(c: CompatConfig): Provider {
       };
       const out: Candidate[] = [];
       const push = (model: string, vision: boolean) => {
+        if (modelUnavailable(c.id, model)) return;
         if (model && !out.some((o) => o.model === model)) out.push({ provider: c.id, label: c.label, model, vision });
       };
+      if (strong && !needVision) {
+        for (const m of STRONG_MODELS[c.id] || []) if (has(m)) push(m, isVision(m));
+        // Newer "pro" models a provider lists that aren't named above yet.
+        for (const m of live) if (/(^|[/-])pro\b|-pro-|120b|\bopus\b/i.test(m.id) && (c.filter ? c.filter(m) : true)) push(m.id, isVision(m.id));
+      }
       if (fast && c.fastPreferred) {
         for (const f of c.fastPreferred) {
           if (!has(f)) continue;
@@ -376,7 +398,7 @@ function compatProvider(c: CompatConfig): Provider {
         for (const m of live) if (c.filter ? c.filter(m) : true) push(m.id, isVision(m.id));
         if (!out.length && em) push(em, false);
       }
-      return out.slice(0, c.maxModels ?? 2);
+      return out.slice(0, (c.maxModels ?? 2) + (strong ? 2 : 0));
     },
     async open(cand, messages, opts) {
       const body = {
@@ -669,18 +691,18 @@ const PROVIDERS: Provider[] = [
     key: () => env("GEMINI_API_KEY") || env("GOOGLE_API_KEY"),
     envModel: () => env("GEMINI_MODEL"),
     envVisionModel: () => env("GEMINI_MODEL"),
-    // Newer API keys can't use the 2.5 models (404), so try the current previews first.
-    preferred: ["gemini-3.8-flash", "gemini-3-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-3.5-flash-lite"],
-    preferredVision: ["gemini-3.8-flash", "gemini-3-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-flash"],
-    // Measured: flash-lite answers in ~0.6s, the bigger previews in 0.6-4s.
-    fastPreferred: ["gemini-3.1-flash-lite-preview", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"],
-    // Prefer stable "flash" models: they have the most generous free limits.
-    filter: (m) => isGeminiChat(m.id) && /flash/.test(m.id),
+    // Prefer flagship pro & flash models over lite previews for coding and reasoning depth.
+    preferred: ["gemini-2.5-pro", "gemini-3-flash", "gemini-2.5-flash", "gemini-3.8-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest", "gemini-3.5-flash-lite"],
+    preferredVision: ["gemini-2.5-pro", "gemini-3-flash", "gemini-2.5-flash", "gemini-3.8-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"],
+    // Measured: flash answers quickly for browser agent steps.
+    fastPreferred: ["gemini-2.5-flash", "gemini-3-flash", "gemini-3.1-flash-lite-preview", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"],
+    // Allow both "pro" and "flash" chat models.
+    filter: (m) => isGeminiChat(m.id) && (/pro|flash/.test(m.id)),
     isVision: (m) => isGeminiChat(m.id),
     extras: () => ({ reasoning_effort: "low" }),
     maxModels: 3,
     missingDetail: "Add GEMINI_API_KEY (free at aistudio.google.com/apikey)",
-    budget: () => ({ input: num("GEMINI_TOKEN_BUDGET", 60_000), output: 4096 }),
+    budget: () => ({ input: num("GEMINI_TOKEN_BUDGET", 60_000), output: 8192 }),
   }),
   // Paid, but cheap and without hard per-minute caps: what keeps the agent fast when the
   // free tiers are used up. DeepSeek-V4.1-Flash also reads screenshots.
@@ -691,14 +713,14 @@ const PROVIDERS: Provider[] = [
     key: () => env("DEEPSEEK_API_KEY"),
     envModel: () => (env("DEEPSEEK_MODEL") === "deepseek-chat" ? "" : env("DEEPSEEK_MODEL")),
     envVisionModel: () => env("DEEPSEEK_VISION_MODEL"),
-    preferred: ["deepseek-flash", "deepseek-v4-pro"],
+    preferred: ["deepseek-v4-pro", "deepseek-r1", "deepseek-chat", "deepseek-flash"],
     preferredVision: ["deepseek-flash"],
     fastPreferred: ["deepseek-flash"],
     isVision: (m) => m.vision,
     extras: () => ({ reasoning_effort: "low" }),
     maxModels: 2,
     missingDetail: "Add DEEPSEEK_API_KEY (platform.deepseek.com, pay as you go)",
-    budget: () => ({ input: num("DEEPSEEK_TOKEN_BUDGET", 60_000), output: 4096 }),
+    budget: () => ({ input: num("DEEPSEEK_TOKEN_BUDGET", 60_000), output: 8192 }),
   }),
   compatProvider({
     id: "groq",
@@ -717,7 +739,7 @@ const PROVIDERS: Provider[] = [
     missingDetail: "Add GROQ_API_KEY (free at console.groq.com/keys)",
     // Groq's free tier allows ~6–8k tokens per minute *including* the reply it reserves,
     // so long chats used to be rejected outright. Keep each request well under that.
-    budget: () => ({ input: num("GROQ_TOKEN_BUDGET", 5000), output: 1200 }),
+    budget: () => ({ input: num("GROQ_TOKEN_BUDGET", 6000), output: 4096 }),
   }),
   compatProvider({
     id: "openrouter",
@@ -734,7 +756,7 @@ const PROVIDERS: Provider[] = [
     headers: () => ({ "HTTP-Referer": "https://github.com/senko-sleep/senko-ai-v2", "X-Title": "Senko AI" }),
     maxModels: 3,
     missingDetail: "Add OPENROUTER_API_KEY (free at openrouter.ai/keys)",
-    budget: () => ({ input: num("OPENROUTER_TOKEN_BUDGET", 16_000), output: 2048 }),
+    budget: () => ({ input: num("OPENROUTER_TOKEN_BUDGET", 24_000), output: 4096 }),
   }),
   compatProvider({
     id: "llm7",
@@ -768,9 +790,9 @@ const PROVIDERS: Provider[] = [
     label: "Cloudflare Workers AI",
     baseUrl: () => `https://api.cloudflare.com/client/v4/accounts/${env("CLOUDFLARE_ACCOUNT_ID")}/ai/v1`,
     key: () => env("CLOUDFLARE_ACCOUNT_ID") && env("CLOUDFLARE_API_TOKEN"),
-    envModel: () => env("CLOUDFLARE_MODEL", "@cf/meta/llama-3.1-8b-instruct"),
+    envModel: () => env("CLOUDFLARE_MODEL", "@cf/meta/llama-3.2-3b-instruct"),
     envVisionModel: () => env("CLOUDFLARE_VISION_MODEL"),
-    preferred: ["@cf/meta/llama-3.1-8b-instruct"],
+    preferred: ["@cf/meta/llama-3.2-3b-instruct"],
     preferredVision: [],
     maxModels: 2,
     missingDetail: "Add CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN (Workers AI)",
@@ -981,7 +1003,7 @@ async function raceCandidates(
     let running = 0;
     let done = false;
     let hedge: ReturnType<typeof setTimeout> | null = null;
-    const attempts: { ctl: AbortController; timer: ReturnType<typeof setTimeout> }[] = [];
+    const attempts: { ctl: AbortController; timer: ReturnType<typeof setTimeout>; abort: () => void }[] = [];
 
     const finish = (result: { c: Candidate; stream: AsyncGenerator<string> } | null, keep?: AbortController) => {
       if (done) return;
@@ -989,7 +1011,7 @@ async function raceCandidates(
       if (hedge) clearTimeout(hedge);
       for (const a of attempts) {
         clearTimeout(a.timer);
-        if (a.ctl !== keep) a.ctl.abort();
+        if (a.ctl !== keep) { a.ctl.abort(); opts.signal?.removeEventListener("abort", a.abort); }
       }
       opts.signal?.removeEventListener("abort", onAbort);
       resolve(result);
@@ -1037,13 +1059,14 @@ async function raceCandidates(
       const ticket = scheduler.acquire(c.provider, c.model, q.est);
       const ctl = new AbortController();
       // The winner must still stop when the caller aborts.
-      opts.signal?.addEventListener("abort", () => ctl.abort(), { once: true });
+      const abort = () => ctl.abort();
+      opts.signal?.addEventListener("abort", abort, { once: true });
       let slow = false;
       const timer = setTimeout(() => {
         slow = true;
         ctl.abort();
       }, FIRST_TOKEN_MS());
-      attempts.push({ ctl, timer });
+      attempts.push({ ctl, timer, abort });
       tryCandidate(q, messages, opts, ctl.signal).then(
         ({ stream, inputTokens }) => {
           clearTimeout(timer);
@@ -1051,14 +1074,19 @@ async function raceCandidates(
           live.delete(p.id);
           scheduler.onSuccess(c.provider, c.model);
           if (done) {
+            opts.signal?.removeEventListener("abort", abort);
             ticket.release(inputTokens);
             void stream.return(undefined).catch(() => {});
             return;
           }
-          finish({ c, stream: metered(stream, (out) => ticket.release(inputTokens + Math.ceil(out / 3.6))) }, ctl);
+          finish({ c, stream: metered(stream, (out) => {
+            opts.signal?.removeEventListener("abort", abort);
+            ticket.release(inputTokens + Math.ceil(out / 3.6));
+          }) }, ctl);
         },
         (e) => {
           clearTimeout(timer);
+          opts.signal?.removeEventListener("abort", abort);
           running--;
           live.delete(p.id);
           const status = e instanceof ProviderError ? e.status : 0;
@@ -1107,9 +1135,16 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
     if (opts.fast && !needVision && (!opts.provider || opts.provider === "auto")) {
       providers = [...providers.filter((p) => p.id === "groq"), ...providers.filter((p) => p.id !== "groq")];
     }
-    const lists = await Promise.all(providers.map((p) => p.candidates(needVision, opts.fast).catch(() => [] as Candidate[])));
+    if (opts.strong && !needVision && (!opts.provider || opts.provider === "auto")) {
+      const rank = (id: string) => (STRONG_PROVIDER_ORDER.indexOf(id) + 1 || 99);
+      providers = [...providers].sort((a, b) => rank(a.id) - rank(b.id));
+    }
+    const lists = await Promise.all(providers.map((p) => p.candidates(needVision, opts.fast, opts.strong).catch(() => [] as Candidate[])));
     providers.forEach((p, i) => {
       for (const c of lists[i]) {
+        if (opts.excludeModels?.includes(c.model)) { skipped.push(`${c.label} (${c.model}): excluded by this task after invalid tool output`); continue; }
+        if (modelUnavailable(c.provider, c.model)) { skipped.push(`${c.label} (${c.model}): permanently unavailable; select a supported model`); continue; }
+        if (opts.model && c.model !== opts.model) continue;
         if (needVision && !c.vision) continue;
         const cool = isCooling(c.provider, c.model);
         if (cool) {
@@ -1144,6 +1179,7 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
       const pe = e instanceof ProviderError ? e : null;
       const status = pe?.status ?? 0;
       if (!opts.simulateFail?.includes(c.provider)) {
+        const health = recordProviderFailure(c.provider, c.model, status, pe?.message || friendly(e), pe?.retryMs);
         // Only real daily caps get the long cooldown. Gemini says "exceeded your current quota" for
         // per-minute limits too, so "quota" alone isn't a sign; trust its retry hint instead.
         const daily = /per ?day|daily|RPD|free-models-per-day/i.test(pe?.message || "") || (pe?.retryMs ?? 0) > 60 * 60_000;
@@ -1154,10 +1190,10 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
           : status === 429 ? (daily ? Math.max(backoff, 60 * 60_000) : backoff)
           : status === 402 ? 60 * 60_000 // out of credit
           : status === 401 || status === 403 ? 10 * 60_000
-          : status === 404 ? 60 * 60_000
+          : status === 404 || status === 410 ? 24 * 60 * 60_000
           : status === 422 ? (/refused/.test(pe?.message || "") ? 20_000 : 2_000) // a model that just refused is likely to again: let the others take this stretch
           : status === 408 ? 20_000 // too slow to answer: let faster models take over for a bit
-          : 30_000;
+          : health.retryAt ? Math.max(1000, health.retryAt - Date.now()) : 30_000;
         // Worth waiting for: rate limits, network blips and server errors (not refusals/bad keys).
         const retryable = status === 429 || status === 0 || status === 408 || status >= 500;
         coolDown(c.provider, c.model, ms, status === 429 ? (daily ? "daily limit reached" : "rate limited") : status === 408 ? "too slow" : `error ${status || "network"}`, retryable);
@@ -1196,6 +1232,7 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
   if (needVision && !errors.length && !skipped.length) {
     throw new Error("No image-capable model is available. Add GEMINI_API_KEY (free) to analyze images.");
   }
+  if (opts.model && !errors.length && !skipped.length) throw new Error(`Requested model "${opts.model}" is not available from the configured providers; no fallback was used.`);
   const reasons = [...new Set([...errors, ...skipped])];
   const text = `Every AI provider is busy or failing right now:\n- ${reasons.join("\n- ")}`;
   if (Number.isFinite(soonest)) throw new LlmBusyError(text, Math.max(0, Math.ceil(soonest)), reasons);
@@ -1215,7 +1252,7 @@ function requestKey(messages: LlmMessage[], opts: LlmOptions): string {
       h = Math.imul(h, 0x01000193);
     }
   };
-  add(JSON.stringify([opts.provider, opts.json, opts.maxTokens, opts.temperature, opts.compactSystem]));
+  add(JSON.stringify([opts.provider, opts.model, opts.excludeModels, opts.json, opts.maxTokens, opts.temperature, opts.compactSystem]));
   for (const m of messages) {
     add(m.role);
     add(m.content);
@@ -1230,10 +1267,23 @@ function requestKey(messages: LlmMessage[], opts: LlmOptions): string {
  */
 export async function complete(messages: LlmMessage[], opts: LlmOptions = {}): Promise<Answered & { text: string }> {
   const run = async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
     const { stream, provider, providerLabel, model } = await openStream(messages, opts);
     let text = "";
-    for await (const c of stream) text += c;
+    try {
+      for await (const c of stream) text += c;
+    } catch (error) {
+      if (opts.signal?.aborted) throw error;
+      const status = error instanceof ProviderError ? error.status : 0;
+      const health = recordProviderFailure(provider, model, status, friendly(error));
+      coolDown(provider, model, health.state === "unavailable" ? 24 * 60 * 60_000 : Math.max(2000, (health.retryAt || Date.now() + 60_000) - Date.now()), health.reason, health.retryable);
+      if (opts.model || attempt === 2) throw error;
+      continue; // No partial response has reached the caller of this non-streaming helper.
+    }
+    recordProviderSuccess(provider, model);
     return { text, provider, providerLabel, model };
+    }
+    throw new Error("No complete provider response was received.");
   };
   if (!opts.cacheTtlMs || opts.simulateFail?.length) return run();
   const now = Date.now();
@@ -1269,6 +1319,7 @@ export async function headroom(needVision: boolean): Promise<number> {
 }
 
 export async function listProviders(): Promise<ProviderStatus[]> {
+  await syncSharedCooldowns();
   const out: ProviderStatus[] = [];
   for (const p of orderedProviders()) {
     if (!p.configured()) {
@@ -1276,19 +1327,39 @@ export async function listProviders(): Promise<ProviderStatus[]> {
       continue;
     }
     const [text, vision] = await Promise.all([p.candidates(false).catch(() => []), p.candidates(true).catch(() => [])]);
-    const model = text[0]?.model;
+    const usable = text.find((c) => !isCooling(p.id, c.model) && !modelUnavailable(p.id, c.model));
+    const known = knownProviderHealth(p.id).at(-1);
+    const model = usable?.model || text[0]?.model || known?.model;
     const cool = model ? isCooling(p.id, model) : null;
     out.push({
       id: p.id,
       label: p.label,
-      available: !!model,
+      available: !!usable,
       model,
       visionModel: vision[0]?.model,
       detail: model ? (cool ? `cooling down: ${cool.reason}` : undefined) : p.id === "ollama" ? `Can't reach Ollama at ${ollamaUrl()}` : p.id === "senko" ? `Can't reach the Senko LLM gateway at ${env("SENKO_LLM_URL")}` : "No usable model found",
       coolingUntil: cool?.until,
+      health: model ? providerHealth(p.id, model) || { state: "untested", checkedAt: 0, status: 0, reason: "Configured/discovered; inference has not been checked.", retryable: false, failures: 0 } : undefined,
     });
   }
   return out;
+}
+
+/** A real, explicitly requested inference probe; metadata alone is not a health check. */
+export async function probeProvider(provider: string, model: string, signal?: AbortSignal): Promise<ProviderStatus> {
+  const selected = PROVIDERS.find((p) => p.id === provider && p.configured());
+  if (!selected) throw new Error("Provider is not configured.");
+  resetProviderHealth(provider, model);
+  cooldowns.delete(coolKey(provider, model));
+  const candidates = await selected.candidates(false);
+  if (!candidates.some((candidate) => candidate.model === model)) throw new Error("Model is not available in this provider's configured catalog.");
+  try {
+    await complete([{ role: "user", content: "Reply with exactly OK." }], { provider, model, maxTokens: 32, maxWaitMs: 0, hedge: false, signal });
+  } catch (error) {
+    if (!providerHealth(provider, model)) recordProviderFailure(provider, model, 0, friendly(error));
+  }
+  const health = providerHealth(provider, model)!;
+  return { id: provider, label: selected.label, model, available: health.state === "healthy", detail: health.reason, health };
 }
 
 export function hasVisionProvider(): boolean {

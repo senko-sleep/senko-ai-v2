@@ -344,3 +344,15 @@ describe("Dynamic UI Schema & Intelligent Message Rendering System", () => {
     });
   });
 });
+
+import { parseMessageSegments as pms } from "@/lib/ui-schema";
+describe("invalid UI block fallback", () => {
+  it("shows the links from a block that fails validation instead of a placeholder", () => {
+    const msg = 'Results:\n```ui\n{"type":"made_up_widget","items":[{"title":"Clip one","url":"https://example.com/v/1"},{"title":"Clip two","href":"https://example.com/v/2"}]}\n```';
+    const segs = pms(msg);
+    expect(segs.map(s => s.kind)).toEqual(["markdown", "markdown"]);
+    const text = (segs[1] as { text: string }).text;
+    expect(text).toContain("[Clip one](<https://example.com/v/1>)");
+    expect(text).toContain("[Clip two](<https://example.com/v/2>)");
+  });
+});

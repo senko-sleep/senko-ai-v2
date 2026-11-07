@@ -9,6 +9,8 @@ export interface MessageMeta {
   model?: string;
   actions?: { url: string; label: string }[];
   suggestAgent?: boolean;
+  /** A coding job the reply handed off to the workspace ([[code: goal]]). */
+  codeTask?: string;
   error?: string;
   agent?: { goal: string; status: string; trail?: ({ label: string; url?: string } | string)[]; url?: string };
   interrupted?: boolean;

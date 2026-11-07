@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Brain, Cpu, Monitor, Moon, ShieldCheck, Sparkles, Sun, Trash2, X } from "lucide-react";
-import { forgetMemory, getMemories, getSettings, saveSettings, type Settings } from "./api";
+import { Brain, Cpu, Monitor, Moon, ShieldCheck, Sparkles, Sun, Trash2, Workflow, X } from "lucide-react";
+import { deleteSavedSkill, forgetMemory, getMemories, getSettings, getSkills, saveSettings, type SavedWorkflowItem, type Settings } from "./api";
 import type { ProviderInfo } from "./lib";
 
 export type Theme = "system" | "light" | "dark";
@@ -44,6 +44,7 @@ export function SettingsDialog({
   const ref = useRef<HTMLDivElement>(null);
   const [memories, setMemories] = useState<{ key: string; value: string }[] | null>(null);
   const [memError, setMemError] = useState<string | null>(null);
+  const [skills, setSkills] = useState<SavedWorkflowItem[] | null>(null);
   const [safeSearch, setSafeSearch] = useState<NonNullable<Settings["safeSearch"]>>("off");
 
   useEffect(() => {
@@ -59,6 +60,9 @@ export function SettingsDialog({
         setMemError(null);
       })
       .catch((e) => setMemError(e instanceof Error ? e.message : String(e)));
+    getSkills()
+      .then((sk) => setSkills(sk))
+      .catch(() => setSkills([]));
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
       if (e.key === "Tab" && ref.current) {
@@ -252,6 +256,42 @@ export function SettingsDialog({
                       onClick={() => forgetMemory(m.key).then(() => setMemories((ms) => ms?.filter((x) => x.key !== m.key) || []))}
                       className="sk-btn h-6 w-6 shrink-0 text-[var(--sk-faint)] hover:text-[var(--sk-danger)]"
                       aria-label={`Forget ${m.key.replace(/_/g, " ")}`}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="py-3">
+              <div className="flex items-start gap-2.5">
+                <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center text-[var(--sk-accent-ink)]">
+                  <Workflow size={14} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-medium">Saved workflows</div>
+                  <p className="mt-0.5 text-[11.5px] leading-snug text-[var(--sk-muted)]">
+                    Verified multi-step plans that passed all checks. Reused workflows are always disclosed and can be removed anytime.
+                  </p>
+                </div>
+              </div>
+              <ul className="mt-2 space-y-1 pl-8.5">
+                {skills === null && <li className="sk-skel h-7 rounded-md" aria-hidden />}
+                {skills?.length === 0 && <li className="text-[12px] text-[var(--sk-faint)]">No saved workflows yet.</li>}
+                {skills?.map((sk) => (
+                  <li key={sk.id} className="flex items-center gap-2 border-b border-[var(--sk-line)] py-1.5 text-[12px]">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-medium text-[var(--sk-text)]">{sk.title}</div>
+                      <div className="text-[11px] text-[var(--sk-faint)]">
+                        {sk.steps.length} step{sk.steps.length === 1 ? "" : "s"} · {sk.successCount} verified run{sk.successCount === 1 ? "" : "s"}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => deleteSavedSkill(sk.id).then(() => setSkills((prev) => prev?.filter((x) => x.id !== sk.id) || []))}
+                      className="sk-btn h-6 w-6 shrink-0 text-[var(--sk-faint)] hover:text-[var(--sk-danger)]"
+                      aria-label={`Remove workflow ${sk.title}`}
                     >
                       <Trash2 size={12} />
                     </button>

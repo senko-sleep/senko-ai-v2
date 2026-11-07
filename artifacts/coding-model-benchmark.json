@@ -1,0 +1,55 @@
+{
+  "timestamp": "2026-11-07T03:42:40.376Z",
+  "goal": "Build a working full-stack notes application using only Node.js built-ins (no dependencies). Create server.js with an HTTP API POST /api/notes and GET /api/notes, persist notes in notes.json, and serve index.html at /. The UI must have a labelled text input and Save button; saving sends a real request and displays the persisted notes. Include node:test tests for validation and storage, a package.json test script, and run them. Start with node server.js (use process.env.PORT), then inspect in Chromium: type a note, click Save, and assert that the saved note appears. Empty note input must be rejected. Use structured tool operations; finish only with current passing tests and browser evidence.",
+  "caveats": [
+    "One task and one run per model; not a general capability ranking.",
+    "RSS measures this Node process; browser/child-process memory is excluded.",
+    "No VS Code or Claude Code performance baseline was run."
+  ],
+  "runs": [
+    {
+      "requested": {
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b"
+      },
+      "actualModel": "openai/gpt-oss-120b",
+      "status": "incomplete",
+      "completionRate": 0,
+      "durationMs": 67260,
+      "processPeakRssBytes": 645468160,
+      "steps": 2,
+      "commands": [
+        {
+          "command": "npm install",
+          "exitCode": 0,
+          "durationMs": 3641
+        }
+      ],
+      "testStatus": "not_run",
+      "browser": [],
+      "lastFeedback": [
+        "Transient model response failure; retrying the same step: Every AI provider is busy or failing right now:\n- Groq (openai/gpt-oss-120b): empty response",
+        "Every AI provider is busy or failing right now:\n- Groq (openai/gpt-oss-120b): error 422"
+      ]
+    },
+    {
+      "requested": {
+        "provider": "cloudflare",
+        "model": "@cf/meta/llama-3.2-3b-instruct"
+      },
+      "actualModel": "@cf/meta/llama-3.2-3b-instruct",
+      "status": "incomplete",
+      "completionRate": 0,
+      "durationMs": 15265,
+      "processPeakRssBytes": 55922688,
+      "steps": 10,
+      "commands": [],
+      "testStatus": "not_run",
+      "browser": [],
+      "lastFeedback": [
+        "Invalid tool response (1683 characters). Return a fully closed JSON object with an ops array. Use one small operation under 1000 tokens; do not repeat the previous oversized batch. Reply start: \"{\\\"thought\\\": \\\"Create server.js with HTTP API endpoints for notes\\\", \\\"ops\\\": [{\\\"op\\\": \\\"write\\\", \\\"path\\\": \\\"server.js\\\", \\\"content\\\"\"",
+        "Invalid tool response (1251 characters). Return a fully closed JSON object with an ops array. Use one small operation under 1000 tokens; do not repeat the previous oversized batch. Reply start: \"{\\\"thought\\\": \\\"Create server.js with HTTP API endpoints for notes\\\", \\\"ops\\\": [{\\\"op\\\": \\\"write\\\", \\\"path\\\": \\\"server.js\\\", \\\"content\\\"\""
+      ]
+    }
+  ]
+}

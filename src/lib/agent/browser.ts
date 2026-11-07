@@ -340,7 +340,7 @@ async function launch(browserbaseSessionId?: string): Promise<Browser> {
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-blink-features=AutomationControlled",
-    "--autoplay-policy=no-user-gesture-required",
+    // Keep normal autoplay restrictions: playback checks must use real user gestures.
     "--disable-features=Translate,MediaRouter",
     ...(isLowMemoryHost()
       ? [

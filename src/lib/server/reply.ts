@@ -10,8 +10,13 @@ import { detectCollageRequest, detectImageIntentQuery, extractImagesTag, searchM
 import { gatherLiveGroundingNote } from "./grounding";
 import { sanitizeYouTubeInReply, verifyYouTubeVideo } from "./youtube";
 import { verifyGalleryImages } from "./gallery-images";
+import { extractCodeArtifacts } from "@/components/assistant/workspace-artifacts";
+import { stripCodeBlocks, wantsCodeJob } from "@/lib/code-intent";
+import { CodingWorkspaceRuntime, verifyAndSanitizeCodingClaims } from "@/lib/agent/coding-runtime";
+import { isExecutableCodingRequest, materializeReplyFilesToWorkspace, runAutonomousCodingWorkflow } from "@/lib/agent/coding-agent";
 
 const AGENT_TAG = /\[\[\s*agent\s*\]\]/gi;
+const CODE_TAG = /\[\[\s*code\s*:\s*([^\]\n]{3,2000})\]\]/i;
 const ABOUT_PAGE =
   /\b(this|the|that|current)\s+(page|site|website|video|tab|episode|show|article|screen)\b|\bwhat('?s| is) (on|this)\b|\bon (the )?screen\b/i;
 
@@ -100,9 +105,14 @@ export async function reply(o: ReplyOptions): Promise<StoredMessage> {
   let text = "";
   const meta: MessageMeta = {};
 
+  // Build requests go to a coding job in the chat's workspace (decided here, not by the model).
+  const storedHistory = await getMessages(o.chatId);
+  const chatHasProject = storedHistory.some((m) => m.meta?.codeTask);
+  const codeJob = !o.imageIds?.length && wantsCodeJob(o.content, chatHasProject);
+
   // Image requests ("show me pics of X") scrape every engine in parallel with the reply.
   const composedUI = /\b(?:make|build|design|create|compose)\b[\s\S]*\b(?:dashboard|workspace|interface|layout|catalog|profile|page)\b/i.test(o.content);
-  const imageQuery = o.imageIds?.length || composedUI ? undefined : detectImageIntentQuery(o.content);
+  const imageQuery = o.imageIds?.length || composedUI || codeJob ? undefined : detectImageIntentQuery(o.content);
   let imagesJob: Promise<ScrapedImage[]> | null = null;
   if (imageQuery) {
     imagesJob = scrapeForChat(imageQuery, o.signal).then((images) => {
@@ -112,7 +122,7 @@ export async function reply(o: ReplyOptions): Promise<StoredMessage> {
   }
 
   try {
-    const history = await toLlmHistory(o.ownerId, await getMessages(o.chatId));
+    const history = await toLlmHistory(o.ownerId, storedHistory);
 
     // A live browser for this chat + a question about "this page" -> attach the page.
     let pageNote = "";
@@ -137,7 +147,16 @@ export async function reply(o: ReplyOptions): Promise<StoredMessage> {
         .join("\n\n");
     }
 
-    const groundingNote = await gatherLiveGroundingNote(o.content, o.signal, o.onMiniAgentStep).catch(() => "");
+    if (codeJob) {
+      pageNote = [
+        pageNote,
+        `CODING JOB: a coding agent is starting right now to build this in the workspace${chatHasProject ? " (it continues the existing project)" : ""}. Reply in 1-2 friendly sentences saying what you'll build and the stack. Do NOT write any code or code blocks, don't claim anything is done or tested, and end with [[code: <the full, detailed build request>]] on its own line.`,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
+
+    const groundingNote = codeJob ? "" : await gatherLiveGroundingNote(o.content, o.signal, o.onMiniAgentStep).catch(() => "");
     if (groundingNote) {
       pageNote = [pageNote, groundingNote].filter(Boolean).join("\n\n");
     }
@@ -180,6 +199,53 @@ export async function reply(o: ReplyOptions): Promise<StoredMessage> {
     clean = sanitized;
   }
   if (status.mood) meta.mood = status.mood;
+  // Big coding work runs as a job in the chat's workspace; the reply only says it started.
+  const codeTag = CODE_TAG.exec(clean);
+  if (codeTag) {
+    meta.codeTask = codeTag[1].trim();
+    clean = clean.replace(CODE_TAG, "").trim();
+  }
+  if (codeJob) {
+    meta.codeTask ||= chatHasProject ? `${o.content}\n\n(Continue the existing project in this workspace: read the files first and change them as needed.)` : o.content;
+    clean = stripCodeBlocks(clean) || "On it! Building it in the workspace now.";
+  }
+
+  // Materialize generated code files into the chat's real Node.js workspace and run
+  // autonomous execution/testing when requested.
+  if (!o.signal?.aborted && clean && !o.simulateFail?.length) {
+    const replyArtifacts = extractCodeArtifacts([{ id: assistantMessageId, role: "assistant", content: clean }]);
+    if (replyArtifacts.length > 0 && !meta.codeTask) {
+      try {
+        if (isExecutableCodingRequest(o.content)) {
+          const wf = await runAutonomousCodingWorkflow({
+            chatId: o.chatId,
+            goal: o.content,
+            assistantDraft: replyArtifacts.length > 0 ? clean : undefined,
+            provider: o.provider,
+            inspectBrowser: false,
+            signal: o.signal,
+            onStep: (step) =>
+              o.onMiniAgentStep?.({
+                id: 100 + step.id,
+                label: step.label,
+                status: step.status,
+                detail: step.detail,
+                url: step.url,
+              }),
+          });
+          clean = `${wf.sanitizedReply || clean}\n\n${wf.verificationReportMarkdown}`.trim();
+          o.onPreview?.(clean);
+        } else {
+          const ws = new CodingWorkspaceRuntime(o.chatId);
+          await materializeReplyFilesToWorkspace(ws, assistantMessageId, clean);
+          const check = verifyAndSanitizeCodingClaims(clean, ws.ledger);
+          clean = check.sanitizedText;
+        }
+      } catch {
+        /* workspace execution fallback: preserve reply text */
+      }
+    }
+  }
   meta.suggestAgent = AGENT_TAG.test(clean);
   AGENT_TAG.lastIndex = 0;
   const parsed = extractOpenTags(clean.replace(AGENT_TAG, ""));

@@ -71,8 +71,18 @@ export type Verified =
   | { ok: true; mark: number; url: string; scrollY: number; focus: string; value: string }
   | { ok: false; why: "missing" | "moved" | "covered"; by?: string };
 
+export interface AccessibilityNode {
+  role: string;
+  name: string;
+  depth: number;
+  agentId?: number;
+  states?: string[];
+  value?: string;
+}
+
 export type ScriptArg =
   | { cmd: "observe"; max: number }
+  | { cmd: "a11y"; max: number }
   | { cmd: "resolve"; id: number; fp: ElementFingerprint | null }
   | { cmd: "activate"; id: number; fp: ElementFingerprint | null }
   | { cmd: "verify"; id: number; x: number; y: number; frames: number }
@@ -459,6 +469,63 @@ export const PAGE_SCRIPT = async (arg: ScriptArg): Promise<unknown> => {
       !el
     );
   }
+
+  if (arg.cmd === "a11y") {
+    const ROLE_MAP: Record<string, string> = {
+      main: "main", nav: "navigation", header: "banner", footer: "contentinfo", aside: "complementary",
+      section: "region", form: "form", dialog: "dialog", button: "button", a: "link",
+      h1: "heading", h2: "heading", h3: "heading", h4: "heading",
+      select: "combobox", textarea: "textbox", summary: "button",
+    };
+    const A11Y_SEL = "main, nav, header, footer, aside, dialog, [role], h1, h2, h3, h4, button, a[href], input:not([type=hidden]), select, textarea, summary";
+    const nodes: { role: string; name: string; depth: number; agentId?: number; states?: string[]; value?: string }[] = [];
+    for (const el of Array.from(document.querySelectorAll<HTMLElement>(A11Y_SEL))) {
+      if (nodes.length >= arg.max) break;
+      if (el.closest("[aria-hidden=true], script, style, template")) continue;
+      if (!visible(el)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) continue;
+      const tag = el.tagName.toLowerCase();
+      const input = el as HTMLInputElement;
+      const implicitRole =
+        tag === "input"
+          ? input.type === "checkbox" ? "checkbox" : input.type === "radio" ? "radio" : input.type === "submit" || input.type === "button" ? "button" : "textbox"
+          : ROLE_MAP[tag] || "";
+      const role = (el.getAttribute("role") || implicitRole).toLowerCase();
+      if (!role || role === "presentation" || role === "none") continue;
+      const labelledBy = el.getAttribute("aria-labelledby");
+      const labelFromId = labelledBy
+        ? labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.innerText || "").join(" ")
+        : "";
+      const name = norm(el.getAttribute("aria-label") || labelFromId || labelOf(el)).slice(0, 80);
+      const isLandmark = /^(main|navigation|banner|contentinfo|complementary|region|dialog|alertdialog|form|menu|listbox|tablist|tree|grid)$/.test(role);
+      if (!name && !isLandmark && role !== "textbox" && role !== "combobox") continue;
+      let depth = 0;
+      for (let p = el.parentElement; p && p !== document.body && depth < 6; p = p.parentElement) {
+        if (p.matches("main, nav, dialog, form, section, [role=dialog], [role=menu], [role=listbox], [role=navigation], [role=region]")) depth++;
+      }
+      const states: string[] = [];
+      if (input.disabled || el.getAttribute("aria-disabled") === "true") states.push("disabled");
+      if (el.getAttribute("aria-expanded") === "true") states.push("expanded");
+      else if (el.getAttribute("aria-expanded") === "false") states.push("collapsed");
+      if (input.checked || el.getAttribute("aria-checked") === "true") states.push("checked");
+      if (el.getAttribute("aria-selected") === "true") states.push("selected");
+      if (input.required || el.getAttribute("aria-required") === "true") states.push("required");
+      if (el.getAttribute("aria-invalid") === "true") states.push("invalid");
+      const rawId = el.getAttribute("data-agent-id");
+      const agentId = rawId ? Number(rawId) : undefined;
+      const val = (tag === "input" || tag === "textarea" || tag === "select") && input.type !== "password" ? norm(input.value).slice(0, 60) : "";
+      nodes.push({
+        role,
+        name,
+        depth,
+        agentId: Number.isFinite(agentId) ? agentId : undefined,
+        states: states.length ? states : undefined,
+        value: val || undefined,
+      });
+    }
+    return nodes;
+  }
   return null;
 };
 
@@ -472,6 +539,24 @@ export function pageCall(page: Page, arg: ScriptArg): Promise<unknown> {
 
 export function observeDom(page: Page, max = 60): Promise<DomObservation> {
   return pageCall(page, { cmd: "observe", max }) as Promise<DomObservation>;
+}
+
+export function observeAccessibilitySnapshot(page: Page, max = 80): Promise<AccessibilityNode[]> {
+  return pageCall(page, { cmd: "a11y", max }) as Promise<AccessibilityNode[]>;
+}
+
+export function formatAccessibilitySnapshot(nodes: AccessibilityNode[]): string {
+  if (!nodes.length) return "(empty accessibility tree)";
+  return nodes
+    .map((n) => {
+      const indent = "  ".repeat(Math.min(4, Math.max(0, n.depth)));
+      const idPart = n.agentId !== undefined ? ` [${n.agentId}]` : "";
+      const namePart = n.name ? ` "${n.name}"` : "";
+      const valPart = n.value ? ` value="${n.value}"` : "";
+      const statePart = n.states?.length ? ` (${n.states.join(", ")})` : "";
+      return `${indent}- ${n.role}${idPart}${namePart}${valPart}${statePart}`;
+    })
+    .join("\n");
 }
 
 /**

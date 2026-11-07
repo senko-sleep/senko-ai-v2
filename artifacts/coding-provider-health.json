@@ -1,0 +1,80 @@
+{
+  "timestamp": "2026-11-07T04:02:12.750Z",
+  "reports": [
+    {
+      "id": "deepseek",
+      "label": "DeepSeek",
+      "model": "deepseek-v4-pro",
+      "available": false,
+      "detail": "DeepSeek 402 (deepseek-v4-pro): Insufficient Balance (request_id: d25eaa0a-b0f8-45a2-88d0-1aa52e97bb57)",
+      "health": {
+        "state": "configuration_error",
+        "retryable": false,
+        "checkedAt": 1794024130826,
+        "status": 402,
+        "reason": "DeepSeek 402 (deepseek-v4-pro): Insufficient Balance (request_id: d25eaa0a-b0f8-45a2-88d0-1aa52e97bb57)",
+        "failures": 1
+      }
+    },
+    {
+      "id": "gemini",
+      "label": "Gemini",
+      "model": "gemini-2.5-pro",
+      "available": false,
+      "detail": "Gemini 404 (gemini-2.5-pro): This model models/gemini-2.5-pro is no longer available to new users. Please update your code to use models/gemini-3.1-pro-preview for the latest features and improvements. We recommend you to use the Interactions API (https://aistudio.goog",
+      "health": {
+        "state": "unavailable",
+        "retryable": false,
+        "checkedAt": 1794024131030,
+        "status": 404,
+        "reason": "Gemini 404 (gemini-2.5-pro): This model models/gemini-2.5-pro is no longer available to new users. Please update your code to use models/gemini-3.1-pro-preview for the latest features and improvements. We recommend you to use the Interactions API (https://aistudio.goog",
+        "failures": 1
+      }
+    },
+    {
+      "id": "groq",
+      "label": "Groq",
+      "model": "openai/gpt-oss-120b",
+      "available": true,
+      "detail": "Real inference completed.",
+      "health": {
+        "state": "healthy",
+        "checkedAt": 1794024131336,
+        "status": 200,
+        "reason": "Real inference completed.",
+        "retryable": false,
+        "failures": 0
+      }
+    },
+    {
+      "id": "cloudflare",
+      "label": "Cloudflare Workers AI",
+      "model": "@cf/meta/llama-3.2-3b-instruct",
+      "available": true,
+      "detail": "Real inference completed.",
+      "health": {
+        "state": "healthy",
+        "checkedAt": 1794024131865,
+        "status": 200,
+        "reason": "Real inference completed.",
+        "retryable": false,
+        "failures": 0
+      }
+    },
+    {
+      "id": "sambanova",
+      "label": "SambaNova",
+      "model": "GLM-5.3",
+      "available": false,
+      "detail": "SambaNova 402 (GLM-5.3): A payment method is required. Add one at https://cloud.sambanova.ai/plans/billing to continue.",
+      "health": {
+        "state": "configuration_error",
+        "retryable": false,
+        "checkedAt": 1794024132746,
+        "status": 402,
+        "reason": "SambaNova 402 (GLM-5.3): A payment method is required. Add one at https://cloud.sambanova.ai/plans/billing to continue.",
+        "failures": 1
+      }
+    }
+  ]
+}

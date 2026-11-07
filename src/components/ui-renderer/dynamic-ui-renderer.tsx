@@ -11,8 +11,10 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Code2,
   Copy,
   ExternalLink,
+  Eye,
   ImageOff,
   Info,
   Lightbulb,
@@ -132,53 +134,189 @@ function preprocessInlineTokens(markdown: string): string {
   return out;
 }
 
+function inferDisplayFilename(lang: string, code: string, explicitFilename?: string): string {
+  if (explicitFilename) return explicitFilename;
+  const firstLine = (code.split("\n")[0] || "").trim();
+  const fileMatch = firstLine.match(/^(?:\/\/|#|\/\*+|<!--)\s*([\w./-]+\.[A-Za-z0-9]+)\s*(?:\*+\/|-->)?$/);
+  if (fileMatch?.[1]) return fileMatch[1];
+
+  const titleMatch = code.match(/<title>([^<]{1,42})<\/title>/i);
+  if (titleMatch?.[1]) {
+    const slug = titleMatch[1]
+      .trim()
+      .replace(/[^a-zA-Z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .toLowerCase();
+    if (slug) return `${slug}.${lang === "htm" ? "html" : lang || "html"}`;
+  }
+
+  const fnMatch = code.match(/(?:export\s+default\s+function|export\s+function|function|class|def|interface)\s+([A-Za-z0-9_]+)/);
+  if (fnMatch?.[1]) {
+    const extMap: Record<string, string> = {
+      javascript: "js",
+      js: "js",
+      jsx: "jsx",
+      typescript: "ts",
+      ts: "ts",
+      tsx: "tsx",
+      python: "py",
+      py: "py",
+      html: "html",
+      css: "css",
+      json: "json",
+      sql: "sql",
+      rust: "rs",
+      go: "go",
+    };
+    const ext = extMap[lang] || lang || "txt";
+    const slug = fnMatch[1]
+      .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+      .toLowerCase();
+    return `${slug}.${ext}`;
+  }
+  return "";
+}
+
 function CodeFence({
   language,
   filename,
   code,
+  highlighted,
   caption,
   onRunPrompt,
 }: {
   language?: string;
   filename?: string;
   code: string;
+  highlighted?: ReactNode;
   caption?: string;
   onRunPrompt?: (text: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const lang = (language || "text").toLowerCase();
   const canRun = Boolean(onRunPrompt && ["text", "txt", "plaintext", "prompt"].includes(lang));
+  const cleanCode = useMemo(() => code.replace(/\n$/, ""), [code]);
+  const lineCount = useMemo(() => cleanCode.split("\n").length, [cleanCode]);
+  const canPreview =
+    ["html", "htm", "svg", "markdown", "md"].includes(lang) ||
+    ((lang === "xml" || lang === "text") && /^\s*(?:<!doctype html>|<html[\s>]|<svg[\s>])/i.test(cleanCode));
+  const canOpenWorkspace = cleanCode.trim().length >= 16;
+  const displayFile = useMemo(() => inferDisplayFilename(lang, cleanCode, filename), [lang, cleanCode, filename]);
+  const isCollapsible = lineCount > 16;
+  const [expanded, setExpanded] = useState(false);
+
+  const dispatchWorkspace = (tab: "code" | "preview") => {
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(
+      new CustomEvent("senko:open-artifact", {
+        detail: { code: cleanCode, language: lang, filename: displayFile || filename, tab },
+      }),
+    );
+  };
 
   return (
-    <div className="sk-code my-2.5">
+    <div className="sk-code my-3">
       <div className="sk-code-head">
-        <span>{filename ? `${filename} · ${lang}` : lang}</span>
-        {canRun && onRunPrompt && (
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-[var(--sk-accent-soft)] text-[var(--sk-accent-ink)]">
+            <Code2 size={11.5} />
+          </span>
+          <span className="truncate font-medium text-zinc-200">
+            {displayFile || lang}
+          </span>
+          {displayFile && (
+            <span className="hidden rounded bg-white/[0.06] px-1.5 py-0.2 text-[9.5px] uppercase tracking-wider text-zinc-400 sm:inline">
+              {lang}
+            </span>
+          )}
+          {lineCount > 1 && <span className="sk-tabular shrink-0 text-[10.5px] text-zinc-500">{lineCount} lines</span>}
+        </div>
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          {canRun && onRunPrompt && (
+            <button
+              type="button"
+              onClick={() => onRunPrompt(cleanCode.trim())}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10.5px] font-medium transition hover:bg-white/10 hover:text-white"
+            >
+              <Bot size={11} />
+              Run in Agent
+            </button>
+          )}
+          {canPreview && (
+            <button
+              type="button"
+              onClick={() => dispatchWorkspace("preview")}
+              className="inline-flex items-center gap-1 rounded-md border border-[var(--sk-accent-line)] bg-[var(--sk-accent-soft)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--sk-accent-ink)] transition hover:bg-[var(--sk-accent)] hover:text-white"
+              title="Open live preview in workspace"
+            >
+              <Eye size={11} />
+              Preview
+            </button>
+          )}
+          {canOpenWorkspace && (
+            <button
+              type="button"
+              onClick={() => dispatchWorkspace("code")}
+              className="inline-flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[10.5px] font-medium text-zinc-300 transition hover:border-white/[0.16] hover:bg-white/[0.08] hover:text-white"
+              title="Inspect and edit in Code Workspace"
+            >
+              <Code2 size={11} />
+              Workspace
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => onRunPrompt(code.trim())}
-            className="ml-auto mr-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] transition hover:bg-white/10 hover:text-white"
+            onClick={() => {
+              navigator.clipboard?.writeText(cleanCode);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1400);
+            }}
+            className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] text-zinc-400 transition hover:bg-white/10 hover:text-white"
           >
-            <Bot size={11} />
-            Run in Agent
+            {copied ? <Check size={11} className="text-[var(--sk-ok)]" /> : <Copy size={11} />}
+            {copied ? "Copied" : "Copy"}
           </button>
-        )}
-        <button
-          type="button"
-          onClick={() => {
-            navigator.clipboard?.writeText(code);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1400);
-          }}
-          className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] transition hover:bg-white/10 hover:text-white"
-        >
-          {copied ? <Check size={11} /> : <Copy size={11} />}
-          {copied ? "Copied" : "Copy"}
-        </button>
+        </div>
       </div>
-      <pre>
-        <code>{code}</code>
-      </pre>
+      <div className="relative">
+        <pre className={isCollapsible && !expanded ? "max-h-[176px] overflow-hidden" : "max-h-[440px] overflow-auto sk-scroll"}>
+          {highlighted || <code>{cleanCode}</code>}
+        </pre>
+        {isCollapsible && !expanded && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-[var(--sk-code-bg)] via-[var(--sk-code-bg)]/85 to-transparent" />
+        )}
+      </div>
+      {isCollapsible && (
+        <div className="flex items-center justify-between border-t border-white/[0.06] bg-white/[0.015] px-3 py-1.5 text-[11px]">
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="inline-flex items-center gap-1 font-medium text-[var(--sk-muted)] transition hover:text-[var(--sk-text)]"
+          >
+            <ChevronDown size={12} className={`transition-transform ${expanded ? "rotate-180" : ""}`} />
+            <span>{expanded ? "Collapse code" : `Show all ${lineCount} lines`}</span>
+          </button>
+          {canPreview ? (
+            <button
+              type="button"
+              onClick={() => dispatchWorkspace("preview")}
+              className="inline-flex items-center gap-1 font-medium text-[var(--sk-accent-ink)] transition hover:underline"
+            >
+              <Eye size={11.5} />
+              <span>Open Live Preview</span>
+            </button>
+          ) : canOpenWorkspace ? (
+            <button
+              type="button"
+              onClick={() => dispatchWorkspace("code")}
+              className="inline-flex items-center gap-1 font-medium text-[var(--sk-muted)] transition hover:text-[var(--sk-text)]"
+            >
+              <Code2 size={11.5} />
+              <span>Open in Editor</span>
+            </button>
+          ) : null}
+        </div>
+      )}
       {caption && <div className="border-t border-white/[0.05] px-3 py-1.5 text-[11px] text-[var(--sk-muted)]">{caption}</div>}
     </div>
   );
@@ -249,7 +387,7 @@ export const EnhancedMarkdown = memo(function EnhancedMarkdown({
               return <>{children}</>;
             }
             const rawText = extractTextFromReactNode(children);
-            return <CodeFence language={lang} code={rawText} onRunPrompt={onRunPrompt} />;
+            return <CodeFence language={lang} code={rawText} highlighted={children} onRunPrompt={onRunPrompt} />;
           },
         }}
       >

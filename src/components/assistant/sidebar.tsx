@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { PanelLeftClose, Pencil, Settings2, SquarePen, Trash2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { PanelLeftClose, Pencil, Search, Settings2, SquarePen, Trash2, X } from "lucide-react";
 import { FoxMark } from "./fox-mark";
 import type { ChatSummary } from "./lib";
 
@@ -44,6 +44,12 @@ export function Sidebar({
 }) {
   const [confirming, setConfirming] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ id: string; value: string } | null>(null);
+  const [filter, setFilter] = useState("");
+  const filteredChats = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return chats;
+    return chats.filter((c) => c.title.toLowerCase().includes(q));
+  }, [chats, filter]);
   const commit = () => {
     if (!editing) return;
     const title = editing.value.trim();
@@ -68,18 +74,41 @@ export function Sidebar({
         </button>
       </div>
 
-      <div className="px-2 pb-1.5">
+      <div className="space-y-1.5 px-2 pb-1.5">
         <button
           type="button"
           onClick={onNew}
-          className="sk-btn h-8 w-full justify-start gap-2 rounded-lg px-2.5 text-[12.5px] font-medium text-[var(--sk-text)] hover:bg-[var(--sk-hover)]"
+          className="sk-btn h-8 w-full justify-start gap-2 rounded-lg border border-[var(--sk-line)] bg-[var(--sk-surface-1)] px-2.5 text-[12.5px] font-medium text-[var(--sk-text)] hover:border-[var(--sk-accent-line)] hover:bg-[var(--sk-hover)]"
         >
           <SquarePen size={13} className="text-[var(--sk-accent-ink)]" aria-hidden />
-          New chat
-          <kbd className="ml-auto hidden font-mono text-[9.5px] text-[var(--sk-faint)] lg:inline">
+          New workspace
+          <kbd className="sk-kbd ml-auto hidden lg:inline">
             Ctrl ⇧ O
           </kbd>
         </button>
+        {chats.length > 2 && (
+          <div className="relative flex items-center">
+            <Search size={12} className="pointer-events-none absolute left-2.5 text-[var(--sk-faint)]" aria-hidden />
+            <input
+              type="search"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Search threads…"
+              aria-label="Search threads"
+              className="h-7 w-full rounded-md border border-[var(--sk-line)] bg-[var(--sk-bg-2)] pl-7 pr-6 text-[11.5px] text-[var(--sk-text)] placeholder:text-[var(--sk-faint)] outline-none focus:border-[var(--sk-accent-line)]"
+            />
+            {filter && (
+              <button
+                type="button"
+                onClick={() => setFilter("")}
+                className="absolute right-1.5 text-[var(--sk-faint)] hover:text-[var(--sk-text)]"
+                aria-label="Clear search"
+              >
+                <X size={11} />
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="sk-scroll min-h-0 flex-1 overflow-y-auto px-2 pb-2">
@@ -93,8 +122,12 @@ export function Sidebar({
           <p className="px-2.5 pt-3 text-[11.5px] leading-relaxed text-[var(--sk-faint)]">
             Your conversations will appear here across linked devices.
           </p>
+        ) : !filteredChats.length ? (
+          <p className="px-2.5 pt-3 text-[11.5px] text-[var(--sk-faint)]">
+            No matching conversations.
+          </p>
         ) : (
-          groupChats(chats).map((g) => (
+          groupChats(filteredChats).map((g) => (
             <div key={g.label} className="mt-3 first:mt-1.5">
               <h3 className="px-2.5 pb-1 text-[10px] font-medium uppercase tracking-wider text-[var(--sk-faint)]">{g.label}</h3>
               <ul className="space-y-0.5">

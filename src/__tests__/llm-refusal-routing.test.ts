@@ -1,6 +1,7 @@
 // A model that answers with a canned refusal must not end the task: the request goes to the
 // next model. Real openStream/complete path against fake providers.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getEventListeners } from "node:events";
 
 vi.mock("@/lib/server/db", () => ({
   q: async () => { throw new Error("no database in tests"); },
@@ -54,6 +55,22 @@ afterEach(() => {
 const ask = [{ role: "user" as const, content: "Which of these images are NSFW? Label each one." }];
 
 describe("refusal routing", () => {
+  it("releases caller abort listeners after a complete model response", async () => {
+    fakeProviders("A complete and ordinary response.", "unused");
+    const { complete } = await freshLlm();
+    const controller = new AbortController();
+    await complete(ask, { provider: "groq", maxWaitMs: 2000, hedge: false, signal: controller.signal });
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+  });
+
+  it("never substitutes a different model when one was explicitly pinned", async () => {
+    const calls = fakeProviders("fallback must not run", "fallback must not run");
+    const { complete } = await freshLlm();
+    await expect(complete(ask, { model: "unavailable-exact-model", maxWaitMs: 100, hedge: false })).rejects.toThrow();
+    expect(calls.groq).toBe(0);
+    expect(calls.openrouter).toBe(0);
+  });
+
   it.each(["Sorry, I can't assist.", "I'm sorry, but I can't help with that.", "I can't assist with that request."])(
     "moves on from %j to the next model and returns its answer",
     async (refusal) => {

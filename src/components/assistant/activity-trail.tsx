@@ -48,14 +48,12 @@ export function AgentTrail({
       <div className="mt-1.5 space-y-2.5 border-l border-[var(--sk-line)] pl-3">
         {sources.length > 0 && (
           <div>
-            <p className="mb-1 text-[10.5px] font-medium uppercase tracking-wider text-[var(--sk-faint)]">Websites visited</p>
             <ul className="space-y-1">
               {sources.map((source) => (
                 <li key={source.url}>
                   <a href={source.url} target="_blank" rel="noopener noreferrer" className="flex min-w-0 items-center gap-2 py-0.5 hover:text-[var(--sk-text)]">
                     <SiteIcon host={source.host} />
                     <span className="shrink-0 underline decoration-[var(--sk-line)] underline-offset-2">{source.host}</span>
-                    <span className="min-w-0 flex-1 truncate text-[10.5px] text-[var(--sk-faint)]">{source.url}</span>
                     <ExternalLink size={10.5} className="shrink-0 opacity-50" aria-hidden />
                   </a>
                 </li>
@@ -65,7 +63,7 @@ export function AgentTrail({
         )}
         {trail.length > 0 && (
           <div>
-            <p className="mb-1 text-[10.5px] font-medium uppercase tracking-wider text-[var(--sk-faint)]">Steps taken</p>
+            <p className="mb-1 text-[11px] text-[var(--sk-faint)]">Steps</p>
             <ol className="space-y-1">
               {trail.map((entry, index) => {
                 const item = typeof entry === "string" ? { label: entry } : entry;

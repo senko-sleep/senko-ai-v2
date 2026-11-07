@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Bot, Check, CheckCircle2, Copy, ExternalLink, Grid3X3, PauseCircle, PawPrint, Pencil, RotateCcw, Square } from "lucide-react";
+import { CodeJobCard } from "./code-job-card";
+import { AlertTriangle, Bot, Check, CheckCircle2, Code2, Compass, Copy, Download, ExternalLink, Eye, GitBranch, Grid3X3, PauseCircle, PawPrint, Pencil, RotateCcw, Sparkles, Square } from "lucide-react";
 import { FoxMark } from "./fox-mark";
 import { activitySources } from "./activity";
 import { AgentTrail } from "./activity-trail";
@@ -7,6 +8,7 @@ import { ImageGallery } from "../chat/image-gallery";
 import { RichMessageContent } from "../ui-renderer/dynamic-ui-renderer";
 import { MiniAgentPanel } from "./mini-agent-panel";
 import type { Msg } from "./lib";
+import { downloadTextFile, type FollowUpAction } from "./workspace-artifacts";
 
 function TypingDots() {
   return (
@@ -144,20 +146,28 @@ function splitUserDisplayContent(raw: string): { visibleText: string; uiPreviewB
 
 export const MessageBubble = memo(function MessageBubble({
   msg,
+  chatId,
   streaming,
   onRetry,
   onRunAgent,
   onRunPrompt,
   onSendMessage,
   onEdit,
+  onBranch,
+  followUps,
+  onFollowUp,
 }: {
   msg: Msg;
+  chatId?: string | null;
   streaming?: boolean;
   onRetry?: (id: string) => void;
   onRunAgent?: (id: string) => void;
   onRunPrompt?: (text: string) => void;
   onSendMessage?: (text: string) => void;
   onEdit?: (id: string, newContent: string) => void;
+  onBranch?: (id: string) => void;
+  followUps?: FollowUpAction[];
+  onFollowUp?: (action: FollowUpAction) => void;
 }) {
   const { copied, copy } = useCopy();
   const [editing, setEditing] = useState(false);
@@ -245,7 +255,18 @@ export const MessageBubble = memo(function MessageBubble({
           </form>
         ) : (
           visibleText && (
-            <div className="flex w-full items-center justify-end gap-1.5">
+            <div className="flex w-full items-center justify-end gap-1">
+              {onBranch && (
+                <button
+                  type="button"
+                  onClick={() => onBranch(msg.id)}
+                  className="sk-btn h-6 w-6 shrink-0 rounded-md text-[var(--sk-faint)] opacity-100 transition-opacity hover:text-[var(--sk-text)] sm:opacity-0 sm:focus-visible:opacity-100 sm:group-hover:opacity-100"
+                  aria-label="Branch chat from here"
+                  title="Branch chat from here"
+                >
+                  <GitBranch size={11.5} />
+                </button>
+              )}
               {onEdit && (
                 <button
                   type="button"
@@ -292,9 +313,54 @@ export const MessageBubble = memo(function MessageBubble({
           }}
           className="sk-btn h-5 w-5 rounded-md text-[var(--sk-faint)] hover:text-[var(--sk-text)]"
           aria-label={copied ? "Copied" : "Copy reply"}
-          title="Copy"
+          title="Copy reply"
         >
           {copied ? <Check size={11.5} /> : <Copy size={11.5} />}
+        </button>
+      )}
+      {onRetry && !running && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onRetry(msg.id);
+          }}
+          className="sk-btn h-5 w-5 rounded-md text-[var(--sk-faint)] hover:text-[var(--sk-text)]"
+          aria-label="Regenerate reply"
+          title="Regenerate reply"
+        >
+          <RotateCcw size={11} />
+        </button>
+      )}
+      {onBranch && !running && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onBranch(msg.id);
+          }}
+          className="sk-btn h-5 w-5 rounded-md text-[var(--sk-faint)] hover:text-[var(--sk-text)]"
+          aria-label="Branch conversation from here"
+          title="Branch conversation from here"
+        >
+          <GitBranch size={11} />
+        </button>
+      )}
+      {msg.content && !running && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            downloadTextFile(`senko-reply-${msg.id.slice(0, 6)}.md`, msg.content, "text/markdown;charset=utf-8");
+          }}
+          className="sk-btn h-5 w-5 rounded-md text-[var(--sk-faint)] hover:text-[var(--sk-text)]"
+          aria-label="Export reply as Markdown"
+          title="Export reply as Markdown (.md)"
+        >
+          <Download size={11} />
         </button>
       )}
       {agent && agent.status !== "running" && (
@@ -397,6 +463,8 @@ export const MessageBubble = memo(function MessageBubble({
             </a>
           ))}
 
+        {msg.codeTask && chatId && !streaming && <CodeJobCard messageId={msg.id} chatId={chatId} goal={msg.codeTask} />}
+
         {msg.suggestAgent && onRunAgent && (
           <button
             type="button"
@@ -415,6 +483,33 @@ export const MessageBubble = memo(function MessageBubble({
               {metaContent}
             </div>
           )
+        )}
+
+        {/* Contextual follow-up actions */}
+        {!streaming && !running && followUps && followUps.length > 0 && onFollowUp && (
+          <div className="sk-fade flex flex-wrap items-center gap-1.5 pt-1">
+            {followUps.map((f, idx) => (
+              <button
+                key={idx}
+                type="button"
+                onClick={() => onFollowUp(f)}
+                className="sk-follow-chip"
+              >
+                {f.action === "open-preview" ? (
+                  <Eye size={11.5} className="text-[var(--sk-accent-ink)]" />
+                ) : f.action === "open-code" ? (
+                  <Code2 size={11.5} className="text-[var(--sk-accent-ink)]" />
+                ) : f.action === "open-sources" ? (
+                  <Compass size={11.5} className="text-[var(--sk-accent-ink)]" />
+                ) : f.mode === "agent" ? (
+                  <Bot size={11.5} className="text-[var(--sk-accent-ink)]" />
+                ) : (
+                  <Sparkles size={11.5} className="text-[var(--sk-accent-ink)]" />
+                )}
+                <span>{f.label}</span>
+              </button>
+            ))}
+          </div>
         )}
       </div>
     </div>

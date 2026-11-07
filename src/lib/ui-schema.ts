@@ -2457,6 +2457,38 @@ export type MessageSegment =
   | { kind: "mermaid"; code: string }
   | { kind: "math"; latex: string };
 
+const URL_KEYS = ["url", "href", "link", "src", "videoUrl", "pageUrl", "sourceUrl"];
+const TITLE_KEYS = ["title", "label", "name", "text", "caption", "alt"];
+
+/**
+ * Turns a UI block that failed validation into a plain Markdown list of its links, so the
+ * user still gets the results. Returns null when nothing usable is inside.
+ */
+export function salvageUIBlock(parsed: unknown, body: string): string | null {
+  const rows: { title: string; url: string }[] = [];
+  const seen = new Set<string>();
+  const add = (url: unknown, title: unknown) => {
+    if (typeof url !== "string") return;
+    const u = url.trim();
+    if (!/^https?:\/\//i.test(u) || seen.has(u)) return;
+    seen.add(u);
+    const t = typeof title === "string" && title.trim() ? title.trim().slice(0, 120) : u.replace(/^https?:\/\//i, "").slice(0, 80);
+    rows.push({ title: t.replace(/[[\]]/g, ""), url: u });
+  };
+  const walk = (node: unknown, depth: number) => {
+    if (depth > 12 || rows.length >= 30 || node == null || typeof node !== "object") return;
+    if (Array.isArray(node)) { node.forEach(n => walk(n, depth + 1)); return; }
+    const o = node as Record<string, unknown>;
+    const title = TITLE_KEYS.map(k => o[k]).find(v => typeof v === "string" && v.trim());
+    for (const k of URL_KEYS) add(o[k], title);
+    for (const v of Object.values(o)) if (v && typeof v === "object") walk(v, depth + 1);
+  };
+  if (parsed) walk(parsed, 0);
+  else for (const m of body.matchAll(/https?:\/\/[^\s"'<>\\)]+/gi)) add(m[0], null);
+  if (!rows.length) return null;
+  return rows.map(r => "- [" + r.title + "](<" + r.url + ">)").join("\n");
+}
+
 const FENCED_BLOCK_RE = /^ {0,3}((`|~)\2{2,})[ \t]*([^\r\n]*)\r?\n([\s\S]*?)(?:(^ {0,3}\1\2*[ \t]*)(?=\r?$)|(?![\s\S]))/gm;
 const UI_LANG_RE = /^(ui|senko-ui|json-ui)$/i;
 
@@ -2499,7 +2531,9 @@ export function parseMessageSegments(content: string, streaming = false): Messag
           previewType: /"type"\s*:\s*"([^"]{1,40})"/i.exec(body)?.[1],
         });
       } else {
-        segments.push({ kind: "ui_error" });
+        // Keep whatever links and titles the block had instead of showing a dead placeholder.
+        const salvaged = salvageUIBlock(parsed, body);
+        segments.push(salvaged ? { kind: "markdown", text: salvaged } : { kind: "ui_error" });
       }
     }
 

@@ -1,21 +1,6 @@
 import type { Metadata } from "next";
-import { Bricolage_Grotesque, Geist, Geist_Mono, Inter } from "next/font/google";
 import "./globals.css";
 import "./senko.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
-// Senko UI: Inter for reading, Bricolage Grotesque for display headings.
-const skSans = Inter({ variable: "--font-sk-sans", subsets: ["latin"], display: "swap" });
-const skDisplay = Bricolage_Grotesque({ variable: "--font-sk-display", subsets: ["latin"], weight: ["500", "600", "700"], display: "swap" });
 
 // Apply the saved theme before first paint, so there's no flash of the wrong one.
 const THEME_SCRIPT = `try{var t=localStorage.getItem("senko.theme");document.documentElement.dataset.theme=(t==="light"||t==="system")?t:"dark"}catch(e){}`;
@@ -65,11 +50,7 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
       </head>
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} ${skSans.variable} ${skDisplay.variable} antialiased overflow-hidden`}
-      >
-        {children}
-      </body>
+      <body className="antialiased overflow-hidden">{children}</body>
     </html>
   );
 }

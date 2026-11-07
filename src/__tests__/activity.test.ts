@@ -36,7 +36,7 @@ describe('activity source links', () => {
     expect(html).toContain('Visited 2 websites');
     expect(html).toContain('href="https://example.org/anya"');
     expect(html).toContain('href="https://reference.org/anya"');
-    expect(html).toContain('Websites visited');
+    expect(html).not.toContain('Websites visited');
     expect(html).toContain('<details');
   });
 

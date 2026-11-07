@@ -79,6 +79,19 @@ export const saveSettings = (settings: Partial<Settings>) =>
 export const getMemories = () => api<{ memories: { key: string; value: string }[] }>("/api/memories").then((r) => r.memories);
 export const forgetMemory = (key?: string) => api(`/api/memories${key ? `?key=${encodeURIComponent(key)}` : ""}`, { method: "DELETE" });
 
+export interface SavedWorkflowItem {
+  id: string;
+  title: string;
+  goalPattern: string;
+  disclosureLabel: string;
+  successCount: number;
+  failureCount: number;
+  active: boolean;
+  steps: { id: string; title: string }[];
+}
+export const getSkills = () => api<{ skills: SavedWorkflowItem[] }>("/api/skills").then((r) => r.skills);
+export const deleteSavedSkill = (id: string) => api(`/api/skills?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+
 export interface SuggestionResponse {
   suggestions: Suggestion[];
   personalized: boolean;

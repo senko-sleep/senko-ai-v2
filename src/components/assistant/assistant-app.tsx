@@ -1,11 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Bot, Cpu, Globe, KeyRound, Loader2, MessageSquare, PanelLeftOpen, SquarePen } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Bot, Code2, Compass, Cpu, Download, Globe, KeyRound, Loader2, MessageSquare, PanelLeftOpen, SquarePen } from "lucide-react";
 import { extractOpenTags, parseBrowserCommand } from "@/lib/browser-commands";
 import { extractDocumentFromFile } from "@/lib/document-extractor";
 import { MessageBubble } from "./message-bubble";
 import { BrowserPanel, type BrowserState } from "./browser-panel";
+import { ApprovalBar } from "./approval-bar";
+import { WorkspacePanel, type WorkspaceTab } from "./workspace-panel";
+import {
+  deriveFollowUpActions,
+  downloadTextFile,
+  extractCodeArtifacts,
+  extractResearchSources,
+  formatChatAsMarkdown,
+  type FollowUpAction,
+} from "./workspace-artifacts";
 import type { PageOp } from "./reader-view";
 import { Composer, type Attachment } from "./composer";
 import { Sidebar } from "./sidebar";
@@ -23,12 +33,15 @@ import {
   stripLiveTags,
   uid,
   type AgentStep,
+  type BrowserTabInfo,
   type ChatSummary,
   type Mode,
   type Msg,
   type ProviderInfo,
   type StoredMessage,
   type Suggestion,
+  type VerificationInfo,
+  type ApprovalInfo,
 } from "./lib";
 
 const EMPTY_BROWSER: BrowserState = { running: false, status: "", url: "", title: "", plan: [], steps: [], outcome: "idle" };
@@ -103,6 +116,15 @@ export default function AssistantApp() {
   const [controlling, setControlling] = useState(false);
   /** The agent paused because you took control mid-task; "Hand back" continues it. */
   const [paused, setPaused] = useState(false);
+  const [pauseReason, setPauseReason] = useState<string | null>(null);
+  const [approval, setApproval] = useState<ApprovalInfo | null>(null);
+  const [approvalBusy, setApprovalBusy] = useState(false);
+  const [sessionTabs, setSessionTabs] = useState<BrowserTabInfo[]>([]);
+  const [verification, setVerification] = useState<VerificationInfo | null>(null);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [workspaceExpanded, setWorkspaceExpanded] = useState(false);
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("code");
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -344,8 +366,27 @@ export default function AssistantApp() {
             void fetch(`/api/sessions/${chatId}/viewport`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(size) }).catch(() => {});
           }
           if (typeof e.takeover === "boolean") setControlling(e.takeover);
-          const tab = (e.tabs as { url: string; title: string; active: boolean }[] | undefined)?.find((t) => t.active);
+          const tabs = (e.tabs as BrowserTabInfo[] | undefined) || [];
+          setSessionTabs(tabs);
+          const v = (e.verification as VerificationInfo | null | undefined) || null;
+          setVerification(v);
+          if (v?.active) {
+            setPanelOpen(true);
+            setWorkspaceOpen(false);
+          }
+          const tab = tabs.find((t) => t.active);
           if (tab) setBrowser((b) => ({ ...b, url: tab.url, title: tab.title }));
+        }
+        if (e.type === "step") {
+          const s = e as unknown as AgentStep;
+          setBrowser((b) => {
+            const step: AgentStep = { id: s.id, label: s.label, status: s.status, detail: s.detail, url: s.url, shotId: s.shotId };
+            const steps = b.steps.some((x) => x.id === s.id) ? b.steps.map((x) => (x.id === s.id ? { ...x, ...step } : x)) : [...b.steps, step];
+            return { ...b, steps };
+          });
+        }
+        if (e.type === "plan" && Array.isArray(e.steps)) {
+          setBrowser((b) => ({ ...b, plan: e.steps as string[] }));
         }
       };
       es.onerror = () => {
@@ -502,9 +543,14 @@ export default function AssistantApp() {
     setBrowser(EMPTY_BROWSER);
     liveBus.emit({ type: "reset" });
     setPanelOpen(false);
+    setWorkspaceOpen(false);
     setSessionAvailable(false);
     setControlling(false);
     setPaused(false);
+    setPauseReason(null);
+    setApproval(null);
+    setSessionTabs([]);
+    setVerification(null);
   }, [closeStream, liveBus]);
 
   const openChat = useCallback(
@@ -521,6 +567,18 @@ export default function AssistantApp() {
         const { messages: stored } = await API.getChat(id);
         if (activeRef.current !== id) return;
         setMessages(stored.map(fromStored));
+        if (stored[stored.length - 1]?.meta?.agent?.status === "paused") {
+          // A task left waiting for approval: show the request again after a reload.
+          fetch(`/api/chats/${id}/agent/approve`)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((j: { pending?: ApprovalInfo | null } | null) => {
+              if (activeRef.current === id && j?.pending) {
+                setApproval(j.pending);
+                setPaused(true);
+              }
+            })
+            .catch(() => {});
+        }
         fetch(`/api/sessions/${id}`)
           .then((r) => (r.ok ? r.json() : null))
           .then((s) => {
@@ -650,6 +708,15 @@ export default function AssistantApp() {
         let failed: string | null = null;
         let finished = false;
         let previewed = false;
+        let rafId = 0;
+        const flushDelta = () => {
+          if (rafId) {
+            cancelAnimationFrame(rafId);
+            rafId = 0;
+          }
+          const shown = extractOpenTags(stripLiveTags(text)).clean;
+          patch(replyId, (m) => ({ ...m, content: shown, miniAgentRunning: false }));
+        };
         await readSSE(res, (d) => {
           if (ctl.signal.aborted || abortRef.current !== ctl) return;
           const e = d as {
@@ -690,17 +757,30 @@ export default function AssistantApp() {
             clearTimeout(timer);
             timer = setTimeout(onIdle, 180_000);
             text += e.text;
-            const shown = extractOpenTags(stripLiveTags(text)).clean;
-            patch(replyId, (m) => ({ ...m, content: shown, miniAgentRunning: false }));
+            if (!rafId) {
+              rafId = requestAnimationFrame(flushDelta);
+            }
           } else if (e.type === "done" && e.message) {
+            if (rafId) {
+              cancelAnimationFrame(rafId);
+              rafId = 0;
+            }
             finished = true;
             const final = fromStored(e.message);
             patch(replyId, (m) => ({ ...final, id: m.id, provider: final.provider || m.provider, miniAgentSteps: previewed ? undefined : m.miniAgentSteps, miniAgentRunning: false, miniAgentLabel: m.miniAgentLabel }));
             if (final.actions?.[0]) openTab(final.actions[0].url); // may be blocked; the card stays
           } else if (e.type === "error") {
+            if (rafId) {
+              cancelAnimationFrame(rafId);
+              rafId = 0;
+            }
             failed = e.error || "Something went wrong.";
           }
         });
+        if (rafId) {
+          cancelAnimationFrame(rafId);
+          rafId = 0;
+        }
         if (failed) throw new Error(failed);
         if (!finished && !ctl.signal.aborted) throw new Error("The reply ended before it was saved. Try again.");
         patch(replyId, (m) => ({ ...m, pending: false }));
@@ -888,6 +968,7 @@ export default function AssistantApp() {
       // Starting (or resuming) a task gives the browser back to the agent.
       setControlling(false);
       setPaused(false);
+      setApproval(null);
       setBrowser((b) =>
         resume
           ? { ...b, running: true, status: "Continuing…", outcome: "running" }
@@ -952,8 +1033,8 @@ export default function AssistantApp() {
             case "step": {
               const s = e as unknown as AgentStep;
               setBrowser((b) => {
-                const step = { id: s.id, label: s.label, status: s.status, detail: s.detail, url: s.url };
-                const steps = b.steps.some((x) => x.id === s.id) ? b.steps.map((x) => (x.id === s.id ? step : x)) : [...b.steps, step];
+                const step: AgentStep = { id: s.id, label: s.label, status: s.status, detail: s.detail, url: s.url, shotId: s.shotId };
+                const steps = b.steps.some((x) => x.id === s.id) ? b.steps.map((x) => (x.id === s.id ? { ...x, ...step } : x)) : [...b.steps, step];
                 return { ...b, steps, status: s.status === "running" ? `${s.label}…` : b.status };
               });
               trail[s.id - 1] = { label: s.label, url: s.url };
@@ -964,6 +1045,9 @@ export default function AssistantApp() {
               finished = true;
               const url = e.url ? String(e.url) : "";
               end("done", url);
+              setPauseReason(null);
+    setApproval(null);
+              setVerification(null);
               handOverRef.current(chatId);
               patch(replyId, (m) => ({
                 ...m,
@@ -980,6 +1064,8 @@ export default function AssistantApp() {
               finished = true;
               end("stopped");
               setPaused(true);
+              setPauseReason(String(e.reason || ""));
+              setApproval(e.kind === "approval" && e.approval ? (e.approval as ApprovalInfo) : null);
               handOverRef.current(chatId);
               patch(replyId, (m) => ({ ...m, pending: false, content: String(e.reason), agent: { ...m.agent!, status: "paused" } }));
               break;
@@ -1025,7 +1111,14 @@ export default function AssistantApp() {
             handOverRef.current(chatId);
             patch(replyId, () => ({ ...final, id: replyId, pending: false }));
             // Paused (your takeover, or AI limits used up): offer Resume; take control yourself if you want.
-            if (st === "paused") setPaused(true);
+            if (st === "paused") {
+              setPaused(true);
+              // The stream that carried the approval request dropped: ask the server what is pending.
+              fetch(`/api/chats/${chatId}/agent/approve`)
+                .then((r) => (r.ok ? r.json() : null))
+                .then((j: { pending?: ApprovalInfo | null } | null) => { if (activeRef.current === chatId && j?.pending) setApproval(j.pending); })
+                .catch(() => {});
+            }
             break;
           }
         }
@@ -1077,6 +1170,41 @@ export default function AssistantApp() {
     setMessages((ms) => [...ms, reply]);
     void runAgent(chatId, "", [], reply.id, true);
   }, [busy, runAgent]);
+
+  /** Approve exactly the action the agent is waiting on, then let it continue. */
+  const approveAction = useCallback(async () => {
+    const chatId = activeRef.current;
+    if (!chatId || !approval || approvalBusy) return;
+    setApprovalBusy(true);
+    try {
+      const r = await fetch(`/api/chats/${chatId}/agent/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: approval.key, approve: true }),
+      });
+      if (!r.ok) throw new Error(await errorFromResponse(r));
+      setApproval(null);
+      resumeAgent();
+    } catch (e) {
+      // Most likely the request expired or the server restarted: the agent will ask again.
+      setApproval(null);
+      setBrowser((b) => ({ ...b, inputError: networkError(e) }));
+    } finally {
+      setApprovalBusy(false);
+    }
+  }, [approval, approvalBusy, resumeAgent]);
+
+  const denyAction = useCallback(async () => {
+    const chatId = activeRef.current;
+    if (!chatId || !approval) return;
+    const key = approval.key;
+    setApproval(null);
+    await fetch(`/api/chats/${chatId}/agent/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, approve: false }),
+    }).catch(() => {});
+  }, [approval]);
 
   // ---- send ------------------------------------------------------------------
   const send = useCallback(
@@ -1276,6 +1404,203 @@ export default function AssistantApp() {
     void send(s.prompt, s.mode);
   };
 
+  // ---- adaptive workspace artifacts, branching, & tab controls ---------------
+  const codeArtifacts = useMemo(() => extractCodeArtifacts(messages), [messages]);
+  const researchSources = useMemo(
+    () =>
+      extractResearchSources(
+        messages.map((m) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          steps: m.miniAgentSteps,
+        })),
+        browser.steps,
+        sessionTabs,
+      ),
+    [messages, browser.steps, sessionTabs],
+  );
+  const allScrapedImageIds = useMemo(() => messages.flatMap((m) => m.imageIds || []), [messages]);
+
+  // Listen for "Preview" or "Workspace" clicks on any CodeFence in the thread
+  useEffect(() => {
+    const onOpenArtifact = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ code?: string; language?: string; filename?: string; tab?: WorkspaceTab }>).detail;
+      if (!detail) return;
+      const matched = codeArtifacts.find(
+        (a) => (detail.code && a.code.trim() === detail.code.trim()) || (detail.filename && a.filename === detail.filename),
+      );
+      if (matched) setSelectedArtifactId(matched.id);
+      setWorkspaceTab(detail.tab || "code");
+      setPanelOpen(false);
+      setWorkspaceOpen(true);
+    };
+    window.addEventListener("senko:open-artifact", onOpenArtifact);
+    return () => window.removeEventListener("senko:open-artifact", onOpenArtifact);
+  }, [codeArtifacts]);
+
+  // Select newest artifact when generated; if previewable and workspace is open, show its live preview
+  const prevArtifactCountRef = useRef(0);
+  useEffect(() => {
+    const prev = prevArtifactCountRef.current;
+    prevArtifactCountRef.current = codeArtifacts.length;
+    if (codeArtifacts.length > prev && !streamingId) {
+      const newest = codeArtifacts[codeArtifacts.length - 1];
+      if (newest) {
+        setSelectedArtifactId(newest.id);
+        if (newest.previewable && workspaceOpen) {
+          setWorkspaceTab("preview");
+        }
+      }
+    }
+  }, [codeArtifacts, streamingId, workspaceOpen]);
+
+  // Global workspace shortcuts: Alt+M (switch mode), Alt+B (toggle browser), Alt+W (toggle workspace)
+  useEffect(() => {
+    const onShortcut = (e: KeyboardEvent) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey) return;
+      const k = e.key.toLowerCase();
+      if (k === "m" && !busy) {
+        e.preventDefault();
+        changeMode(mode === "chat" ? "agent" : "chat");
+      } else if (k === "b" && activeRef.current) {
+        e.preventDefault();
+        void toggleBrowserPanel();
+      } else if (k === "w") {
+        e.preventDefault();
+        setWorkspaceOpen((v) => {
+          if (!v) setPanelOpen(false);
+          return !v;
+        });
+      }
+    };
+    window.addEventListener("keydown", onShortcut);
+    return () => window.removeEventListener("keydown", onShortcut);
+  }, [busy, mode, toggleBrowserPanel]);
+
+  /** Forks the conversation up to `messageId` into a new independent chat branch. */
+  const branchChat = useCallback(
+    async (messageId: string) => {
+      if (busy) return;
+      const ms = messagesRef.current;
+      const idx = ms.findIndex((m) => m.id === messageId);
+      if (idx === -1) return;
+      const slice = ms.slice(0, idx + 1);
+      const currentTitle = chats.find((c) => c.id === activeRef.current)?.title || "Conversation";
+      const branchTitle = `${currentTitle.replace(/\s*\(Branch\)$/i, "").slice(0, 60)} (Branch)`;
+      try {
+        const created = await API.createChat();
+        await API.renameChat(created.id, branchTitle).catch(() => {});
+        // Replay pairs of user + assistant messages into the branched chat
+        for (let i = 0; i < slice.length; i++) {
+          const item = slice[i];
+          if (item.role !== "user") continue;
+          const nextAssistant = slice[i + 1]?.role === "assistant" ? slice[i + 1] : undefined;
+          await fetch(`/api/chats/${created.id}/messages`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              content: item.content,
+              imageIds: item.imageIds || [],
+              record: {
+                content: nextAssistant?.content || "_Branched from here._",
+                actions: nextAssistant?.actions,
+              },
+            }),
+          });
+        }
+        await refreshChats();
+        await openChat(created.id);
+      } catch {
+        /* ignore network failure */
+      }
+    },
+    [busy, chats, openChat, refreshChats],
+  );
+
+  const exportCurrentChat = useCallback(() => {
+    if (!messages.length) return;
+    const title = chats.find((c) => c.id === activeId)?.title || "Senko Conversation";
+    const md = formatChatAsMarkdown(title, messages);
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "conversation";
+    downloadTextFile(`${slug}.md`, md, "text/markdown;charset=utf-8");
+  }, [activeId, chats, messages]);
+
+  const switchBrowserTab = useCallback(async (index: number) => {
+    const chatId = activeRef.current;
+    if (!chatId) return;
+    await fetch(`/api/sessions/${chatId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "switch", index }),
+    }).catch(() => {});
+  }, []);
+
+  const closeBrowserTab = useCallback(async (index: number) => {
+    const chatId = activeRef.current;
+    if (!chatId) return;
+    await fetch(`/api/sessions/${chatId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "close", index }),
+    }).catch(() => {});
+  }, []);
+
+  const newBrowserTab = useCallback(async () => {
+    const chatId = activeRef.current;
+    if (!chatId) return;
+    await fetch(`/api/sessions/${chatId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "open", url: "https://www.google.com" }),
+    }).catch(() => {});
+  }, []);
+
+  const lastAssistantId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant" && !messages[i].pending && !messages[i].error && messages[i].content) {
+        return messages[i].id;
+      }
+    }
+    return null;
+  }, [messages]);
+
+  const lastAssistantFollowUps = useMemo(() => {
+    if (!lastAssistantId || busy) return [];
+    const lastMsg = messages.find((m) => m.id === lastAssistantId);
+    if (!lastMsg) return [];
+    const msgArts = codeArtifacts.filter((a) => a.messageId === lastAssistantId);
+    return deriveFollowUpActions(lastMsg.content, mode, msgArts, researchSources.length);
+  }, [busy, codeArtifacts, lastAssistantId, messages, mode, researchSources.length]);
+
+  const handleFollowUp = useCallback(
+    (f: FollowUpAction) => {
+      if (f.action === "open-code") {
+        setWorkspaceTab("code");
+        setPanelOpen(false);
+        setWorkspaceOpen(true);
+        return;
+      }
+      if (f.action === "open-preview") {
+        setWorkspaceTab("preview");
+        setPanelOpen(false);
+        setWorkspaceOpen(true);
+        return;
+      }
+      if (f.action === "open-sources") {
+        setWorkspaceTab("sources");
+        setPanelOpen(false);
+        setWorkspaceOpen(true);
+        return;
+      }
+      if (f.prompt) {
+        if (f.mode && f.mode !== mode) changeMode(f.mode);
+        void send(f.prompt, f.mode || mode);
+      }
+    },
+    [mode, send],
+  );
+
   // ---- render ----------------------------------------------------------------
   const usable = providers.filter((p) => p.available);
   const activeProvider = provider === "auto" ? usable[0] : providers.find((p) => p.id === provider);
@@ -1306,7 +1631,7 @@ export default function AssistantApp() {
       {sidebarOpen && (
         <>
           <div className="sk-fade fixed inset-0 z-30 bg-black/65 lg:hidden" onClick={() => setSidebarOpen(false)} aria-hidden />
-          <aside className="sk-in fixed inset-y-0 left-0 z-40 w-[236px] lg:static lg:z-auto lg:w-[220px] lg:shrink-0">
+          <aside className="sk-in fixed inset-y-0 left-0 z-40 w-[236px] lg:static lg:z-auto lg:w-[228px] lg:shrink-0">
             <Sidebar
               chats={chats}
               activeId={activeId}
@@ -1327,8 +1652,8 @@ export default function AssistantApp() {
 
       {/* Center Conversation Column */}
       <main className="flex min-w-0 flex-1 flex-col">
-        {/* Sleek, unconfined top bar that blends directly into the pitch-black canvas */}
-        <header className="flex h-11 shrink-0 items-center justify-between gap-3 px-2.5 sm:gap-4 sm:px-4">
+        {/* Precision Workspace Header */}
+        <header className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-[var(--sk-line)] px-2.5 sm:gap-3 sm:px-4">
           <div className="flex min-w-0 flex-1 items-center gap-1">
             {!sidebarOpen && (
               <>
@@ -1345,7 +1670,7 @@ export default function AssistantApp() {
             </span>
           </div>
 
-          <div role="radiogroup" aria-label="Mode" className="sk-mode flex shrink-0 items-center gap-1">
+          <div role="radiogroup" aria-label="Mode" className="sk-mode flex shrink-0 items-center gap-1 rounded-lg bg-[var(--sk-surface-1)] p-0.5 border border-[var(--sk-line)]">
             {(["chat", "agent"] as Mode[]).map((m) => {
               const active = mode === m;
               return (
@@ -1356,14 +1681,15 @@ export default function AssistantApp() {
                   aria-checked={active}
                   onClick={() => changeMode(m)}
                   disabled={busy}
-                  className={`relative flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md px-2.5 text-[12px] font-medium transition-colors disabled:cursor-not-allowed ${
-                    active ? "text-[var(--sk-text)]" : "text-[var(--sk-muted)] hover:text-[var(--sk-text)]"
+                  title={m === "chat" ? "Chat & Workspace mode (Alt+M)" : "Live Browser Agent mode (Alt+M)"}
+                  className={`relative flex h-6.5 shrink-0 items-center justify-center gap-1.5 rounded-md px-2.5 text-[11.5px] font-medium transition-colors disabled:cursor-not-allowed ${
+                    active ? "bg-[var(--sk-raised)] text-[var(--sk-text)]" : "text-[var(--sk-muted)] hover:text-[var(--sk-text)]"
                   }`}
                 >
                   {m === "chat" ? (
-                    <MessageSquare size={12} className={active ? "text-[var(--sk-accent-ink)]" : ""} aria-hidden />
+                    <MessageSquare size={11.5} className={active ? "text-[var(--sk-accent-ink)]" : ""} aria-hidden />
                   ) : (
-                    <Bot size={12.5} className={active ? "text-[var(--sk-accent-ink)]" : ""} aria-hidden />
+                    <Bot size={12} className={active ? "text-[var(--sk-accent-ink)]" : ""} aria-hidden />
                   )}
                   {m === "chat" ? "Chat" : "Agent"}
                 </button>
@@ -1371,10 +1697,12 @@ export default function AssistantApp() {
             })}
           </div>
 
-          <div className="flex min-w-0 flex-1 items-center justify-end gap-2 overflow-hidden">
+          <div className="flex shrink-0 items-center justify-end gap-1.5">
             <label
-              className="relative hidden h-7 min-w-0 max-w-[160px] shrink items-center gap-1.5 overflow-hidden rounded-md px-2 text-[11.5px] text-[var(--sk-muted)] transition hover:bg-[var(--sk-hover)] hover:text-[var(--sk-text)] has-[:focus-visible]:shadow-[var(--sk-focus)] sm:inline-flex"
-              title={activeProvider?.model ? `${activeProvider.label} · ${activeProvider.model}` : "Model"}
+              className={`relative hidden h-7 min-w-0 shrink items-center gap-1.5 overflow-hidden rounded-md border border-transparent px-2 text-[11.5px] text-[var(--sk-muted)] transition hover:border-[var(--sk-line)] hover:bg-[var(--sk-hover)] hover:text-[var(--sk-text)] has-[:focus-visible]:shadow-[var(--sk-focus)] ${
+                workspaceOpen || panelOpen ? "max-w-[130px] xl:inline-flex" : "max-w-[175px] sm:inline-flex"
+              }`}
+              title={activeProvider?.model ? `${activeProvider.label} · ${activeProvider.model}${activeProvider.local ? " (Local)" : " (Cloud)"}` : "Select AI Model"}
             >
               <Cpu size={12} className="shrink-0 text-[var(--sk-accent-ink)]" aria-hidden />
               <span className="truncate">
@@ -1382,6 +1710,11 @@ export default function AssistantApp() {
                   ? `Auto${usable[0] ? ` · ${usable[0].label}` : ""}`
                   : activeProvider?.label || provider}
               </span>
+              {activeProvider?.local && (
+                <span className="hidden rounded bg-[var(--sk-accent-soft)] px-1 py-0.2 text-[9px] font-semibold uppercase text-[var(--sk-accent-ink)] xl:inline">
+                  Local
+                </span>
+              )}
               <select
                 aria-label="AI model"
                 value={provider}
@@ -1393,29 +1726,84 @@ export default function AssistantApp() {
                   <option key={p.id} value={p.id} disabled={!p.available}>
                     {p.label}
                     {p.model ? ` · ${p.model}` : ""}
+                    {p.local ? " [Local]" : ""}
                     {!p.available ? " (unavailable)" : ""}
                   </option>
                 ))}
               </select>
             </label>
 
-            {mode === "agent" && activeId && (
+            {/* Adaptive Workspace Toggle (Code / Preview / Sources) */}
+            {(!isEmpty || workspaceOpen) && (
               <button
                 type="button"
-                onClick={() => void toggleBrowserPanel()}
+                onClick={() => {
+                  setWorkspaceOpen((v) => {
+                    const next = !v;
+                    if (next) {
+                      setPanelOpen(false);
+                      if (codeArtifacts.some((a) => a.previewable)) setWorkspaceTab("preview");
+                    }
+                    return next;
+                  });
+                }}
+                className={`sk-btn h-7 shrink-0 gap-1.5 rounded-full border px-2.5 text-[11.5px] font-medium transition ${
+                  workspaceOpen
+                    ? "border-[var(--sk-accent-line)] bg-[var(--sk-accent-soft)] text-[var(--sk-accent-ink)]"
+                    : "border-[var(--sk-line)] text-[var(--sk-muted)] hover:border-[var(--sk-line-strong)] hover:text-[var(--sk-text)]"
+                }`}
+                aria-label={workspaceOpen ? "Hide workspace" : "Open workspace"}
+                aria-pressed={workspaceOpen}
+                title="Toggle Code, Preview & Sources Workspace (Alt+W)"
+              >
+                {codeArtifacts.length > 0 ? <Code2 size={12} aria-hidden /> : <Compass size={12} aria-hidden />}
+                <span className="hidden sm:inline">Workspace</span>
+                {(codeArtifacts.length > 0 || researchSources.length > 0) && (
+                  <span className="sk-tabular rounded-full bg-[var(--sk-raised)] px-1.5 py-0.2 text-[10px]">
+                    {codeArtifacts.length || researchSources.length}
+                  </span>
+                )}
+              </button>
+            )}
+
+            {/* Live Browser Operator Toggle */}
+            {(mode === "agent" || panelOpen || browser.running || verification?.active) && activeId && (
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkspaceOpen(false);
+                  void toggleBrowserPanel();
+                }}
                 disabled={browserOpening}
-                className={`sk-btn relative h-7 shrink-0 gap-1.5 rounded-full px-2.5 text-[11.5px] font-medium transition disabled:cursor-wait ${
+                className={`sk-btn relative h-7 shrink-0 gap-1.5 rounded-full border px-2.5 text-[11.5px] font-medium transition disabled:cursor-wait ${
                   panelOpen
-                    ? "bg-[var(--sk-accent-soft)] text-[var(--sk-accent-ink)]"
-                    : "text-[var(--sk-muted)] hover:bg-[var(--sk-hover)] hover:text-[var(--sk-text)]"
+                    ? "border-[var(--sk-accent-line)] bg-[var(--sk-accent-soft)] text-[var(--sk-accent-ink)]"
+                    : verification?.active
+                      ? "border-[var(--sk-warn)] bg-[var(--sk-warn-soft)] text-[var(--sk-warn)]"
+                      : "border-[var(--sk-line)] text-[var(--sk-muted)] hover:border-[var(--sk-line-strong)] hover:text-[var(--sk-text)]"
                 }`}
                 aria-label={panelOpen ? "Hide browser" : "Show browser"}
                 aria-pressed={panelOpen}
-                title={panelOpen ? "Hide browser" : "Show browser"}
+                title={panelOpen ? "Hide live browser (Alt+B)" : "Show live browser (Alt+B)"}
               >
                 {browserOpening ? <Loader2 size={12.5} className="sk-spin text-[var(--sk-accent)]" /> : <Globe size={12.5} aria-hidden />}
-                <span className="hidden sm:inline">Browser</span>
-                {browser.running && <span className="sk-pulse h-1.5 w-1.5 rounded-full bg-[var(--sk-accent)]" aria-hidden />}
+                <span className="hidden sm:inline">{verification?.active ? "Verify" : "Browser"}</span>
+                {(browser.running || verification?.active) && (
+                  <span className="sk-pulse h-1.5 w-1.5 rounded-full bg-[var(--sk-accent)]" aria-hidden />
+                )}
+              </button>
+            )}
+
+            {/* Export conversation as Markdown */}
+            {!isEmpty && (
+              <button
+                type="button"
+                onClick={exportCurrentChat}
+                className="sk-btn hidden h-7 w-7 shrink-0 rounded-md text-[var(--sk-muted)] hover:text-[var(--sk-text)] sm:inline-flex"
+                aria-label="Export conversation as Markdown"
+                title="Export conversation (.md)"
+              >
+                <Download size={13} />
               </button>
             )}
           </div>
@@ -1441,7 +1829,7 @@ export default function AssistantApp() {
           ) : (
             <>
               <div ref={listRef} className="sk-scroll min-h-0 flex-1 overflow-y-auto" aria-live="polite" aria-busy={busy}>
-                <div className="mx-auto w-full max-w-[660px] space-y-5 px-3.5 pb-6 pt-4 sm:px-6">
+                <div className="mx-auto w-full max-w-[700px] space-y-5 px-4 pb-6 pt-4 sm:px-6">
                   {chatLoading ? (
                     <div className="flex justify-center pt-12 text-[var(--sk-faint)]">
                       <Loader2 className="sk-spin" size={18} aria-label="Loading chat" />
@@ -1451,21 +1839,26 @@ export default function AssistantApp() {
                       <MessageBubble
                         key={m.id}
                         msg={m}
+                        chatId={activeId}
                         streaming={m.id === streamingId && !!m.content}
                         onRetry={busy ? undefined : retry}
                         onRunAgent={busy ? undefined : runSuggestedAgent}
                         onRunPrompt={busy ? undefined : runPromptInAgent}
                         onSendMessage={busy ? undefined : (prompt) => void send(prompt, "chat")}
                         onEdit={busy ? undefined : (id, next) => void editMessage(id, next)}
+                        onBranch={busy ? undefined : (id) => void branchChat(id)}
+                        followUps={m.id === lastAssistantId ? lastAssistantFollowUps : undefined}
+                        onFollowUp={m.id === lastAssistantId ? handleFollowUp : undefined}
                       />
                     ))
                   )}
                 </div>
               </div>
-              <div className="mx-auto w-full max-w-[660px] shrink-0 px-3.5 pb-2.5 pt-1.5 sm:px-6">
+              <div className="mx-auto w-full max-w-[700px] shrink-0 border-t border-[var(--sk-line)]/50 bg-[var(--sk-bg)]/85 px-4 pb-3 pt-2 backdrop-blur-md sm:px-6">
+                {approval && <ApprovalBar approval={approval} busy={approvalBusy || busy} onApprove={() => void approveAction()} onDeny={() => void denyAction()} />}
                 {composer}
                 <p className="px-2 pt-1.5 text-center text-[10.5px] text-[var(--sk-faint)]">
-                  {mode === "agent" ? "Agent mode drives a real browser. You can stop it anytime." : "Senko can make mistakes. Check anything important."}
+                  {mode === "agent" ? "Agent mode drives a real browser. You can intervene or stop anytime." : "Senko adapts to code, research, and live browser tasks."}
                 </p>
               </div>
             </>
@@ -1473,14 +1866,49 @@ export default function AssistantApp() {
         </div>
       </main>
 
+      {/* Adaptive Code, Live Preview & Research Sources Workspace */}
+      {workspaceOpen && !panelOpen && (
+        <div
+          className={`sk-in sk-overlay sk-workspace-pane fixed inset-x-1.5 bottom-1.5 top-12 z-20 md:static md:inset-auto md:z-auto md:h-full md:shrink-0 ${
+            workspaceExpanded ? "md:w-[74%] md:max-w-[1640px]" : "md:w-[60%] md:max-w-[1360px]"
+          }`}
+        >
+          <WorkspacePanel
+            key={activeId}
+            chatId={activeId}
+            activeTab={workspaceTab}
+            onTabChange={setWorkspaceTab}
+            artifacts={codeArtifacts}
+            selectedArtifactId={selectedArtifactId}
+            onSelectArtifact={setSelectedArtifactId}
+            sources={researchSources}
+            scrapedImages={allScrapedImageIds}
+            expanded={workspaceExpanded}
+            onToggleExpand={() => setWorkspaceExpanded((v) => !v)}
+            onClose={() => setWorkspaceOpen(false)}
+            onAskSenko={(prompt, targetMode) => {
+              if (targetMode && targetMode !== mode) changeMode(targetMode);
+              void send(prompt, targetMode || mode);
+            }}
+          />
+        </div>
+      )}
+
       {/* Live browser: full-height docked pane on desktop, sheet on smaller screens */}
       {panelOpen && (
         <div className="sk-in sk-overlay fixed inset-x-1.5 bottom-1.5 top-12 z-20 lg:static lg:inset-auto lg:z-auto lg:h-full lg:w-[52%] lg:max-w-[1200px] lg:shrink-0 2xl:w-[56%]">
           <BrowserPanel
+            chatId={activeId}
             state={browser}
             bus={liveBus}
             controlling={controlling}
             paused={paused}
+            pauseReason={pauseReason}
+            verification={verification}
+            tabs={sessionTabs}
+            onSwitchTab={(idx) => void switchBrowserTab(idx)}
+            onCloseTab={(idx) => void closeBrowserTab(idx)}
+            onNewTab={() => void newBrowserTab()}
             onStop={stop}
             onClose={() => setPanelOpen(false)}
             onOpenBrowser={openLiveBrowser}

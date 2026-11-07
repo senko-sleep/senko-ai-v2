@@ -55,6 +55,10 @@
 
 :root {
   --radius: 1rem;
+  --font-geist-sans: Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-geist-mono: "Geist Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  --font-sk-sans: Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-sk-display: "Bricolage Grotesque", Inter, ui-sans-serif, system-ui, sans-serif;
   /* Softer, warmer dark theme - easier on the eyes */
   --background: #0f0f12;
   --foreground: #e8e6e3;

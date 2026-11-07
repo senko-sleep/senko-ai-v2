@@ -6,6 +6,8 @@ export default defineConfig({
     globals: true,
     environment: "node",
     include: ["src/__tests__/**/*.test.ts"],
+    maxWorkers: 2,
+    execArgv: ["--no-wasm-tier-up"],
   },
   resolve: {
     alias: {

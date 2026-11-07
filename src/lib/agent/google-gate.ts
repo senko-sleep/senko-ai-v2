@@ -110,6 +110,198 @@ export function looksLikeGoogleCaptcha(text: string): boolean {
   return /unusual traffic from your computer network|id="captcha-form"|our systems have detected unusual traffic/i.test(text);
 }
 
+// ---- universal bot-verification / challenge detection ----------------------------------------
+
+export type BotChallengeProvider = "google" | "cloudflare" | "datadome" | "perimeterx" | "captcha";
+
+export interface BotChallengeInfo {
+  provider: BotChallengeProvider;
+  host: string;
+  url: string;
+  title: string;
+  /** True when the challenge may auto-resolve via a JS check within a few seconds. */
+  autoResolvable: boolean;
+  /** Human-readable explanation shown in the live operator UI. */
+  summary: string;
+}
+
+export interface ChallengeProbeInput {
+  url: string;
+  title: string;
+  bodyText: string;
+  hasChallengeWidget?: boolean;
+  challengeProviderHint?: BotChallengeProvider | "";
+}
+
+function safeHostname(url: string): string {
+  try {
+    return new URL(url).hostname || "this site";
+  } catch {
+    return "this site";
+  }
+}
+
+/**
+ * Pure classifier that determines whether a page is currently gated by a bot-verification /
+ * CAPTCHA / security interstitial. Designed to avoid false positives on regular articles or
+ * documentation pages that merely mention CAPTCHAs or Cloudflare.
+ */
+export function classifyBotChallenge(input: ChallengeProbeInput): BotChallengeInfo | null {
+  const url = input.url || "";
+  const title = (input.title || "").trim();
+  const body = (input.bodyText || "").trim();
+  const host = safeHostname(url);
+
+  // 1. Google /sorry robot check
+  if (isGoogleSorryUrl(url) || (isGoogleHost(host) && looksLikeGoogleCaptcha(body))) {
+    return {
+      provider: "google",
+      host,
+      url,
+      title: title || "Google Robot Check",
+      autoResolvable: false,
+      summary: `Google requested human verification on ${host}. Complete the check in the live browser to continue.`,
+    };
+  }
+
+  // Long content pages (> 2400 chars of visible text) are real pages, not interstitial gates.
+  const isShortInterstitial = body.length < 2400;
+  if (!isShortInterstitial && !input.hasChallengeWidget) return null;
+
+  // 2. Cloudflare Turnstile / Managed Challenge interstitial
+  const cfTitle = /^(just a moment\.{0,3}|attention required!?.*cloudflare)$/i.test(title);
+  const cfBody =
+    /verify you are human by completing the action below|checking if the site connection is secure|enable javascript and cookies to continue|ray id:? [0-9a-f]{8,}|performance & security by cloudflare/i.test(
+      body,
+    );
+  if (
+    (!input.challengeProviderHint || input.challengeProviderHint === "cloudflare") &&
+    ((cfTitle && isShortInterstitial) || (cfBody && isShortInterstitial) || (input.challengeProviderHint === "cloudflare" && isShortInterstitial))
+  ) {
+    const interactive =
+      Boolean(input.hasChallengeWidget) || /verify you are human|complete the action below|attention required/i.test(body + " " + title);
+    return {
+      provider: "cloudflare",
+      host,
+      url,
+      title: title || "Cloudflare Security Check",
+      autoResolvable: !interactive,
+      summary: `Cloudflare security verification on ${host}. Click the verification checkbox in the live browser to continue.`,
+    };
+  }
+
+  // 3. PerimeterX / HUMAN ("Press & Hold")
+  if (
+    isShortInterstitial &&
+    (input.challengeProviderHint === "perimeterx" ||
+      /press & hold to confirm you are (a )?human|please verify you are a human[\s\S]*reference id/i.test(body) ||
+      /^(robot or human\??|access to this page has been denied)/i.test(title))
+  ) {
+    return {
+      provider: "perimeterx",
+      host,
+      url,
+      title: title || "Human Verification",
+      autoResolvable: false,
+      summary: `Human verification required on ${host} (Press & Hold / security check). Complete it in the live browser to resume.`,
+    };
+  }
+
+  // 4. DataDome interstitial
+  if (
+    isShortInterstitial &&
+    (input.challengeProviderHint === "datadome" ||
+      /protected by datadome|your(s)? browser or network behavior has triggered our security/i.test(body))
+  ) {
+    return {
+      provider: "datadome",
+      host,
+      url,
+      title: title || "Security Verification",
+      autoResolvable: false,
+      summary: `Security verification required on ${host}. Complete the verification check in the live browser to resume.`,
+    };
+  }
+
+  // 5. Generic CAPTCHA / "Are you a bot?" interstitial gate
+  const gateTitle =
+    /^(are you a (robot|bot|human)\??|verify you are human|security verification|human verification|bot verification|pardon our interruption|one more step)\b/i.test(
+      title,
+    );
+  const gateBody =
+    /verify you are (a )?human|confirm you('re| are) not a (robot|bot)|complete the security check to access|please solve this captcha/i.test(
+      body,
+    );
+  if (isShortInterstitial && ((gateTitle && gateBody) || (gateBody && input.hasChallengeWidget))) {
+    return {
+      provider: "captcha",
+      host,
+      url,
+      title: title || "Verification Required",
+      autoResolvable: false,
+      summary: `Verification challenge detected on ${host}. Complete the check in the live browser and Senko will resume automatically.`,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Inspects a live Playwright page (bounded by a short timeout) to determine if a bot-verification
+ * challenge is currently blocking the page.
+ */
+export async function detectPageBotChallenge(page: {
+  url(): string;
+  evaluate(fn: () => unknown): Promise<unknown>;
+}): Promise<BotChallengeInfo | null> {
+  const url = page.url();
+  if (!url || url === "about:blank" || url.startsWith("data:")) return null;
+  if (isGoogleSorryUrl(url)) {
+    return classifyBotChallenge({ url, title: "Google Robot Check", bodyText: 'id="captcha-form"' });
+  }
+  try {
+    const probe = (await Promise.race([
+      page.evaluate(() => {
+        const title = document.title || "";
+        const bodyText = (document.body?.innerText || "").slice(0, 3000);
+        const cfWidget = Boolean(
+          document.querySelector(
+            '#challenge-running, #cf-challenge-running, .cf-turnstile, [name="cf-turnstile-response"], iframe[src*="challenges.cloudflare.com"]',
+          ),
+        );
+        const pxWidget = Boolean(document.querySelector('#px-captcha, iframe[src*="px-cloud"], iframe[src*="perimeterx"]'));
+        const ddWidget = Boolean(document.querySelector('iframe[src*="captcha-delivery.com"], iframe[src*="datadome"]'));
+        const captchaWidget = Boolean(
+          document.querySelector(
+            '#captcha-form, .g-recaptcha, .h-captcha, iframe[src*="recaptcha"], iframe[src*="hcaptcha"]',
+          ),
+        );
+        const hasChallengeWidget = cfWidget || pxWidget || ddWidget || captchaWidget;
+        const challengeProviderHint: "cloudflare" | "perimeterx" | "datadome" | "captcha" | "" = cfWidget
+          ? "cloudflare"
+          : pxWidget
+            ? "perimeterx"
+            : ddWidget
+              ? "datadome"
+              : captchaWidget
+                ? "captcha"
+                : "";
+        return { title, bodyText, hasChallengeWidget, challengeProviderHint };
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+    ])) as {
+      title: string;
+      bodyText: string;
+      hasChallengeWidget?: boolean;
+      challengeProviderHint?: BotChallengeProvider | "";
+    } | null;
+    if (!probe) return null;
+    return classifyBotChallenge({ url, ...probe });
+  } catch {
+    return null;
+  }
+}
+
 export type SearchKind = "web" | "images";
 export type SearchEngine = "google" | "bing";
 

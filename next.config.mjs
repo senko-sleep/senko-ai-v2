@@ -4,11 +4,37 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactCompiler: true,
+  devIndicators: false,
   // Prisma Compute deploys the standalone server; the deploy workflow sets this.
   ...(process.env.NEXT_OUTPUT_STANDALONE === "1" ? { output: "standalone" } : {}),
-  // Playwright ships native binaries; load it from node_modules at runtime instead of bundling it.
-  serverExternalPackages: ["playwright", "playwright-core", "pg", "@electric-sql/pglite", "@vercel/sandbox"],
+  // Playwright and esbuild ship native binaries; load them from node_modules at runtime instead of bundling them.
+  serverExternalPackages: [
+    "playwright",
+    "playwright-core",
+    "esbuild",
+    "jiti",
+    "pg",
+    "@electric-sql/pglite",
+    "@vercel/sandbox",
+  ],
+  // Node.js runs in the browser (WebContainers) only on cross-origin-isolated pages. Just the
+  // workspace route gets these headers: on the main app they would break YouTube embeds and
+  // the live browser view.
+  async headers() {
+    return [
+      {
+        source: "/code/:path*",
+        headers: [
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+          { key: "Cross-Origin-Embedder-Policy", value: "credentialless" },
+        ],
+      },
+    ];
+  },
   experimental: {
+    // Keep build/page workers within the memory budget of the local 8 GB machine.
+    // Larger hosts can opt into additional workers without changing source.
+    cpus: Math.max(1, Number.parseInt(process.env.NEXT_BUILD_CPUS || "2", 10) || 2),
     // Turbopack frees its in-memory cache past this target instead of growing until the
     // machine runs out (low-RAM dev PCs crashed with "Insufficient system resources").
     turbopackMemoryLimit: Number(process.env.TURBOPACK_MEMORY_LIMIT_MB || 1536) * 1024 * 1024,
