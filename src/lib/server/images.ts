@@ -2,12 +2,17 @@
 // Scrapes Bing, DuckDuckGo, Reddit, Wikimedia, Wallhaven, Boorus
 // (Danbooru/Safebooru, Rule34, Gelbooru, e621), and deep gallery pages in parallel,
 // returning ~255 deduplicated images per page with engine attribution.
+import { safeParams, type SafeSearch } from "@/lib/content-policy";
+import { cseAvailable, cseConfigured, cseImageSearch } from "./google-cse";
+import { browserImagesEnabled, googleImagesViaBrowser } from "./google-browser-images";
 
 export interface ScrapedImage {
   url: string;
   alt: string;
   source: string;
   engine: string;
+  /** Show after every other source (e.g. fan art for what is probably a real person). */
+  late?: boolean;
 }
 
 export const IMAGES_BATCH_SIZE = 255;
@@ -98,7 +103,7 @@ function addImage(results: ScrapedImage[], seen: Set<string>, img: ScrapedImage)
 }
 
 // ── 1. BING IMAGES (8 pages in parallel, ~280 raw images) ──
-async function fetchBingImages(query: string, page: number): Promise<ScrapedImage[]> {
+async function fetchBingImages(query: string, page: number, safe: SafeSearch = "off"): Promise<ScrapedImage[]> {
   const results: ScrapedImage[] = [];
   const seen = new Set<string>();
   try {
@@ -107,7 +112,7 @@ async function fetchBingImages(query: string, page: number): Promise<ScrapedImag
     const offsets = Array.from({ length: 8 }, (_, i) => baseOffset + i * 35);
     const pages = await Promise.allSettled(
       offsets.map((off) =>
-        fetch(`https://www.bing.com/images/search?q=${encoded}&form=HDRSC2&first=${1 + off}&safeSearch=off`, {
+        fetch(`https://www.bing.com/images/search?q=${encoded}&form=HDRSC2&first=${1 + off}&${safeParams.bingImages(safe)}`, {
           headers: HEADERS,
           signal: AbortSignal.timeout(9000),
         }).then((r) => r.text())
@@ -254,6 +259,66 @@ async function fetchRedditImages(query: string, page: number): Promise<ScrapedIm
   return results;
 }
 
+// ── 6a. GOOGLE IMAGES (official Programmable Search JSON API) ──
+// Needs GOOGLE_CSE_KEY (an API key with the Custom Search API enabled) and GOOGLE_CSE_ID
+// (a Programmable Search Engine with "Image search" and "Search the entire web" on).
+// Free tier: 100 queries/day; each call returns 10 results, so pages are fetched in parallel.
+export function googleImagesConfigured(): boolean {
+  return cseConfigured();
+}
+
+/** Google Images: the official API with our keys, then the agent's real Chrome when the keys are out of quota. */
+async function fetchGoogleImages(query: string, page: number, safe: SafeSearch = "off", signal?: AbortSignal): Promise<ScrapedImage[]> {
+  const viaApi = cseAvailable() ? await fetchGoogleImagesApi(query, page, safe) : [];
+  if (viaApi.length || page > 1 || !browserImagesEnabled()) return viaApi;
+  const results: ScrapedImage[] = [];
+  const seen = new Set<string>();
+  for (const img of await googleImagesViaBrowser(query, { safe: safe === "off" ? "off" : "active", signal })) {
+    addImage(results, seen, { url: img.url, alt: query, source: img.source || "", engine: "google" });
+  }
+  return results;
+}
+
+async function fetchGoogleImagesApi(query: string, page: number, safe: SafeSearch = "off"): Promise<ScrapedImage[]> {
+  const results: ScrapedImage[] = [];
+  const seen = new Set<string>();
+  // Pages 1-3 → result offsets 1, 11, 21 (the API caps start at 91).
+  const starts = [0, 1, 2].map((i) => Math.min(91, (page - 1) * 30 + i * 10 + 1));
+  const level = safe === "off" ? "off" : "active";
+  // One page first: if every key is out of quota, don't spend two more requests finding out.
+  const first = await cseImageSearch(query, { start: starts[0], safe: level }).catch((e) => { console.warn(`[images] ${e instanceof Error ? e.message : e}`); return []; });
+  const rest = first.length && cseAvailable()
+    ? await Promise.allSettled(starts.slice(1).map((start) => cseImageSearch(query, { start, safe: level })))
+    : [];
+  const items = [...first, ...rest.flatMap((p) => (p.status === "fulfilled" ? p.value : []))];
+  for (const item of items) {
+    if (item.link) addImage(results, seen, { url: item.link, alt: item.title || query, source: item.image?.contextLink || "", engine: "google" });
+  }
+  return results;
+}
+
+// ── 6b. OPENVERSE (openly licensed photos and art; no key needed) ──
+async function fetchOpenverseImages(query: string, page: number): Promise<ScrapedImage[]> {
+  const results: ScrapedImage[] = [];
+  const seen = new Set<string>();
+  try {
+    const r = await fetch(`https://api.openverse.org/v1/images/?q=${encodeURIComponent(query)}&page=${page}&page_size=20`, {
+      headers: { "User-Agent": "SenkoAI/2.0 (ImageAggregator)", Accept: "application/json" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) return results;
+    const data = (await r.json()) as { results?: { url?: string; title?: string; foreign_landing_url?: string; tags?: { name: string }[] }[] };
+    for (const item of data.results || []) {
+      if (!item.url) continue;
+      const tags = (item.tags || []).slice(0, 6).map((t) => t.name).join(", ");
+      addImage(results, seen, { url: item.url, alt: [item.title, tags].filter(Boolean).join(" — ") || query, source: item.foreign_landing_url || "", engine: "openverse" });
+    }
+  } catch {
+    /* ignore */
+  }
+  return results;
+}
+
 // ── 6. WIKIMEDIA COMMONS (High-res open media API) ──
 async function fetchWikimediaImages(query: string, page: number): Promise<ScrapedImage[]> {
   const results: ScrapedImage[] = [];
@@ -261,7 +326,7 @@ async function fetchWikimediaImages(query: string, page: number): Promise<Scrape
   try {
     const offset = (page - 1) * 50;
     const encoded = encodeURIComponent(`filetype:bitmap ${query}`);
-    const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encoded}&gsrnamespace=6&gsrlimit=50&gsroffset=${offset}&prop=imageinfo&iiprop=url|dimensions&format=json&origin=*`;
+    const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encoded}&gsrnamespace=6&gsrlimit=50&gsroffset=${offset}&prop=imageinfo&iiprop=url|dimensions&iiurlwidth=1280&format=json&origin=*`;
     const res = await fetch(url, {
       headers: { "User-Agent": "SenkoAI/2.0 (ImageAggregator)" },
       signal: AbortSignal.timeout(7000),
@@ -272,7 +337,8 @@ async function fetchWikimediaImages(query: string, page: number): Promise<Scrape
     if (pages && typeof pages === "object") {
       for (const pg of Object.values(pages) as Record<string, unknown>[]) {
         const info = (pg.imageinfo as Record<string, unknown>[] | undefined)?.[0];
-        const imgUrl = info?.url as string | undefined;
+        // Web-sized rendition: originals are often 10-30 MB and fail the download limit.
+        const imgUrl = (info?.thumburl || info?.url) as string | undefined;
         const descUrl = (info?.descriptionurl as string | undefined) || "";
         const title = String(pg.title || query).replace(/^File:/i, "").replace(/\.[^.]+$/, "");
         if (imgUrl && !/\.svg|\.tif|\.pdf/i.test(imgUrl)) {
@@ -289,6 +355,33 @@ async function fetchWikimediaImages(query: string, page: number): Promise<Scrape
 // Finds the most specific existing booru tag among the query's word runs.
 // "frieren anime" -> frieren, "hatsune miku" -> hatsune_miku.
 const booruTagCache = new Map<string, { name: string; specific: boolean } | null>();
+/**
+ * Safebooru's own tag search. "anya forger" → anya_(spy_x_family); "gojo satoru" → gojou_satoru.
+ * A tag counts when its first word matches and at least half the query words appear in it.
+ */
+async function resolveSafebooruTag(words: string[]): Promise<{ name: string; specific: boolean } | null> {
+  if (!words.length) return null;
+  const r = await fetch(`https://safebooru.org/autocomplete.php?q=${encodeURIComponent(words[0])}`, { headers: { "User-Agent": "SenkoAI/2.0 (ImageAggregator)" }, signal: AbortSignal.timeout(5000) });
+  if (!r.ok) return null;
+  const list = (await r.json()) as { label: string; value: string }[];
+  const near = (a: string, b: string) => a === b || (a.length >= 4 && b.length >= 4 && (a.startsWith(b) || b.startsWith(a)));
+  const scored = (Array.isArray(list) ? list : [])
+    .map((t) => ({ name: t.value, count: Number(/\((\d+)\)\s*$/.exec(t.label)?.[1] || 0), tokens: t.value.toLowerCase().split(/[_()\s]+/).filter(Boolean) }))
+    .filter((t) => t.count >= 20 && !/cosplay|meme|&#/i.test(t.name))
+    .filter((t) => {
+      const hits = words.filter((w) => t.tokens.some((x) => near(x, w))).length;
+      return near(t.tokens[0], words[0]) || words.length > 1 && t.tokens.some((x) => near(x, words[words.length - 1])) ? hits * 2 >= words.length : false;
+    })
+    .sort((a, b) => b.count - a.count);
+  const best = scored[0];
+  if (!best) return null;
+  // Tag type 3 = series, 4 = character.
+  const info = await fetch(`https://safebooru.org/index.php?page=dapi&s=tag&q=index&name=${encodeURIComponent(best.name)}`, { headers: { "User-Agent": "SenkoAI/2.0 (ImageAggregator)" }, signal: AbortSignal.timeout(5000) })
+    .then((x) => (x.ok ? x.text() : "")).catch(() => "");
+  const type = Number(/\btype="(\d)"/.exec(info)?.[1] || 0);
+  return { name: best.name, specific: type === 3 || type === 4 };
+}
+
 async function resolveBooruTag(words: string[]): Promise<{ name: string; specific: boolean } | null> {
   const cacheKey = words.join(" ");
   if (booruTagCache.has(cacheKey)) return booruTagCache.get(cacheKey) ?? null;
@@ -312,6 +405,7 @@ async function resolveBooruTag(words: string[]): Promise<{ name: string; specifi
   } catch {
     /* booru lookups are best effort */
   }
+  if (!found) found = await resolveSafebooruTag(words).catch(() => null);
   booruTagCache.set(cacheKey, found);
   if (booruTagCache.size > 500) booruTagCache.delete(booruTagCache.keys().next().value as string);
   return found;
@@ -369,6 +463,8 @@ async function fetchBooruEngines(query: string, page: number): Promise<ScrapedIm
   // Without a known character/series tag, boorus only add noise to normal searches.
   if (!resolved && !isNsfw && !animeHint) return results;
   if (resolved && !resolved.specific && !isNsfw && !animeHint) return results;
+  // "taylor_swift" (no series in brackets) is likely a real person: drawings go after photos.
+  const late = !!resolved && !/\(/.test(resolved.name) && !isNsfw && !animeHint;
   const mainTag = resolved?.name || words.join("_");
   // Space separates tags; anonymous Danbooru allows at most 2.
   const allTags = (isGif ? [mainTag, "animated"] : [mainTag]).join(" ");
@@ -392,7 +488,7 @@ async function fetchBooruEngines(query: string, page: number): Promise<ScrapedIm
               const tags = String(post.tags || "").split(" ").slice(0, 5).join(", ");
               addImage(results, seen, {
                 url: imgUrl,
-                alt: tags || cleanSubject,
+                alt: resolved?.specific ? `${cleanSubject} — ${tags}` : tags || cleanSubject,
                 source: `https://safebooru.org/index.php?page=post&s=view&id=${post.id}`,
                 engine: "safebooru",
               });
@@ -525,6 +621,7 @@ async function fetchBooruEngines(query: string, page: number): Promise<ScrapedIm
   }
 
   await Promise.allSettled(tasks);
+  if (late) for (const r of results) r.late = true;
   return results;
 }
 
@@ -686,11 +783,16 @@ async function scrapeGalleryImages(query: string): Promise<ScrapedImage[]> {
  * Interleaves results from each engine so the gallery has rich source diversity,
  * returning up to `limit` (default 255) deduplicated images per page.
  */
+/** Words that make an image search explicitly adult. */
+export const ADULT_IMAGE_QUERY = /\b(r34|rule\s*34|nsfw|hentai|porn|xxx|lewd|nude|nudes|naked|explicit|ecchi|topless|sexy|lingerie|bikini|erotic)\b/i;
+
 export async function searchMultiEngineImages(
   rawQuery: string,
   page = 1,
   limit = IMAGES_BATCH_SIZE,
   signal?: AbortSignal,
+  /** The user's SafeSearch setting (default "off", as in the app's settings). */
+  safe: SafeSearch = "off",
 ): Promise<{
   images: ScrapedImage[];
   query: string;
@@ -716,16 +818,22 @@ export async function searchMultiEngineImages(
         .catch(() => [])
     : Promise.resolve([]);
 
-  const nsfw = /\b(r34|rule\s*34|nsfw|hentai|porn|xxx|lewd|nude|naked|explicit|ecchi)\b/i.test(query);
+  // With SafeSearch on, adult-only sources are never asked.
+  const nsfw = safe === "off" && /\b(r34|rule\s*34|nsfw|hentai|porn|xxx|lewd|nude|naked|explicit|ecchi)\b/i.test(query);
+  // SENKO_DISABLE_IMAGE_ENGINES=bing,ddg simulates an engine outage (tests, or a host where one is blocked).
+  const disabled = new Set((process.env.SENKO_DISABLE_IMAGE_ENGINES || "").toLowerCase().split(/[,\s]+/).filter(Boolean));
+  const engine = (name: string, job: () => Promise<ScrapedImage[]>) => (disabled.has(name) ? Promise.resolve([]) : job());
   const jobs = [
-    fetchBingImages(pagedQuery, page),
-    fetchDDGImages(pagedQuery, page),
-    fetchWallhavenImages(query, page, nsfw),
-    fetchBooruEngines(query, page),
-    scrapeGalleryImages(pagedQuery),
-    fetchRedditImages(query, page),
-    fetchWikimediaImages(query, page),
-    proxyPromise,
+    engine("google", () => fetchGoogleImages(query, page, safe, signal)),
+    engine("bing", () => fetchBingImages(pagedQuery, page, safe)),
+    engine("ddg", () => fetchDDGImages(pagedQuery, page)),
+    engine("wallhaven", () => fetchWallhavenImages(query, page, nsfw)),
+    engine("booru", () => (safe === "strict" ? Promise.resolve([]) : fetchBooruEngines(safe === "off" ? query : query.replace(ADULT_IMAGE_QUERY, ""), page))),
+    engine("gallery", () => scrapeGalleryImages(pagedQuery)),
+    engine("reddit", () => fetchRedditImages(query, page)),
+    engine("wikimedia", () => fetchWikimediaImages(query, page)),
+    engine("openverse", () => fetchOpenverseImages(query, page)),
+    disabled.has("proxy") ? Promise.resolve([] as ScrapedImage[]) : proxyPromise,
   ];
   const results: ScrapedImage[][] = jobs.map(() => []);
   const settled = Promise.all(jobs.map(async (job, index) => {
@@ -752,7 +860,9 @@ export async function searchMultiEngineImages(
   const seen = new Set<string>();
 
   // Interleave all engine batches so the first ~255 images represent every browser/source
-  const batches = results.filter((b) => b.length > 0);
+  // Late items (e.g. fan art of a real person) only fill space after every other source.
+  const lateItems = results.flat().filter((r) => r.late);
+  const batches = results.map((b) => b.filter((r) => !r.late)).filter((b) => b.length > 0);
 
   const maxLen = batches.length ? Math.max(...batches.map((b) => b.length)) : 0;
   for (let i = 0; i < maxLen && images.length < limit; i++) {
@@ -767,6 +877,10 @@ export async function searchMultiEngineImages(
         });
       }
     }
+  }
+  for (const item of lateItems) {
+    if (images.length >= limit) break;
+    addImage(images, seen, { url: item.url, alt: item.alt || query, source: item.source || "", engine: item.engine || "web" });
   }
 
   const stats: Record<string, number> = {};
@@ -854,14 +968,21 @@ export function detectCollageRequest(message: string) {
   const raw = message.trim();
   if (raw.length > 400) return;
   const request = raw.replace(/^(?:please\s+)?(?:(?:can|could) you\s+)?/i, "");
-  const direct = /^(?:make|build|create|show(?: me)?|put together|find)\s+(?:an?\s+|the\s+)?(?:(?:ui|image|photo|art|responsive|visual|pinterest-style)\s+)*(?:collage|gallery)\s+(?:of|for|featuring|with)\s+([^\n]+)/i.exec(request);
+  const direct = /^(?:make|build|create|show(?: me)?|put together|find)\s+(?:an?\s+|the\s+)?(?:(?:ui|image|photo|art|responsive|visual|pinterest-style|nsfw|adult|lewd|sexy|spicy|explicit|hentai|ecchi|r18|r-18|18\+)\s+)*(?:collage|gallery)\s+(?:of|for|featuring|with)\s+([^\n]+)/i.exec(request);
   const retrievalFirst = /^(?:find|get|search for|show(?: me)?)\s+(?:\d+\s+)?(?:images?|pictures?|photos?|pics?)\s+of\s+(.+?)\s+(?:and|then)\s+(?:make|build|create|arrange|put)\b[^\n]*\b(?:collage|gallery)\b/i.exec(request);
-  const description = direct?.[1] || retrievalFirst?.[1];
+  // "i want images of her as a collage", "pics of goku in a mosaic", "anya collage please"
+  const wantsCollage = /\b(?:collage|mosaic|mood ?board)\b/i.test(request);
+  const question = /^(?:how|what|why|where|when|which|who|should|is|are|do|does)\b/i.test(request);
+  const loose = wantsCollage && !question && !direct && !retrievalFirst
+    ? /\b(?:images?|pics?|pictures?|photos?|art|fan ?art|wallpapers?)\s+(?:of|for|featuring|with)\s+([^\n]+)/i.exec(request)
+      || /^(?:i\s+want\s+|give\s+me\s+|show\s+me\s+|make\s+(?:me\s+)?)?(?:an?\s+)?([\p{L}\p{N}' -]{2,60}?)\s+(?:collage|mosaic|mood ?board)\b/iu.exec(request)
+    : null;
+  const description = direct?.[1] || retrievalFirst?.[1] || loose?.[1];
   if (!description) return;
   if (/\b(?:and|then)\s+(?:add|include|compare|explain)\b/i.test(description)) return;
   const [subjectPhrase] = description.split(/\s*[,;]\s*|\s+(?:using|with|(?:and\s+)?find|(?:but|and)\s+make|(?:i\s+)?want you to|in an?\s|as an?\s)\b/i);
   const leadingCount = /^([1-9]\d{0,3})\s+/.exec(subjectPhrase);
-  const subject = subjectPhrase.replace(/\s+(?:like|in the style of)\s+(?:a\s+)?(?:pinterest|printest)\b.*$/i, "").replace(/[.!?]+$/, "").replace(/^\d+\s+|\s+(?:images?|pics?|pictures?|photos?)$/gi, "").trim();
+  const subject = subjectPhrase.replace(/\s+(?:like|in the style of)\s+(?:a\s+)?(?:pinterest|printest)\b.*$/i, "").replace(/\s+(?:now|please|pls|again|too)\s*$/i, "").replace(/[.!?]+$/, "").replace(/^\d+\s+|\s+(?:images?|pics?|pictures?|photos?)$/gi, "").trim();
   if (!subject || /^(?:these|those|the attached|my)\b/i.test(subject)) return;
   const countMatch = /\b([1-9]\d{0,3})\s*[- ]\s*(?:images?|pics?|pictures?|photos?)\b/i.exec(raw);
   const count = Number(countMatch?.[1] ?? leadingCount?.[1] ?? 10);
@@ -870,7 +991,9 @@ export function detectCollageRequest(message: string) {
   const masonry = /\b(?:pinterest|printest|masonry|staggered)\b/i.test(raw);
   const uniform = /\b(?:grid|uniform|contact sheet)\b/i.test(raw);
   const layout = masonry ? "masonry" : uniform || cols === 1 ? "grid" : /\bmosaic\b/i.test(raw) ? "mosaic" : "auto";
-  return { query: subject, count, cols, layout };
+  // The adult word itself ("nsfw", "hentai"…) steers which sources are searched.
+  const adultWord = ADULT_IMAGE_QUERY.exec(raw)?.[1]?.toLowerCase() || (/\b(?:adult|spicy|r-?18|18\+)\b/i.test(raw) ? "nsfw" : undefined);
+  return { query: subject.replace(ADULT_IMAGE_QUERY, "").replace(/\s+/g, " ").trim() || subject, count, cols, layout, adultWord };
 }
 
 function cleanExtractedSubject(input: string): string {

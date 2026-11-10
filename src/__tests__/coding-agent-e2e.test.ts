@@ -33,6 +33,16 @@ afterEach(async () => {
 });
 
 describe("GODMODE Autonomous Node.js Coding Agent — End-to-End Verification", () => {
+  it("launches Vite on its assigned port even when project config hardcodes another port", async () => {
+    const runtime = createTestRuntime("e2e-vite-port");
+    await runtime.writeFile("package.json", JSON.stringify({ scripts: { dev: "vite" } }));
+    await runtime.writeFile("vite.config.mjs", "export default { server: { port: 3000 } };");
+    await runtime.writeFile("index.html", "<!doctype html><title>Managed port fixture</title><h1>Assigned port</h1>");
+    const server = await runtime.startServer({ command: "npm run dev", timeoutMs: 15_000 });
+    expect(server.status, server.stderr).toBe("running");
+    expect(await (await fetch(server.url)).text()).toContain("Assigned port");
+    expect(server.stdout).toContain(`--port ${server.port}`);
+  }, 25_000);
   it(
     "executes a full 12-criterion E2E Node.js Playlist web application workflow: write -> install -> execute -> fail test -> repair -> pass test -> launch server -> inspect in Playwright Chromium -> verify",
     async () => {
@@ -488,7 +498,7 @@ export default function App() {
 
       const wf = await runAutonomousCodingWorkflow({
         chatId: runtime.chatId,
-        goal: "Build and verify a TypeScript + React 19 music player",
+        goal: "Build and verify a TypeScript + React 19 playlist metadata selector",
         inspectBrowser: true,
         interactions: [{ action: "click", selector: "#switch-btn" }],
         expectedText: ["TSX React Studio Player", "Playing: Kick Back by Kenshi Yonezu", "Total Seconds: 406"],

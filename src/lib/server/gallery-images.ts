@@ -107,19 +107,26 @@ function words(text: string): Set<string> {
 }
 
 export function relevantImageCandidates(query: string, images: ScrapedImage[]): ScrapedImage[] {
-  const tokens = [...words(query)].filter((word) => !/^(a|an|and|the|of|in|with|art|fanart|wallpaper|illustration|official|images|photos)$/.test(word));
+  const tokens = [...words(query)].filter((word) => !/^(a|an|and|the|of|in|on|at|to|for|by|from|with|art|fanart|wallpaper|illustration|official|images|photos|pictures|pics)$/.test(word));
+  // Names need every word ("Anya Forger"). Longer descriptive searches ("Eiffel Tower at night",
+  // "Tokyo street food") may miss one word; full matches still rank first.
+  const allowedMisses = tokens.length >= 3 ? 1 : 0;
   const labeled: ScrapedImage[] = [];
+  const nearly: ScrapedImage[] = [];
   const matchedByUrl: ScrapedImage[] = [];
   for (const image of images) {
     const title = words(image.alt);
     let path = "";
     try { path = decodeURIComponent(new URL(image.url).pathname); } catch { /* URL validation follows */ }
     const urlWords = words(path);
+    const misses = tokens.filter((token) => !title.has(token) && !urlWords.has(token)).length;
     if (image.engine !== "gallery" && tokens.every((token) => title.has(token))) labeled.push(image);
     else if (title.size <= 5 && tokens.every((token) => urlWords.has(token))) matchedByUrl.push(image);
+    // The first word is usually the subject itself; it must always match.
+    else if (image.engine !== "gallery" && misses <= allowedMisses && tokens[0] && (title.has(tokens[0]) || urlWords.has(tokens[0]))) nearly.push(image);
   }
   const incidental = /\b(?:cosplay\w*|tapestry|merchandise|wall decor|plush\w*|figurine\w*)\b/i;
-  const ranked = [...labeled, ...matchedByUrl];
+  const ranked = [...labeled, ...matchedByUrl, ...nearly];
   if (incidental.test(query)) return ranked;
   return ranked.sort((a, b) => Number(incidental.test(a.alt)) - Number(incidental.test(b.alt)));
 }
@@ -143,4 +150,14 @@ export async function* verifyGalleryImages(query: string, candidates: ScrapedIma
     }
     if (distinct.length) yield distinct;
   }
+}
+
+/** Download, decode and re-encode one image URL. Undefined when it isn't a real, usable image. */
+export function verifyImageUrl(url: string, signal: AbortSignal, alt = ""): Promise<VerifiedImage | undefined> {
+  return verify({ url, alt, source: url, engine: "direct" }, signal);
+}
+
+/** True when two verified images are near-duplicates (same picture, different size/crop). */
+export function sameImage(a: VerifiedImage, b: VerifiedImage): boolean {
+  return similar(a, b);
 }

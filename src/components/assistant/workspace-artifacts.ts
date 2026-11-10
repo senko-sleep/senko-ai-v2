@@ -255,52 +255,13 @@ export function deriveFollowUpActions(
 
   if (sourceCount > 0) {
     actions.push({
-      label: `Inspect Sources (${sourceCount})`,
+      label: `Sources (${sourceCount})`,
       prompt: "",
       action: "open-sources",
     });
   }
 
-  if (messageArtifacts.length > 0) return actions.slice(0, 2);
-
-  if (mode === "agent") return actions.slice(0, 2);
-
-  if (/\|.*\|.*\|/.test(text) || /comparison|versus|\bvs\.?\b|trade-?offs/i.test(text)) {
-    actions.push({
-      label: "Recommend the best option",
-      prompt: "Based on this comparison, give me a concrete recommendation for different use cases.",
-      mode: "chat",
-    });
-    actions.push({
-      label: "Verify live in Agent mode",
-      prompt: "Use the browser agent to check the latest live pricing, benchmarks, or release notes for these options.",
-      mode: "agent",
-    });
-  } else if (/step\s*1|1\.|tutorial|guide|how to/i.test(text)) {
-    actions.push({
-      label: "Generate a starter template",
-      prompt: "Create a complete, ready-to-run starter implementation based on these steps.",
-      mode: "chat",
-    });
-    actions.push({
-      label: "Common pitfalls & troubleshooting",
-      prompt: "What are the most common failure modes or pitfalls with this approach, and how do I avoid them?",
-      mode: "chat",
-    });
-  } else {
-    actions.push({
-      label: "Go deeper with examples",
-      prompt: "Go deeper into the most important part of this with concrete, practical examples.",
-      mode: "chat",
-    });
-    actions.push({
-      label: "Research live on the web",
-      prompt: "Browse the web in Agent mode to gather the latest primary sources and data on this topic.",
-      mode: "agent",
-    });
-  }
-
-  return actions.slice(0, 4);
+  return actions.slice(0, 2);
 }
 
 export function formatChatAsMarkdown(

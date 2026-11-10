@@ -1,0 +1,146 @@
+import React, { useState } from 'react';
+import { Play, Pause, Music2, Info, ExternalLink, Volume2 } from 'lucide-react';
+import { clsx } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+
+export default function App() {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const PREVIEW_URL = 'https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview112/v4/c2/ce/ac/c2ceac94-f36d-fd2a-b739-b5f443247f1e/mzaf_14478118635804014701.plus.aac.p.m4a';
+
+  function togglePlay() {
+    if (!isPlaying) {
+      setIsPlaying(true);
+      setProgress(0);
+    } else {
+      setIsPlaying(false);
+    }
+  }
+
+  function handleTimeUpdate(e) {
+    if (isPlaying) setProgress(e.target.currentTime);
+  }
+
+  function handleLoadedMetadata(e) {
+    setDuration(e.target.duration);
+  }
+
+  function handleEnded() {
+    setIsPlaying(false);
+    setProgress(0);
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center p-4 md:p-8 spy-gradient">
+      <header className="w-full max-w-4xl mb-8 flex justify-between items-center">
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 bg-spy-red rounded-full flex items-center justify-center shadow-lg shadow-spy-red/20">
+            <Music2 className="text-white" size={24} />
+          </div>
+          <div>
+            <h1 className="text-2xl md:text-3xl font-black tracking-tighter uppercase italic">
+              Mixed Nuts
+            </h1>
+            <p className="text-spy-yellow font-semibold text-sm tracking-widest uppercase">
+              Official HIGE DANdism
+            </p>
+          </div>
+        </div>
+        <div className="hidden md:block">
+          <span className="px-4 py-1 rounded-full border border-white/20 text-xs font-bold uppercase tracking-widest">
+            SPY × FAMILY OP 1
+          </span>
+        </div>
+      </header>
+
+      <main className="w-full max-w-4xl grid grid-cols-1 lg:grid-cols-5 gap-8">
+        {/* Player Section */}
+        <div className="lg:col-span-3 flex flex-col gap-6">
+          <div className="relative aspect-video rounded-2xl overflow-hidden shadow-2xl spy-card group">
+            <img
+              className="absolute inset-0 w-full h-full object-cover"
+              src="https://is1-ssl.mzstatic.com/image/thumb/Music116/v4/49/86/f9/4986f94c-c8f3-688c-fa14-4fcc1461d7a3/artwork.jpg/100x100bb.jpg"
+              alt="Mixed Nuts - Official HIGE DANdism"
+            />
+            <div className="absolute inset-0 bg-black/40 flex items-center justify-center cursor-pointer transition-opacity group-hover:bg-black/30" onClick={togglePlay}>
+              <div className="w-20 h-20 bg-spy-red rounded-full flex items-center justify-center shadow-2xl transform transition-transform group-hover:scale-110">
+                {isPlaying ? <Pause className="text-white fill-current ml-1" size={32} /> : <Play className="text-white fill-current ml-1" size={32} />}
+              </div>
+            </div>
+          </div>
+
+          <div className="spy-card p-6 rounded-2xl flex flex-col gap-4">
+            <div className="flex justify-between items-center">
+              <div className="flex items-center gap-4">
+                <button onClick={togglePlay} className="w-12 h-12 bg-white text-spy-dark rounded-full flex items-center justify-center hover:bg-spy-yellow transition-colors">
+                  {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" className="ml-1" />}
+                </button>
+                <div>
+                  <h2 className="font-bold text-lg">Now Playing</h2>
+                  <p className="text-white/60 text-sm">Mixed Nuts (ミックスナッツ)</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 text-white/40">
+                <Volume2 size={20} />
+                <div className="w-24 h-1 bg-white/10 rounded-full overflow-hidden">
+                  <div className="w-3/4 h-full bg-spy-yellow" style={{ width: `${duration ? (progress / duration) * 100 : 0}%` }}></div>
+                </div>
+              </div>
+            </div>
+            <audio
+              ref={(el) => { if (el) { el.addEventListener('timeupdate', handleTimeUpdate); el.addEventListener('loadedmetadata', handleLoadedMetadata); el.addEventListener('ended', handleEnded); } }}
+              src={PREVIEW_URL}
+              onClick={togglePlay}
+              className="hidden"
+            />
+          </div>
+        </div>
+
+        {/* Info Section */}
+        <div className="lg:col-span-2 flex flex-col gap-6">
+          <div className="spy-card p-6 rounded-2xl">
+            <div className="flex items-center gap-2 mb-4 text-spy-yellow">
+              <Info size={18} />
+              <h3 className="font-bold uppercase tracking-wider text-sm">Song Details</h3>
+            </div>
+            <dl className="space-y-4">
+              <div>
+                <dt className="text-white/40 text-xs uppercase tracking-widest mb-1">Artist</dt>
+                <dd className="font-semibold">Official HIGE DANdism</dd>
+              </div>
+              <div>
+                <dt className="text-white/40 text-xs uppercase tracking-widest mb-1">Release Date</dt>
+                <dd className="font-semibold">May 30, 2022</dd>
+              </div>
+              <div>
+                <dt className="text-white/40 text-xs uppercase tracking-widest mb-1">Anime</dt>
+                <dd className="font-semibold text-spy-yellow">SPY × FAMILY</dd>
+              </div>
+            </dl>
+            <a href="https://music.apple.com/us/album/mixed-nuts-from-spy-x-family/1625667599?i=1625667603&uo=4" target="_blank" rel="noopener noreferrer" className="mt-6 flex items-center justify-center gap-2 w-full py-3 rounded-xl bg-white/5 hover:bg-white/10 transition-colors text-sm font-bold">
+              View on Apple Music <ExternalLink size={14} />
+            </a>
+          </div>
+
+          <div className="spy-card p-6 rounded-2xl flex-1">
+             <h3 className="font-bold uppercase tracking-wider text-sm mb-4 text-spy-red">About the Song</h3>
+             <p className="text-sm text-white/70 leading-relaxed">
+               "Mixed Nuts" is the high-energy opening theme for the hit anime series SPY × FAMILY. 
+               The song's jazz-fusion style perfectly captures the chaotic yet heartwarming life of the Forger family.
+             </p>
+             <div className="mt-4 p-3 bg-spy-green/20 border border-spy-green/30 rounded-lg">
+               <p className="text-xs text-spy-green font-bold italic">
+                 "A bag of mixed nuts, where everyone is different but they all belong together."
+               </p>
+             </div>
+          </div>
+        </div>
+      </main>
+
+      <footer className="mt-12 text-white/20 text-xs font-medium tracking-widest uppercase">
+        &copy; 2024 • Built for SPY × FAMILY Fans
+      </footer>
+    </div>
+  );
+}

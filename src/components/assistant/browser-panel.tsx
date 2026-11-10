@@ -369,14 +369,23 @@ export function BrowserPanel({
             className={`h-1.5 w-1.5 shrink-0 rounded-full ${activePhase === "recovering" || activePhase === "waiting" ? "bg-[var(--sk-accent)]" : "bg-[var(--sk-faint)] animate-pulse"}`}
             aria-hidden
           />
-          <span className="font-medium text-[var(--sk-text)]">
-            {({ observing: "Looking", planning: "Planning", acting: "Working", verifying: "Checking", recovering: "Retrying", waiting: "Paused" } as Record<string, string>)[activePhase] || activePhase}
-          </span>
-          {state.status && (
-            <span className="min-w-0 truncate text-[var(--sk-faint)]" title={state.status}>
-              · {state.status}
-            </span>
-          )}
+          {(() => {
+            const phase = ({ observing: "Looking", planning: "Planning", acting: "Working", verifying: "Checking", recovering: "Retrying", waiting: "Paused" } as Record<string, string>)[activePhase] || activePhase;
+            // "Planning the steps…" already says "Planning": show it once.
+            const repeats = state.status && state.status.toLowerCase().startsWith(phase.toLowerCase());
+            return repeats ? (
+              <span className="min-w-0 truncate font-medium text-[var(--sk-text)]" title={state.status}>{state.status}</span>
+            ) : (
+              <>
+                <span className="font-medium text-[var(--sk-text)]">{phase}</span>
+                {state.status && (
+                  <span className="min-w-0 truncate text-[var(--sk-faint)]" title={state.status}>
+                    · {state.status}
+                  </span>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
 
@@ -451,14 +460,15 @@ export function BrowserPanel({
         )}
 
         {/* What the agent is doing right now (small, out of the way) */}
-        {state.running && hasFrame && !showLog && (
+        {/* Only for a real step (the status strip above already shows the general status). */}
+        {state.running && hasFrame && !showLog && current && current.label.replace(/…$/, "").trim().toLowerCase() !== (state.status || "").replace(/(…|...)$/, "").trim().toLowerCase() && (
           <button
             type="button"
             onClick={() => hasActivity && setShowLog(true)}
             className="absolute bottom-2 left-2 z-[4] flex max-w-[78%] items-center gap-2 rounded-full border border-white/10 bg-black/80 px-3 py-1.5 text-left text-[11px] text-white shadow-lg backdrop-blur-md"
           >
             <span className="sk-pulse h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--sk-accent)]" aria-hidden />
-            <span className="truncate font-medium">{current ? `${current.label}…` : state.status || "Working…"}</span>
+            <span className="truncate font-medium">{current.label.replace(/…$/, "")}…</span>
             {state.steps.length > 0 && (
               <span className="sk-tabular shrink-0 rounded-full bg-white/10 px-1.5 py-0.2 text-[10px] text-white/70">
                 {doneSteps}/{state.steps.length}

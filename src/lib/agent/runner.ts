@@ -26,12 +26,16 @@ import { detectPageBotChallenge, isGoogleSorryUrl } from "./google-gate";
 import { assessAction } from "./risk";
 import { consumeApproval, requestApproval, type ApprovalRequest } from "./approvals";
 import { withTimeout } from "./timeouts";
+import { BrowserFormatRecovery, parseAgentObject, parseBrowserDecision, type BrowserAction as Action } from "./action-protocol";
+import { InferenceBudgetExceeded, InferenceRequestBudget } from "@/lib/llm/request-budget";
+import { confidentTarget, imageSelectionState, resolveVisualTarget } from "./visual-target";
 
 export type RunEvent =
   | { type: "status"; text: string }
   | { type: "plan"; steps: string[] }
   | { type: "step"; id: number; label: string; status: "running" | "done" | "error"; detail?: string; url?: string }
   | { type: "page"; page: PageSnap }
+  | { type: "images"; imageIds: string[] }
   | { type: "done"; answer: string; url?: string; imageIds: string[]; provider?: string; model?: string }
   /** takeover = you took control; quota = AI limits used up; stuck = no progress. Resume continues from the last step. */
   | { type: "paused"; reason: string; kind?: "takeover" | "quota" | "stuck" | "approval"; approval?: ApprovalRequest }
@@ -322,36 +326,6 @@ function formatObservation(o: Observation): string {
 
 // ---- actions ---------------------------------------------------------------------------
 
-type Action =
-  | { action: "search"; query: string; engine?: "google" | "bing" }
-  | { action: "image_search"; query: string; engine?: "google" | "bing" }
-  | { action: "goto"; url: string }
-  | { action: "click"; id?: number; x?: number; y?: number }
-  | { action: "hover"; id: number }
-  | { action: "type"; id?: number; text: string; submit?: boolean }
-  | { action: "press"; key: string }
-  | { action: "key_chord"; keys: string[] }
-  | { action: "select_option"; id: number; value: string }
-  | { action: "drag"; fromId?: number; toId?: number; fromX?: number; fromY?: number; toX?: number; toY?: number }
-  | { action: "extract"; label: string; selector?: string; fields?: string[] }
-  | { action: "scroll"; direction?: "up" | "down" }
-  | { action: "back" }
-  | { action: "wait"; seconds?: number }
-  | { action: "new_tab"; url?: string }
-  | { action: "switch_tab"; index: number }
-  | { action: "close_tab"; index: number }
-  | { action: "media"; op: "play" | "pause" | "toggle" | "fullscreen" | "exit_fullscreen" | "mute" | "unmute" | "seek" | "skip"; seconds?: number }
-  | { action: "dismiss" }
-  | { action: "desmos"; op: "set" | "add" | "clear"; expressions?: string[] }
-  | { action: "screenshot"; label?: string }
-  | { action: "fetch_image"; url: string; alt?: string }
-  | { action: "make_collage"; ids?: string[]; label?: string }
-  | { action: "clear_stash" }
-  | { action: "examine_images"; description: string; click?: boolean }
-  | { action: "done"; answer: string; url?: string };
-
-type Decision = Action & { thought?: string; check?: { ok?: boolean; note?: string } };
-
 const SYSTEM_PROMPT = `You are the browsing agent inside a personal assistant app. You control a REAL browser (the user watches it live) and reach the user's goal one action at a time. The browser session persists between messages: tabs, logins, playing videos all stay open, so follow-ups like "pause it" or "what is this site?" act on the CURRENT page.
 
 Each turn you get: the goal, the plan, your previous steps with results, and the current page (URL, tabs, video state, numbered interactive elements, visible text, and usually a fresh screenshot).
@@ -383,6 +357,7 @@ Actions:
 {"action":"dismiss"}                                  close cookie banners / overlays / modals blocking the page
 {"action":"screenshot","label":"..."}                 save a screenshot to show the user
 {"action":"fetch_image","url":"https://...","alt":"description"} download an image into the session stash. Use direct media URLs (.jpg/.png/.webp) from the images list.
+{"action":"send_images","ids":["img_..."]} attach selected stashed images to this chat as separate images (omit ids for all stashed images). fetch_image alone does not send images. Use this for "send both images"; a collage is a different deliverable.
 {"action":"make_collage","ids":["img_..."],"label":"label"} combine stashed images into a single collage (omit ids to use all stashed images).
 {"action":"clear_stash"}                             delete all stashed images for this session
 {"action":"examine_images","description":"anya forger drinking"} look at every image on screen with vision AI and CLICK the one that best matches the description (add "click":false to only identify it). Pass the user's own words (e.g. "the green one"). Use this when the user names a specific image by visual content (e.g. "the one where Anya is drinking", "the sad one", "click the gif of her cooking").
@@ -420,14 +395,7 @@ IMAGE / COLLAGE WORKFLOW — for goals like "download the top 5 Eevee images and
 4. Call done once the collage is saved and visible to the user.`;
 
 function parseJson<T>(text: string): T | null {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start === -1 || end <= start) return null;
-  try {
-    return JSON.parse(text.slice(start, end + 1)) as T;
-  } catch {
-    return null;
-  }
+  return parseAgentObject(text) as T | null;
 }
 
 function host(url: string): string {
@@ -490,12 +458,16 @@ function describe(a: Action, obs: Observation | null): string {
       return `Fetching image${a.alt ? ` "${a.alt}"` : ""}`;
     case "make_collage":
       return "Building image collage";
+    case "send_images":
+      return "Attaching selected images to chat";
     case "clear_stash":
       return "Clearing image stash";
     case "examine_images":
       return `Identifying image: "${a.description}"`;
     case "done":
       return "Finished";
+    default:
+      return "Working";
   }
 }
 
@@ -511,7 +483,10 @@ export async function runAgent(opts: RunOptions): Promise<void> {
   /** The user's SafeSearch choice (Settings), loaded once the session is open. */
   let safeLevel: SafeSearch = "off";
   let session: BrowserSession | null = null;
-  const imageIds: string[] = [];
+  const imageIds: string[] = [...(ck?.imageIds || [])];
+  const deliveredStash = new Map<string, string>(ck?.deliveredImages || []);
+  const requestBudget = new InferenceRequestBudget(Math.min(100, Math.max(1, Number(process.env.AGENT_MAX_INFERENCE_REQUESTS) || 32)));
+  const formatRecovery = new BrowserFormatRecovery();
   const aborted = () => signal.aborted;
   let lastProvider: { provider?: string; model?: string } = {};
 
@@ -524,7 +499,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
   /** The control last clicked or typed into: what an Enter/Space keypress would activate. */
   let lastTouched: ObservedElement | null = null;
   const saveProgress = (reason?: string) =>
-    saveCheckpoint(chatId, { goal, plan, history: history.slice(-30), actionsTaken, requirements, sources: [...visitedSources.entries()], reason }, progressLease).catch(() => {});
+    saveCheckpoint(chatId, { goal, plan, history: history.slice(-30), actionsTaken, requirements, sources: [...visitedSources.entries()], imageIds, deliveredImages: [...deliveredStash], reason }, progressLease).catch(() => {});
 
   /** Steps before this index go without screenshots (vision models were unavailable). */
   let visionOffUntil = -1;
@@ -585,6 +560,9 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       onWait,
       fast: process.env.AGENT_FAST !== "0",
       priority: "background",
+      hedge: false,
+      requestBudget,
+      excludeModels: formatRecovery.excludedModels,
       ...extra,
     };
     for (;;) {
@@ -595,6 +573,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       } catch (e) {
         if (aborted()) throw e;
         const msg = e instanceof Error ? e.message : String(e);
+        if (e instanceof InferenceBudgetExceeded) throw new AgentPause(`${msg} Progress is saved. Resume starts a new bounded execution.`, "quota");
         if (/^No AI provider is configured/.test(msg)) throw e;
         // Vision models are the scarcest: drop the screenshot for this and the next few steps
         // (not for the whole task) and let a text model answer from the page text.
@@ -801,7 +780,6 @@ export async function runAgent(opts: RunOptions): Promise<void> {
     let repeats = 0;
     const lastActionAttempt: { current: { key: string; state: string } | null } = { current: null };
     const repeatSensitiveActions = new Set<Action["action"]>(["click", "type", "press", "key_chord", "select_option", "drag", "dismiss", "media", "goto", "search", "image_search", "back", "examine_images"]);
-    let parseFailures = 0;
     let failedInRow = 0;
     let needA11y: boolean = false;
     // A screenshot makes the step need a vision model, the scarcest (most rate-limited) kind.
@@ -897,15 +875,15 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       if (aborted()) break;
       const n = history.length + 1;
 
-      const d = parseJson<Decision>(raw);
-      if (!d || typeof d.action !== "string") {
-        parseFailures++;
+      const d = parseBrowserDecision(raw);
+      if (!d) {
+        const recovery = formatRecovery.reject(lastProvider.model || "unknown");
         console.warn(`[agent] unparseable reply: ${JSON.stringify(raw.slice(0, 300))}`);
-        history.push(`${n}. (your reply wasn't a single JSON object; reply with JSON only)`);
-        if (parseFailures >= 4) throw new AgentPause("The AI kept replying in a format I can't use. I saved my progress: press Resume to try again, or pick a different model in the menu first.", "stuck");
+        history.push(`Controller response rejected: return one complete action JSON with its required fields, e.g. {"action":"click","id":12}. Use only an observed element id. UI blocks and prose belong inside done.answer, never instead of a browser action. No action was executed.`);
+        emit({ type: "status", text: recovery.switchModel ? "The model returned invalid actions twice; trying another available model with progress preserved." : "Correcting the browser action format; no click was executed." });
+        if (recovery.exhausted) throw new AgentPause("Available models repeatedly returned invalid browser actions after bounded automatic recovery. No guessed clicks were executed. Progress is saved; resume with another available model.", "stuck");
         continue;
       }
-      parseFailures = 0;
       let upgradedFrom = "";
 
       // A guessed coordinate that lands on a listed element becomes a click on that element:
@@ -1401,6 +1379,21 @@ export async function runAgent(opts: RunOptions): Promise<void> {
             }
             break;
           }
+          case "send_images": {
+            const stash = listStash(chatId);
+            const ids = [...new Set(d.ids?.length ? d.ids : stash.map((image) => image.id))];
+            const selected = ids.map((id) => stash.find((image) => image.id === id));
+            if (!ids.length || selected.some((image) => !image)) { ok = false; result = "Requested images are absent or expired. Fetch the intended images before attaching them; no substitutes were sent."; break; }
+            for (const image of selected) {
+              let savedId = deliveredStash.get(image!.id);
+              if (!savedId) { savedId = await saveImage(ownerId, image!.mime, image!.data); deliveredStash.set(image!.id, savedId); }
+              if (!imageIds.includes(savedId)) imageIds.push(savedId);
+              emit({ type: "images", imageIds: [...imageIds] });
+              await saveProgress();
+            }
+            result = `Attached ${ids.length} selected image${ids.length === 1 ? "" : "s"} to this chat as separate saved images.`;
+            break;
+          }
           case "clear_stash":
             clearStash(chatId);
             result = "Stash cleared.";
@@ -1413,14 +1406,16 @@ export async function runAgent(opts: RunOptions): Promise<void> {
               .evaluate(() => {
                 const vw = innerWidth;
                 const vh = innerHeight;
-                type Box = { x: number; y: number; w: number; h: number; alt: string };
+                type Box = { x: number; y: number; w: number; h: number; alt: string; source: string; token: string };
                 const boxes: Box[] = [];
                 for (const el of Array.from(document.querySelectorAll("img, video, [role='img']")) as HTMLElement[]) {
                   const r = el.getBoundingClientRect();
                   if (r.width < 48 || r.height < 48 || r.bottom < 8 || r.right < 8 || r.top > vh - 8 || r.left > vw - 8) continue;
                   const cs = getComputedStyle(el);
                   if (cs.visibility === "hidden" || cs.display === "none" || Number(cs.opacity) < 0.1) continue;
-                  boxes.push({ x: r.left, y: r.top, w: r.width, h: r.height, alt: (el.getAttribute("alt") || el.getAttribute("aria-label") || "").slice(0, 80) });
+                  const token = crypto.randomUUID();
+                  el.setAttribute("data-senko-visual", token);
+                  boxes.push({ x: r.left, y: r.top, w: r.width, h: r.height, source: el instanceof HTMLImageElement ? el.currentSrc || el.src : el.getAttribute("src") || "", token, alt: (el.getAttribute("alt") || el.getAttribute("aria-label") || "").slice(0, 80) });
                 }
                 // Drop near-duplicates (an image and its own wrapper/hover copy), keeping the larger.
                 const overlap = (a: Box, b: Box) => {
@@ -1449,7 +1444,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
                 document.body.appendChild(layer);
                 return out;
               })
-              .catch(() => [] as { n: number; x: number; y: number; w: number; h: number; alt: string }[]);
+              .catch(() => [] as import("./visual-target").VisualTarget[]);
             if (!marks.length) {
               ok = false;
               result = "No images are visible on screen. Scroll or wait for them to load, then try again.";
@@ -1470,8 +1465,8 @@ export async function runAgent(opts: RunOptions): Promise<void> {
                   content:
                     IMAGE_CLASSIFIER_NOTE + " You look at a screenshot of a web page. Every image on it has a red outline and a red numbered badge in its top-left corner. Pick the image that best matches what the user describes. " +
                     "Read descriptions literally by what is visible: colors, backgrounds, objects, people, poses, mood. For example \"the green one\" means the image that looks the most green (its subject OR its background); don't reinterpret it as some other subject. " +
-                    "Pick the closest match even if it isn't perfect; answer 0 only if no image is remotely plausible. " +
-                    'Reply with ONLY JSON: {"n": <badge number or 0>, "reason": "<one short sentence>"}',
+                    "Choose only a confidently matching image. Answer 0 if the description cannot be established visually; do not guess identity or traits from filenames. " +
+                    'Reply with ONLY JSON: {"n": <badge number or 0>, "confidence": <0 to 1>, "reason": "<one short sentence>"}',
                 },
                 {
                   role: "user",
@@ -1480,7 +1475,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
                 },
               ],
               // Same screenshot + description (examine_images run again) reuses the answer.
-              { provider, signal, temperature: 0.1, maxTokens: 200, maxWaitMs: 60_000, priority: "background", cacheTtlMs: 60_000 }
+              { provider, signal, json: true, hedge: false, requestBudget, excludeModels: formatRecovery.excludedModels, temperature: 0.1, maxTokens: 240, maxWaitMs: 60_000, priority: "background", cacheTtlMs: 60_000 }
             );
             if (looksLikeRefusal(pickRaw.text)) {
               ok = false;
@@ -1488,11 +1483,11 @@ export async function runAgent(opts: RunOptions): Promise<void> {
               break;
             }
             lastProvider = { provider: pickRaw.providerLabel, model: pickRaw.model };
-            const pick = parseJson<{ n?: number; reason?: string }>(pickRaw.text);
-            const m = marks.find((x) => x.n === Number(pick?.n));
+            const pick = parseJson<{ n?: number; confidence?: number; reason?: string }>(pickRaw.text);
+            const m = confidentTarget(marks, pick);
             if (!m) {
               ok = false;
-              result = `None of the ${marks.length} images on screen match "${desc}" (${pick?.reason || "no match"}). Scroll down and try examine_images again.`;
+              result = `No sufficiently confident match for "${desc}" (${pick?.reason || "invalid or uncertain visual result"}). No guessed click was executed. Use a clearer description or inspect a different part of the page.`;
               break;
             }
             const why = pick?.reason ? ` ${pick.reason}` : "";
@@ -1501,23 +1496,28 @@ export async function runAgent(opts: RunOptions): Promise<void> {
               break;
             }
             // Click its visible center with the cursor, so you see exactly what was picked.
-            const vp = obs?.viewport || s.viewport();
-            const x = Math.min(vp.width - 2, Math.max(2, m.x + m.w / 2));
-            const y = Math.min(vp.height - 2, Math.max(2, m.y + m.h / 2));
+            const resolved = await resolveVisualTarget(p, m);
+            if (!resolved) { ok = false; result = "The selected image moved, changed or became covered after observation. Refresh before clicking; no stale coordinate was used."; break; }
+            const before = await imageSelectionState(p);
+            const vp = { width: resolved.width, height: resolved.height };
+            const { x, y } = resolved;
             s.emit({ type: "cursor", x, y, kind: "move", box: { x: m.x, y: m.y, w: m.w, h: m.h }, width: vp.width, height: vp.height });
             await p.mouse.move(x, y);
             s.emit({ type: "cursor", x, y, kind: "click", box: null, width: vp.width, height: vp.height });
             signal.throwIfAborted();
             await p.mouse.down();
             await p.mouse.up();
-            result = `Clicked image ${m.n}${m.alt ? ` ("${m.alt}")` : ""}, the best match for "${desc}".${why}`;
+            await settlePage(p, { navigated: false, signal });
+            const changed = before !== await imageSelectionState(p);
+            ok = changed;
+            result = changed ? `Clicked image ${m.n}${m.alt ? ` ("${m.alt}")` : ""}; the page selection changed.${why}` : `Dispatched a click to image ${m.n}, but no selection change was observed. Inspect the current page before claiming the image opened.`;
             break;
           }
           default:
             ok = false;
             result = `Unknown action "${(d as { action: string }).action}"`;
         }
-        if (!["wait", "screenshot", "switch_tab", "close_tab", "fetch_image", "make_collage", "clear_stash"].includes(d.action) && !(d.action === "examine_images" && (d.click === false || !ok))) {
+        if (!["wait", "screenshot", "switch_tab", "close_tab", "fetch_image", "send_images", "make_collage", "clear_stash"].includes(d.action) && !(d.action === "examine_images" && (d.click === false || !ok))) {
           const active = s.active();
           let navigated = nav.started || active !== p || active.url() !== urlBefore || ["goto", "search", "image_search", "back", "new_tab"].includes(d.action);
           await settle(active, navigated);

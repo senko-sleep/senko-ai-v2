@@ -4,9 +4,9 @@
   "private": true,
   "scripts": {
     "predev": "node scripts/predev.mjs",
-    "dev": "concurrently --names next,api --prefix-colors blue,yellow \"next dev\" \"node search-api/server.js\"",
+    "dev": "concurrently --names next,api --prefix-colors blue,yellow \"next dev --webpack\" \"node search-api/server.js\"",
     "predev:next": "node scripts/predev.mjs",
-    "dev:next": "next dev",
+    "dev:next": "next dev --webpack",
     "dev:api": "node search-api/server.js",
     "build": "next build --webpack",
     "start": "next start",

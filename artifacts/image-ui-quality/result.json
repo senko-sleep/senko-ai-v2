@@ -1,0 +1,469 @@
+{
+  "timestamp": "2026-11-08T01:43:56.821Z",
+  "sources": [
+    {
+      "id": "earth",
+      "title": "The Earth & Moon",
+      "credit": "JPL",
+      "url": "https://images-assets.nasa.gov/image/PIA00342/PIA00342~medium.jpg",
+      "localPath": "assets/earth.jpg"
+    },
+    {
+      "id": "mars",
+      "title": "Global Color Views of Mars",
+      "credit": "JPL",
+      "url": "https://images-assets.nasa.gov/image/PIA00407/PIA00407~medium.jpg",
+      "localPath": "assets/mars.jpg"
+    },
+    {
+      "id": "moon",
+      "title": "Nearside of the Moon",
+      "credit": "JPL",
+      "url": "https://images-assets.nasa.gov/image/PIA12235/PIA12235~medium.jpg",
+      "localPath": "assets/moon.jpg"
+    }
+  ],
+  "runs": [
+    {
+      "requested": {
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b"
+      },
+      "workspaceDir": "C:\\Users\\Owner\\senko-ai\\.data\\workspaces\\quality-gallery-1794102211375-0",
+      "status": "incomplete",
+      "metrics": {
+        "modelCalls": 1,
+        "inferenceRequests": 1,
+        "requestLimit": 8,
+        "toolOperations": 0,
+        "researchCacheHits": 0,
+        "durationMs": 14010,
+        "attempts": [
+          {
+            "provider": "groq",
+            "model": "openai/gpt-oss-120b",
+            "startedAt": 1794102215673,
+            "status": 200,
+            "durationMs": 189
+          }
+        ]
+      },
+      "inspectionError": "Model did not create index.html; image/UI acceptance could not run.",
+      "task": {
+        "goal": "Build a polished, responsive planetary photo gallery website using the three provided real NASA raster images and image-sources.json. Use plain HTML/CSS/JS and no dependencies. Create index.html, styles.css and app.js in one useful batch. Use an editorial science-magazine composition, strong typography, careful spacing, real images with descriptive alt text and source credit. Do not invent image URLs or use placeholders. Three columns at desktop; one column at 390px; object-fit cover/contain; no overflow or overlapping images. Implement functional Mars/All filters, persistent Earth favorite using localStorage, and an accessible Earth detail dialog closed by Escape. Acceptance selectors: each of three cards data-testid=\"card\"; filter buttons data-testid=\"filter-mars\" and \"filter-all\"; Earth favorite data-testid=\"favorite-earth\" with aria-pressed; detail button data-testid=\"detail-earth\"; dialog role=\"dialog\". Selectors are a test contract, not styling instructions. Inspect desktop and mobile and test actual actions. Batch writes; do not repeatedly read files already supplied; do not call a model for deterministic verification. Finish only after real browser checks. Sources: [{\"id\":\"earth\",\"title\":\"The Earth & Moon\",\"credit\":\"JPL\",\"url\":\"https://images-assets.nasa.gov/image/PIA00342/PIA00342~medium.jpg\",\"localPath\":\"assets/earth.jpg\"},{\"id\":\"mars\",\"title\":\"Global Color Views of Mars\",\"credit\":\"JPL\",\"url\":\"https://images-assets.nasa.gov/image/PIA00407/PIA00407~medium.jpg\",\"localPath\":\"assets/mars.jpg\"},{\"id\":\"moon\",\"title\":\"Nearside of the Moon\",\"credit\":\"JPL\",\"url\":\"https://images-assets.nasa.gov/image/PIA12235/PIA12235~medium.jpg\",\"localPath\":\"assets/moon.jpg\"}]",
+        "status": "incomplete",
+        "step": 1,
+        "revision": 0,
+        "history": [
+          "Every AI provider is busy or failing right now:\n- Groq (openai/gpt-oss-120b): its per-minute token limit is too small for this request"
+        ],
+        "evidence": [],
+        "changed": [],
+        "updatedAt": 1794102225409,
+        "metrics": {
+          "modelCalls": 1,
+          "inferenceRequests": 1,
+          "requestLimit": 8,
+          "toolOperations": 0,
+          "researchCacheHits": 0,
+          "durationMs": 14010,
+          "attempts": [
+            {
+              "provider": "groq",
+              "model": "openai/gpt-oss-120b",
+              "startedAt": 1794102215673,
+              "status": 200,
+              "durationMs": 189
+            }
+          ]
+        },
+        "requirements": {
+          "playback": false,
+          "browser": true,
+          "checks": [
+            "Original requested outcome",
+            "Live browser workflow",
+            "Desktop and mobile layout"
+          ],
+          "procedure": "Inspect the existing architecture and change only what the requested outcome needs. Use a suitable stack; do not impose a dashboard, a backend, or a scraper. Reproduce defects, make targeted changes, and verify real behavior."
+        },
+        "sources": []
+      },
+      "network": [
+        {
+          "method": "GET",
+          "host": "127.0.0.1",
+          "path": "/v1/models",
+          "status": 0,
+          "durationMs": 17
+        },
+        {
+          "method": "GET",
+          "host": "localhost",
+          "path": "/api/tags",
+          "status": 0,
+          "durationMs": 17
+        },
+        {
+          "method": "GET",
+          "host": "api.groq.com",
+          "path": "/openai/v1/models",
+          "status": 200,
+          "durationMs": 210
+        },
+        {
+          "method": "GET",
+          "host": "generativelanguage.googleapis.com",
+          "path": "/v1beta/openai/models",
+          "status": 200,
+          "durationMs": 205
+        },
+        {
+          "method": "GET",
+          "host": "api.cloudflare.com",
+          "path": "/client/v4/accounts/5c75152de89e0caa9cba9f9567a86455/ai/v1/models",
+          "status": 405,
+          "durationMs": 207
+        },
+        {
+          "method": "GET",
+          "host": "api.sambanova.ai",
+          "path": "/v1/models",
+          "status": 200,
+          "durationMs": 349
+        },
+        {
+          "method": "GET",
+          "host": "openrouter.ai",
+          "path": "/api/v1/models",
+          "status": 200,
+          "durationMs": 355
+        },
+        {
+          "method": "GET",
+          "host": "api.deepseek.com",
+          "path": "/models",
+          "status": 200,
+          "durationMs": 446
+        },
+        {
+          "method": "POST",
+          "host": "api.groq.com",
+          "path": "/openai/v1/chat/completions",
+          "status": 200,
+          "durationMs": 188
+        }
+      ],
+      "targets": {
+        "firstFileWriteMs": 15000,
+        "totalMs": 90000,
+        "maxInferenceRequests": 8
+      },
+      "targetResults": {
+        "firstFileWithin15s": false,
+        "functionalityPassed": false,
+        "inferenceWithinBudget": true
+      }
+    },
+    {
+      "requested": {
+        "provider": "cloudflare",
+        "model": "@cf/meta/llama-3.2-3b-instruct"
+      },
+      "actualModel": "@cf/meta/llama-3.2-3b-instruct",
+      "workspaceDir": "C:\\Users\\Owner\\senko-ai\\.data\\workspaces\\quality-gallery-1794102227279-1",
+      "status": "incomplete",
+      "metrics": {
+        "modelCalls": 3,
+        "inferenceRequests": 3,
+        "requestLimit": 8,
+        "toolOperations": 1,
+        "researchCacheHits": 0,
+        "durationMs": 9282,
+        "attempts": [
+          {
+            "provider": "cloudflare",
+            "model": "@cf/meta/llama-3.2-3b-instruct",
+            "startedAt": 1794102227356,
+            "status": 200,
+            "durationMs": 381
+          },
+          {
+            "provider": "cloudflare",
+            "model": "@cf/meta/llama-3.2-3b-instruct",
+            "startedAt": 1794102235056,
+            "status": 200,
+            "durationMs": 303
+          },
+          {
+            "provider": "cloudflare",
+            "model": "@cf/meta/llama-3.2-3b-instruct",
+            "startedAt": 1794102235693,
+            "status": 200,
+            "durationMs": 290
+          }
+        ],
+        "firstFileWriteMs": 8326
+      },
+      "inspectionError": "Model did not create index.html; image/UI acceptance could not run.",
+      "task": {
+        "goal": "Build a polished, responsive planetary photo gallery website using the three provided real NASA raster images and image-sources.json. Use plain HTML/CSS/JS and no dependencies. Create index.html, styles.css and app.js in one useful batch. Use an editorial science-magazine composition, strong typography, careful spacing, real images with descriptive alt text and source credit. Do not invent image URLs or use placeholders. Three columns at desktop; one column at 390px; object-fit cover/contain; no overflow or overlapping images. Implement functional Mars/All filters, persistent Earth favorite using localStorage, and an accessible Earth detail dialog closed by Escape. Acceptance selectors: each of three cards data-testid=\"card\"; filter buttons data-testid=\"filter-mars\" and \"filter-all\"; Earth favorite data-testid=\"favorite-earth\" with aria-pressed; detail button data-testid=\"detail-earth\"; dialog role=\"dialog\". Selectors are a test contract, not styling instructions. Inspect desktop and mobile and test actual actions. Batch writes; do not repeatedly read files already supplied; do not call a model for deterministic verification. Finish only after real browser checks. Sources: [{\"id\":\"earth\",\"title\":\"The Earth & Moon\",\"credit\":\"JPL\",\"url\":\"https://images-assets.nasa.gov/image/PIA00342/PIA00342~medium.jpg\",\"localPath\":\"assets/earth.jpg\"},{\"id\":\"mars\",\"title\":\"Global Color Views of Mars\",\"credit\":\"JPL\",\"url\":\"https://images-assets.nasa.gov/image/PIA00407/PIA00407~medium.jpg\",\"localPath\":\"assets/mars.jpg\"},{\"id\":\"moon\",\"title\":\"Nearside of the Moon\",\"credit\":\"JPL\",\"url\":\"https://images-assets.nasa.gov/image/PIA12235/PIA12235~medium.jpg\",\"localPath\":\"assets/moon.jpg\"}]",
+        "status": "incomplete",
+        "step": 3,
+        "revision": 1,
+        "history": [
+          "Invalid tool response from @cf/meta/llama-3.2-3b-instruct (6998 characters). Return a fully closed JSON object with an ops array. Use one small operation under 1000 tokens; do not repeat the previous oversized batch. Reply start: \"{\\\"thought:Create a new project folder and initialize a new npm project,ops:[{op:write,path:package.json,content:{\\\"   },\\\"\"",
+          "Step 2: write package.json: persisted",
+          "Invalid tool response from @cf/meta/llama-3.2-3b-instruct (629 characters). Return a fully closed JSON object with an ops array. Use one small operation under 1000 tokens; do not repeat the previous oversized batch. Reply start: \"{\\\"thought\\\": \\\"Create a new project folder and initialize a new npm project, write package.json with empty content, and cr\"",
+          "Pinned model @cf/meta/llama-3.2-3b-instruct repeatedly returned unusable tools. Files and task context were preserved; no fallback was substituted."
+        ],
+        "evidence": [],
+        "changed": [
+          "package.json"
+        ],
+        "updatedAt": 1794102236589,
+        "metrics": {
+          "modelCalls": 3,
+          "inferenceRequests": 3,
+          "requestLimit": 8,
+          "toolOperations": 1,
+          "researchCacheHits": 0,
+          "durationMs": 9282,
+          "attempts": [
+            {
+              "provider": "cloudflare",
+              "model": "@cf/meta/llama-3.2-3b-instruct",
+              "startedAt": 1794102227356,
+              "status": 200,
+              "durationMs": 381
+            },
+            {
+              "provider": "cloudflare",
+              "model": "@cf/meta/llama-3.2-3b-instruct",
+              "startedAt": 1794102235056,
+              "status": 200,
+              "durationMs": 303
+            },
+            {
+              "provider": "cloudflare",
+              "model": "@cf/meta/llama-3.2-3b-instruct",
+              "startedAt": 1794102235693,
+              "status": 200,
+              "durationMs": 290
+            }
+          ],
+          "firstFileWriteMs": 8326
+        },
+        "requirements": {
+          "playback": false,
+          "browser": true,
+          "checks": [
+            "Original requested outcome",
+            "Live browser workflow",
+            "Desktop and mobile layout"
+          ],
+          "procedure": "Inspect the existing architecture and change only what the requested outcome needs. Use a suitable stack; do not impose a dashboard, a backend, or a scraper. Reproduce defects, make targeted changes, and verify real behavior."
+        },
+        "sources": [],
+        "model": "@cf/meta/llama-3.2-3b-instruct",
+        "activity": "write package.json"
+      },
+      "network": [
+        {
+          "method": "POST",
+          "host": "api.cloudflare.com",
+          "path": "/client/v4/accounts/5c75152de89e0caa9cba9f9567a86455/ai/v1/chat/completions",
+          "status": 200,
+          "durationMs": 380
+        },
+        {
+          "method": "POST",
+          "host": "api.cloudflare.com",
+          "path": "/client/v4/accounts/5c75152de89e0caa9cba9f9567a86455/ai/v1/chat/completions",
+          "status": 200,
+          "durationMs": 302
+        },
+        {
+          "method": "GET",
+          "host": "127.0.0.1",
+          "path": "/v1/models",
+          "status": 0,
+          "durationMs": 3
+        },
+        {
+          "method": "GET",
+          "host": "api.cloudflare.com",
+          "path": "/client/v4/accounts/5c75152de89e0caa9cba9f9567a86455/ai/v1/models",
+          "status": 405,
+          "durationMs": 30
+        },
+        {
+          "method": "POST",
+          "host": "api.cloudflare.com",
+          "path": "/client/v4/accounts/5c75152de89e0caa9cba9f9567a86455/ai/v1/chat/completions",
+          "status": 200,
+          "durationMs": 290
+        }
+      ],
+      "targets": {
+        "firstFileWriteMs": 15000,
+        "totalMs": 90000,
+        "maxInferenceRequests": 8
+      },
+      "targetResults": {
+        "firstFileWithin15s": true,
+        "functionalityPassed": false,
+        "inferenceWithinBudget": true
+      }
+    }
+  ],
+  "network": [
+    {
+      "method": "GET",
+      "host": "images-api.nasa.gov",
+      "path": "/search",
+      "status": 200,
+      "durationMs": 372
+    },
+    {
+      "method": "GET",
+      "host": "images-assets.nasa.gov",
+      "path": "/image/PIA00342/PIA00342~medium.jpg",
+      "status": 200,
+      "durationMs": 116
+    },
+    {
+      "method": "GET",
+      "host": "images-api.nasa.gov",
+      "path": "/search",
+      "status": 200,
+      "durationMs": 95
+    },
+    {
+      "method": "GET",
+      "host": "images-assets.nasa.gov",
+      "path": "/image/PIA00407/PIA00407~medium.jpg",
+      "status": 200,
+      "durationMs": 113
+    },
+    {
+      "method": "GET",
+      "host": "images-api.nasa.gov",
+      "path": "/search",
+      "status": 200,
+      "durationMs": 83
+    },
+    {
+      "method": "GET",
+      "host": "images-assets.nasa.gov",
+      "path": "/image/PIA12235/PIA12235~medium.jpg",
+      "status": 200,
+      "durationMs": 13
+    },
+    {
+      "method": "GET",
+      "host": "127.0.0.1",
+      "path": "/v1/models",
+      "status": 0,
+      "durationMs": 17
+    },
+    {
+      "method": "GET",
+      "host": "localhost",
+      "path": "/api/tags",
+      "status": 0,
+      "durationMs": 17
+    },
+    {
+      "method": "GET",
+      "host": "api.groq.com",
+      "path": "/openai/v1/models",
+      "status": 200,
+      "durationMs": 210
+    },
+    {
+      "method": "GET",
+      "host": "generativelanguage.googleapis.com",
+      "path": "/v1beta/openai/models",
+      "status": 200,
+      "durationMs": 205
+    },
+    {
+      "method": "GET",
+      "host": "api.cloudflare.com",
+      "path": "/client/v4/accounts/5c75152de89e0caa9cba9f9567a86455/ai/v1/models",
+      "status": 405,
+      "durationMs": 207
+    },
+    {
+      "method": "GET",
+      "host": "api.sambanova.ai",
+      "path": "/v1/models",
+      "status": 200,
+      "durationMs": 349
+    },
+    {
+      "method": "GET",
+      "host": "openrouter.ai",
+      "path": "/api/v1/models",
+      "status": 200,
+      "durationMs": 355
+    },
+    {
+      "method": "GET",
+      "host": "api.deepseek.com",
+      "path": "/models",
+      "status": 200,
+      "durationMs": 446
+    },
+    {
+      "method": "POST",
+      "host": "api.groq.com",
+      "path": "/openai/v1/chat/completions",
+      "status": 200,
+      "durationMs": 188
+    },
+    {
+      "method": "POST",
+      "host": "api.cloudflare.com",
+      "path": "/client/v4/accounts/5c75152de89e0caa9cba9f9567a86455/ai/v1/chat/completions",
+      "status": 200,
+      "durationMs": 380
+    },
+    {
+      "method": "POST",
+      "host": "api.cloudflare.com",
+      "path": "/client/v4/accounts/5c75152de89e0caa9cba9f9567a86455/ai/v1/chat/completions",
+      "status": 200,
+      "durationMs": 302
+    },
+    {
+      "method": "GET",
+      "host": "127.0.0.1",
+      "path": "/v1/models",
+      "status": 0,
+      "durationMs": 3
+    },
+    {
+      "method": "GET",
+      "host": "api.cloudflare.com",
+      "path": "/client/v4/accounts/5c75152de89e0caa9cba9f9567a86455/ai/v1/models",
+      "status": 405,
+      "durationMs": 30
+    },
+    {
+      "method": "POST",
+      "host": "api.cloudflare.com",
+      "path": "/client/v4/accounts/5c75152de89e0caa9cba9f9567a86455/ai/v1/chat/completions",
+      "status": 200,
+      "durationMs": 290
+    }
+  ],
+  "caveats": [
+    "Two single runs, not a statistical model ranking.",
+    "NASA assets were staged by the harness. This tests image use/layout, not autonomous image discovery or generation.",
+    "Latency targets are explicit benchmark targets, not a promise of instant coding.",
+    "Browser requests are separate from Node fetch telemetry; no fabricated token/cost totals.",
+    "Visual creativity requires screenshot review independently of functional pass/fail."
+  ]
+}

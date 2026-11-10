@@ -9,9 +9,10 @@ import path from "node:path";
 import { extractCodeArtifacts } from "@/components/assistant/workspace-artifacts";
 import { artifactPath } from "@/components/assistant/workspace-files";
 import { selectProjectContext } from "@/lib/code-job";
-import { runCodingToolLoop, type CodingTaskJournal } from "./coding-loop";
+import { runCodingToolLoop, type CodingOperationEvent, type CodingTaskJournal } from "./coding-loop";
 import { codingRequirements } from "./coding-playbooks";
 import { complete, type LlmMessage } from "@/lib/llm";
+import { InferenceRequestBudget } from "@/lib/llm/request-budget";
 import {
   CodingWorkspaceRuntime,
   verifyAndSanitizeCodingClaims,
@@ -32,12 +33,19 @@ export interface WorkspaceFileOperation {
 
 export interface CodingAgentStepEvent {
   id: number;
-  stage: "understand" | "implement" | "install" | "execute" | "test" | "inspect" | "repair" | "verify";
+  stage: "understand" | "implement" | "install" | "execute" | "test" | "inspect" | "repair" | "verify" | "research";
   label: string;
   status: "running" | "done" | "error";
   detail?: string;
   url?: string;
   fileOps?: WorkspaceFileOperation[];
+}
+
+/** Honest command summary: cwd, exit code, duration and the tail of real output. */
+function commandDetail(rec: { exitCode: number | null; timedOut?: boolean; durationMs?: number; stdout?: string; stderr?: string }): string {
+  const tail = (text: string | undefined) => (text || "").trim().slice(-1500);
+  const out = [tail(rec.stdout), tail(rec.stderr)].filter(Boolean).join("\n");
+  return ["cwd: .", `exit ${rec.exitCode ?? "null"}${rec.timedOut ? " (timed out)" : ""}${rec.durationMs !== undefined ? ` (${rec.durationMs}ms)` : ""}`, out].filter(Boolean).join("\n");
 }
 
 function fileLangBadge(filePath: string): string {
@@ -63,6 +71,7 @@ export interface CodingWorkflowOptions {
   provider?: string;
   baseDir?: string;
   maxRepairAttempts?: number;
+  maxInferenceRequests?: number;
   inspectBrowser?: boolean;
   interactions?: { action: "click" | "type" | "viewport"; selector?: string; text?: string; width?: number; height?: number }[];
   expectedText?: string[];
@@ -224,6 +233,7 @@ export async function detectWorkspaceEntryCommand(
  * when `runAutonomousCodingWorkflow` is invoked with a `goal` (from the Workspace Agent or `[[code: ...]]`).
  */
 async function llmGenerateWorkspaceFiles(opts: {
+  requestBudget: InferenceRequestBudget;
   goal: string;
   primaryGoal?: string;
   existingFiles: { path: string; code: string }[];
@@ -232,11 +242,14 @@ async function llmGenerateWorkspaceFiles(opts: {
   signal?: AbortSignal;
   runtime: CodingWorkspaceRuntime;
   onProgress?: (task: CodingTaskJournal) => void;
+  onOperation?: (event: CodingOperationEvent) => void;
 }): Promise<{ summary: string; files: { path: string; code: string }[]; complete: boolean }> {
   const result = await runCodingToolLoop({
     runtime: opts.runtime, goal: opts.goal, primaryGoal: opts.primaryGoal,
     provider: opts.provider, signal: opts.signal,
+    requestBudget: opts.requestBudget,
     onProgress: opts.onProgress,
+    onOperation: opts.onOperation,
   });
   return { summary: result.summary, files: result.changedFiles, complete: result.task.status === "verified" };
 }
@@ -245,6 +258,7 @@ async function llmGenerateWorkspaceFiles(opts: {
  * Uses the configured LLM to diagnose a real execution/test/browser error and produce updated file contents.
  */
 async function llmRepairWorkspaceFiles(opts: {
+  requestBudget: InferenceRequestBudget;
   goal: string;
   primaryGoal?: string;
   stage: "execute" | "test" | "browser";
@@ -294,6 +308,8 @@ Rules:
   try {
     const res = await complete(messages, {
       provider: opts.provider,
+      requestBudget: opts.requestBudget,
+      hedge: false,
       maxTokens: 6000,
       temperature: 0.15,
       signal: opts.signal,
@@ -353,6 +369,7 @@ function nextRepairId(): string {
 }
 
 export async function runAutonomousCodingWorkflow(opts: CodingWorkflowOptions): Promise<CodingWorkflowResult> {
+  const requestBudget = new InferenceRequestBudget(opts.maxInferenceRequests ?? 24);
   const runtime = new CodingWorkspaceRuntime(opts.chatId, opts.baseDir);
   await runtime.ensureWorkspace();
   opts.signal?.throwIfAborted();
@@ -385,6 +402,23 @@ export async function runAutonomousCodingWorkflow(opts: CodingWorkflowOptions): 
     opts.onStep?.({ id, stage, label, status, detail, url, fileOps });
   };
 
+  // Maps real tool-loop operations onto streamed activity steps (one step per operation).
+  const operationSteps = new Map<number, number>();
+  const reportOperation = (event: CodingOperationEvent) => {
+    const { op } = event;
+    const stage: CodingAgentStepEvent["stage"] =
+      op.op === "run" ? "execute" : op.op === "search" || op.op === "fetch" || op.op === "youtube" ? "research" : op.op === "inspect" ? "inspect" : op.op === "read" ? "understand" : "implement";
+    const label =
+      op.op === "run" ? `$ ${op.cmd}` : op.op === "search" ? `search: ${op.query}` : op.op === "youtube" ? `youtube search: ${op.query}` : op.op === "fetch" ? `fetch ${op.url}` :
+      op.op === "inspect" ? `browser inspection${op.url ? ` ${op.url}` : ""}` : `${op.op} ${op.path}`;
+    const detail = [event.detail, ...(event.sources?.map((s) => `source: ${s.title ? `${s.title} ` : ""}${s.url}`) || [])].filter(Boolean).join("\n") || undefined;
+    const fileOps: WorkspaceFileOperation[] | undefined = op.op === "write" || op.op === "edit" || op.op === "delete"
+      ? [{ action: op.op === "write" ? "Created" : op.op === "edit" ? "Edited" : "Deleted", path: op.path, langBadge: fileLangBadge(op.path) }]
+      : undefined;
+    const existing = operationSteps.get(event.id);
+    if (existing === undefined) operationSteps.set(event.id, emitStep(stage, label, event.status, detail, op.op === "fetch" ? op.url : undefined, fileOps));
+    else updateStep(existing, stage, label, event.status, detail, op.op === "fetch" ? op.url : undefined, fileOps);
+  };
   // ── Step 1: Understand the project ──────────────────────────────────────────
   const s1 = emitStep("understand", "Inspecting workspace & project structure", "running");
   const initialFiles = await runtime.listFiles();
@@ -451,6 +485,7 @@ export async function runAutonomousCodingWorkflow(opts: CodingWorkflowOptions): 
         ? `${primaryGoal}\n\nThe workspace has no application source yet. Build the complete working project (all source files, index.html entry, package.json) AND its tests. Secondary task: ${opts.goal}`
         : opts.goal;
     const generated = await llmGenerateWorkspaceFiles({
+      requestBudget,
       runtime,
       goal: genGoal,
       primaryGoal,
@@ -458,6 +493,7 @@ export async function runAutonomousCodingWorkflow(opts: CodingWorkflowOptions): 
       recentErrors: lastCmdErr || undefined,
       provider: opts.provider,
       signal: opts.signal,
+      onOperation: (event) => reportOperation(event),
       onProgress: (task) => updateStep(sGen, "implement", `Tool step ${task.step}: ${task.activity || task.status}`, task.status === "incomplete" ? "error" : task.status === "verified" ? "done" : "running", task.history.at(-1)?.slice(-1200)),
     });
     opts.signal?.throwIfAborted();
@@ -544,7 +580,7 @@ export async function runAutonomousCodingWorkflow(opts: CodingWorkflowOptions): 
           "install",
           `Installing dependencies (${missingDeps.join(", ")})`,
           installRec.exitCode === 0 ? "done" : "error",
-          `exit ${installRec.exitCode ?? "null"}`,
+          commandDetail(installRec),
         );
       }
     } catch {
@@ -616,6 +652,7 @@ export async function runAutonomousCodingWorkflow(opts: CodingWorkflowOptions): 
     if (modifiedFiles.length === 0) {
       runtime.updateIssueStatus(srcKey, "editing", `Applying live code patch for ${stage} issue...`);
       const llmRes = await llmRepairWorkspaceFiles({
+        requestBudget,
         goal: opts.goal,
         primaryGoal,
         stage,
@@ -734,7 +771,7 @@ export async function runAutonomousCodingWorkflow(opts: CodingWorkflowOptions): 
         "test",
         `Running automated tests (${testCmd})`,
         passed ? "done" : "error",
-        `exit ${rec.exitCode ?? "null"} (${rec.durationMs}ms)`,
+        commandDetail(rec),
       );
 
       if (passed) {
@@ -772,7 +809,7 @@ export async function runAutonomousCodingWorkflow(opts: CodingWorkflowOptions): 
         const sExec = emitStep("execute", `Executing ${entry.command}`, "running");
         const rec = await runtime.runCommand(entry.command, { signal: opts.signal });
         const ok = rec.exitCode === 0 && !rec.timedOut;
-        updateStep(sExec, "execute", `Executing ${entry.command}`, ok ? "done" : "error", `exit ${rec.exitCode ?? "null"}`);
+        updateStep(sExec, "execute", `Executing ${entry.command}`, ok ? "done" : "error", commandDetail(rec));
         if (ok) {
           runtime.resolveOpenIssuesBySource("runtime");
           const lastRepair = runtime.ledger.repairAttempts[runtime.ledger.repairAttempts.length - 1];

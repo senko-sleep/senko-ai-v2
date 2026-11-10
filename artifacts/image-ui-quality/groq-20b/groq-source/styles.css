@@ -1,0 +1,26 @@
+/* Basic Reset */
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:system-ui, sans-serif;line-height:1.6;background:#f4f4f4;color:#333;padding:1rem;}
+header{display:flex;flex-direction:column;align-items:center;margin-bottom:1rem;}
+header h1{margin-bottom:.5rem;font-size:1.8rem;}
+nav button{margin:0 .5rem;padding:.5rem 1rem;background:#0077cc;color:#fff;border:none;border-radius:4px;cursor:pointer;}
+nav button:hover{background:#005fa3;}
+#gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:1rem;}
+.card{background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 5px rgba(0,0,0,.1);}
+.card img{width:100%;height:200px;object-fit:cover;display:block;}
+.card .info{padding:.75rem;}
+.card .info h3{font-size:1.1rem;margin-bottom:.25rem;}
+.card .info p{font-size:.9rem;color:#555;}
+.card .actions{display:flex;justify-content:space-between;padding:.5rem;}
+.card .actions button{background:none;border:none;color:#0077cc;cursor:pointer;}
+.card .actions button:hover{text-decoration:underline;}
+/* Favorite button */
+#favorite-earth{font-size:1.2rem;}
+#favorite-earth[aria-pressed="true"]{color:#e60000;}
+/* Dialog */
+dialog{border:none;border-radius:8px;padding:1rem;background:#fff;max-width:90%;max-height:90%;overflow:auto;}
+dialog img{width:100%;height:auto;object-fit:contain;}
+#close-dialog{margin-top:.5rem;padding:.5rem 1rem;background:#0077cc;color:#fff;border:none;border-radius:4px;cursor:pointer;}
+#close-dialog:hover{background:#005fa3;}
+/* Mobile */
+@media(max-width:390px){#gallery{grid-template-columns:1fr;}}

@@ -1,0 +1,408 @@
+{
+  "timestamp": "2026-11-08T01:48:44.307Z",
+  "sources": [
+    {
+      "id": "earth",
+      "title": "The Earth & Moon",
+      "credit": "JPL",
+      "url": "https://images-assets.nasa.gov/image/PIA00342/PIA00342~medium.jpg",
+      "localPath": "assets/earth.jpg"
+    },
+    {
+      "id": "mars",
+      "title": "Global Color Views of Mars",
+      "credit": "JPL",
+      "url": "https://images-assets.nasa.gov/image/PIA00407/PIA00407~medium.jpg",
+      "localPath": "assets/mars.jpg"
+    },
+    {
+      "id": "moon",
+      "title": "Nearside of the Moon",
+      "credit": "JPL",
+      "url": "https://images-assets.nasa.gov/image/PIA12235/PIA12235~medium.jpg",
+      "localPath": "assets/moon.jpg"
+    }
+  ],
+  "runs": [
+    {
+      "requested": {
+        "provider": "groq",
+        "model": "openai/gpt-oss-20b"
+      },
+      "actualModel": "openai/gpt-oss-20b",
+      "workspaceDir": "C:\\Users\\Owner\\senko-ai\\.data\\workspaces\\quality-gallery-1794102398145-0",
+      "status": "stopped",
+      "metrics": {
+        "modelCalls": 3,
+        "inferenceRequests": 2,
+        "requestLimit": 8,
+        "toolOperations": 4,
+        "researchCacheHits": 0,
+        "durationMs": 90006,
+        "attempts": [
+          {
+            "provider": "groq",
+            "model": "openai/gpt-oss-20b",
+            "startedAt": 1794102402455,
+            "status": 200,
+            "durationMs": 259
+          },
+          {
+            "provider": "groq",
+            "model": "openai/gpt-oss-20b",
+            "startedAt": 1794102462643,
+            "status": 200,
+            "durationMs": 302
+          }
+        ],
+        "firstFileWriteMs": 6666
+      },
+      "quality": {
+        "checks": [
+          {
+            "name": "desktop: real images and accessible descriptions",
+            "passed": false,
+            "detail": "Expected three card images."
+          },
+          {
+            "name": "desktop: responsive layout and no overlapping images",
+            "passed": false,
+            "detail": "Missing card image geometry."
+          },
+          {
+            "name": "mobile: real images and accessible descriptions",
+            "passed": false,
+            "detail": "Expected three card images."
+          },
+          {
+            "name": "mobile: responsive layout and no overlapping images",
+            "passed": false,
+            "detail": "Missing card image geometry."
+          },
+          {
+            "name": "filter changes the rendered card collection",
+            "passed": false,
+            "detail": "Mars filter did not show exactly one card."
+          },
+          {
+            "name": "favorite changes real state and persists after reload",
+            "passed": false,
+            "detail": "locator.getAttribute: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByTestId('favorite-earth')\u001b[22m\n"
+          },
+          {
+            "name": "image details open and Escape closes the dialog",
+            "passed": false,
+            "detail": "locator.click: Timeout 2000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByTestId('detail-earth')\u001b[22m\n"
+          },
+          {
+            "name": "no uncaught browser exceptions",
+            "passed": false,
+            "detail": "Cannot read properties of null (reading 'textContent')\nCannot read properties of null (reading 'textContent')"
+          }
+        ],
+        "passed": false
+      },
+      "task": {
+        "goal": "Build a polished, responsive planetary photo gallery website using the three provided real NASA raster images and image-sources.json. Use plain HTML/CSS/JS and no dependencies. Create index.html, styles.css and app.js in one useful batch. Use an editorial science-magazine composition, strong typography, careful spacing, real images with descriptive alt text and source credit. Do not invent image URLs or use placeholders. Three columns at desktop; one column at 390px; object-fit cover/contain; no overflow or overlapping images. Implement functional Mars/All filters, persistent Earth favorite using localStorage, and an accessible Earth detail dialog closed by Escape. Acceptance selectors: each of three cards data-testid=\"card\"; filter buttons data-testid=\"filter-mars\" and \"filter-all\"; Earth favorite data-testid=\"favorite-earth\" with aria-pressed; detail button data-testid=\"detail-earth\"; dialog role=\"dialog\". Selectors are a test contract, not styling instructions. Inspect desktop and mobile and test actual actions. Batch writes; do not repeatedly read files already supplied; do not call a model for deterministic verification. Finish only after real browser checks. Sources: [{\"id\":\"earth\",\"title\":\"The Earth & Moon\",\"credit\":\"JPL\",\"url\":\"https://images-assets.nasa.gov/image/PIA00342/PIA00342~medium.jpg\",\"localPath\":\"assets/earth.jpg\"},{\"id\":\"mars\",\"title\":\"Global Color Views of Mars\",\"credit\":\"JPL\",\"url\":\"https://images-assets.nasa.gov/image/PIA00407/PIA00407~medium.jpg\",\"localPath\":\"assets/mars.jpg\"},{\"id\":\"moon\",\"title\":\"Nearside of the Moon\",\"credit\":\"JPL\",\"url\":\"https://images-assets.nasa.gov/image/PIA12235/PIA12235~medium.jpg\",\"localPath\":\"assets/moon.jpg\"}]",
+        "status": "stopped",
+        "step": 3,
+        "revision": 4,
+        "history": [
+          "Step 1: write index.html: persisted\nwrite styles.css: persisted\nwrite app.js: persisted",
+          "Step 2: write app.js: persisted",
+          "Aborted"
+        ],
+        "evidence": [],
+        "changed": [
+          "index.html",
+          "styles.css",
+          "app.js"
+        ],
+        "updatedAt": 1794102488168,
+        "metrics": {
+          "modelCalls": 3,
+          "inferenceRequests": 2,
+          "requestLimit": 8,
+          "toolOperations": 4,
+          "researchCacheHits": 0,
+          "durationMs": 90006,
+          "attempts": [
+            {
+              "provider": "groq",
+              "model": "openai/gpt-oss-20b",
+              "startedAt": 1794102402455,
+              "status": 200,
+              "durationMs": 259
+            },
+            {
+              "provider": "groq",
+              "model": "openai/gpt-oss-20b",
+              "startedAt": 1794102462643,
+              "status": 200,
+              "durationMs": 302
+            }
+          ],
+          "firstFileWriteMs": 6666
+        },
+        "requirements": {
+          "playback": false,
+          "browser": true,
+          "checks": [
+            "Original requested outcome",
+            "Live browser workflow",
+            "Desktop and mobile layout"
+          ],
+          "procedure": "Inspect the existing architecture and change only what the requested outcome needs. Use a suitable stack; do not impose a dashboard, a backend, or a scraper. Reproduce defects, make targeted changes, and verify real behavior."
+        },
+        "sources": [],
+        "model": "openai/gpt-oss-20b",
+        "activity": "write app.js"
+      },
+      "network": [
+        {
+          "method": "GET",
+          "host": "127.0.0.1",
+          "path": "/v1/models",
+          "status": 0,
+          "durationMs": 22
+        },
+        {
+          "method": "GET",
+          "host": "localhost",
+          "path": "/api/tags",
+          "status": 0,
+          "durationMs": 22
+        },
+        {
+          "method": "GET",
+          "host": "api.cloudflare.com",
+          "path": "/client/v4/accounts/5c75152de89e0caa9cba9f9567a86455/ai/v1/models",
+          "status": 405,
+          "durationMs": 103
+        },
+        {
+          "method": "GET",
+          "host": "generativelanguage.googleapis.com",
+          "path": "/v1beta/openai/models",
+          "status": 200,
+          "durationMs": 168
+        },
+        {
+          "method": "GET",
+          "host": "api.sambanova.ai",
+          "path": "/v1/models",
+          "status": 200,
+          "durationMs": 288
+        },
+        {
+          "method": "GET",
+          "host": "api.groq.com",
+          "path": "/openai/v1/models",
+          "status": 200,
+          "durationMs": 367
+        },
+        {
+          "method": "GET",
+          "host": "openrouter.ai",
+          "path": "/api/v1/models",
+          "status": 200,
+          "durationMs": 372
+        },
+        {
+          "method": "GET",
+          "host": "api.deepseek.com",
+          "path": "/models",
+          "status": 200,
+          "durationMs": 400
+        },
+        {
+          "method": "POST",
+          "host": "api.groq.com",
+          "path": "/openai/v1/chat/completions",
+          "status": 200,
+          "durationMs": 258
+        },
+        {
+          "method": "GET",
+          "host": "127.0.0.1",
+          "path": "/v1/models",
+          "status": 0,
+          "durationMs": 8
+        },
+        {
+          "method": "GET",
+          "host": "localhost",
+          "path": "/api/tags",
+          "status": 0,
+          "durationMs": 7
+        },
+        {
+          "method": "GET",
+          "host": "api.cloudflare.com",
+          "path": "/client/v4/accounts/5c75152de89e0caa9cba9f9567a86455/ai/v1/models",
+          "status": 405,
+          "durationMs": 76
+        },
+        {
+          "method": "POST",
+          "host": "api.groq.com",
+          "path": "/openai/v1/chat/completions",
+          "status": 200,
+          "durationMs": 302
+        }
+      ],
+      "targets": {
+        "firstFileWriteMs": 15000,
+        "totalMs": 90000,
+        "maxInferenceRequests": 8
+      },
+      "targetResults": {
+        "firstFileWithin15s": true,
+        "functionalityPassed": false,
+        "inferenceWithinBudget": true
+      }
+    }
+  ],
+  "network": [
+    {
+      "method": "GET",
+      "host": "images-api.nasa.gov",
+      "path": "/search",
+      "status": 200,
+      "durationMs": 248
+    },
+    {
+      "method": "GET",
+      "host": "images-assets.nasa.gov",
+      "path": "/image/PIA00342/PIA00342~medium.jpg",
+      "status": 200,
+      "durationMs": 151
+    },
+    {
+      "method": "GET",
+      "host": "images-api.nasa.gov",
+      "path": "/search",
+      "status": 200,
+      "durationMs": 63
+    },
+    {
+      "method": "GET",
+      "host": "images-assets.nasa.gov",
+      "path": "/image/PIA00407/PIA00407~medium.jpg",
+      "status": 200,
+      "durationMs": 14
+    },
+    {
+      "method": "GET",
+      "host": "images-api.nasa.gov",
+      "path": "/search",
+      "status": 200,
+      "durationMs": 67
+    },
+    {
+      "method": "GET",
+      "host": "images-assets.nasa.gov",
+      "path": "/image/PIA12235/PIA12235~medium.jpg",
+      "status": 200,
+      "durationMs": 115
+    },
+    {
+      "method": "GET",
+      "host": "127.0.0.1",
+      "path": "/v1/models",
+      "status": 0,
+      "durationMs": 22
+    },
+    {
+      "method": "GET",
+      "host": "localhost",
+      "path": "/api/tags",
+      "status": 0,
+      "durationMs": 22
+    },
+    {
+      "method": "GET",
+      "host": "api.cloudflare.com",
+      "path": "/client/v4/accounts/5c75152de89e0caa9cba9f9567a86455/ai/v1/models",
+      "status": 405,
+      "durationMs": 103
+    },
+    {
+      "method": "GET",
+      "host": "generativelanguage.googleapis.com",
+      "path": "/v1beta/openai/models",
+      "status": 200,
+      "durationMs": 168
+    },
+    {
+      "method": "GET",
+      "host": "api.sambanova.ai",
+      "path": "/v1/models",
+      "status": 200,
+      "durationMs": 288
+    },
+    {
+      "method": "GET",
+      "host": "api.groq.com",
+      "path": "/openai/v1/models",
+      "status": 200,
+      "durationMs": 367
+    },
+    {
+      "method": "GET",
+      "host": "openrouter.ai",
+      "path": "/api/v1/models",
+      "status": 200,
+      "durationMs": 372
+    },
+    {
+      "method": "GET",
+      "host": "api.deepseek.com",
+      "path": "/models",
+      "status": 200,
+      "durationMs": 400
+    },
+    {
+      "method": "POST",
+      "host": "api.groq.com",
+      "path": "/openai/v1/chat/completions",
+      "status": 200,
+      "durationMs": 258
+    },
+    {
+      "method": "GET",
+      "host": "127.0.0.1",
+      "path": "/v1/models",
+      "status": 0,
+      "durationMs": 8
+    },
+    {
+      "method": "GET",
+      "host": "localhost",
+      "path": "/api/tags",
+      "status": 0,
+      "durationMs": 7
+    },
+    {
+      "method": "GET",
+      "host": "api.cloudflare.com",
+      "path": "/client/v4/accounts/5c75152de89e0caa9cba9f9567a86455/ai/v1/models",
+      "status": 405,
+      "durationMs": 76
+    },
+    {
+      "method": "POST",
+      "host": "api.groq.com",
+      "path": "/openai/v1/chat/completions",
+      "status": 200,
+      "durationMs": 302
+    }
+  ],
+  "caveats": [
+    "Single runs, not a statistical model ranking.",
+    "NASA assets were staged by the harness. This tests image use/layout, not autonomous image discovery or generation.",
+    "Latency targets are explicit benchmark targets, not a promise of instant coding.",
+    "Browser requests are separate from Node fetch telemetry; no fabricated token/cost totals.",
+    "Visual creativity requires screenshot review independently of functional pass/fail."
+  ]
+}

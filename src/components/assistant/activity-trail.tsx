@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { ChevronDown, ExternalLink, Globe2 } from "lucide-react";
-import { activitySources, websiteUrl, type TrailEntry } from "./activity";
+import { activitySources, visibleTrail, websiteUrl, type TrailEntry } from "./activity";
 
 function SiteIcon({ host }: { host: string }) {
   return (
@@ -20,6 +20,7 @@ export function AgentTrail({
   running?: boolean;
   meta?: ReactNode;
 }) {
+  trail = visibleTrail(trail);
   const sources = activitySources(trail, finalUrl);
   const hosts = [...new Set(sources.map((s) => s.host))];
   if (!trail.length && !sources.length) return null;
@@ -38,7 +39,7 @@ export function AgentTrail({
         </span>
         {meta && (
           <span
-            className="inline-flex items-center gap-1.5 text-[11px] font-normal text-[var(--sk-faint)]"
+            className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-[11px] font-normal text-[var(--sk-faint)]"
             onClick={(e) => e.stopPropagation()}
           >
             {meta}

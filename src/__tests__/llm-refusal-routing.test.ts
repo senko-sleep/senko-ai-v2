@@ -55,6 +55,48 @@ afterEach(() => {
 const ask = [{ role: "user" as const, content: "Which of these images are NSFW? Label each one." }];
 
 describe("refusal routing", () => {
+  it("caps real inference requests across fallback and compatibility retries", async () => {
+    let posts = 0;
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url.endsWith("/models")) return Response.json({ data: [{ id: url.includes("groq") ? "g-model" : "vendor/r-model:free", pricing: { prompt: "0", completion: "0" } }] });
+      posts++; return new Response("compatibility option rejected", { status: 400 });
+    });
+    const { complete } = await freshLlm();
+    const { InferenceRequestBudget } = await import("@/lib/llm/request-budget");
+    const budget = new InferenceRequestBudget(2);
+    await expect(complete(ask, { provider: "groq", hedge: false, maxWaitMs: 0, requestBudget: budget })).rejects.toThrow(/request budget exhausted/);
+    expect(posts).toBe(2);
+    expect(budget.attempts).toHaveLength(2);
+    expect(budget.attempts.every((attempt) => attempt.status === 400)).toBe(true);
+    // Reusing the task budget must not send another request.
+    await expect(complete(ask, { requestBudget: budget, hedge: false, maxWaitMs: 0 })).rejects.toThrow(/request budget exhausted/);
+    expect(posts).toBe(2);
+  });
+  it("passes requested JSON mode to compatible providers", async () => {
+    let body: Record<string, unknown> | undefined;
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/models")) return Response.json({ data: [{ id: "g-model" }] });
+      body = JSON.parse(String(init?.body));
+      return sse('{"ops":[],"done":false}');
+    });
+    const { complete } = await freshLlm();
+    const result = await complete([{ role: "user", content: "Return JSON." }], { provider: "groq", model: "g-model", json: true, hedge: false });
+    expect(body?.response_format).toEqual({ type: "json_object" });
+    expect(JSON.parse(result.text).ops).toEqual([]);
+  });
+  it("skips remaining models after an account credit failure and fails over", async () => {
+    const calls = { groq: 0, router: 0 };
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url.endsWith("/models")) return Response.json({ data: (url.includes("groq") ? ["g-model", "g-backup"] : ["vendor/r-model:free"]).map((id) => ({ id, architecture: { input_modalities: ["text"] }, pricing: { prompt: "0", completion: "0" } })) });
+      if (url.includes("groq")) { calls.groq++; return new Response("Account credit exhausted", { status: 402 }); }
+      calls.router++; return sse("Recovered through another configured provider.");
+    });
+    const { complete } = await freshLlm();
+    const result = await complete(ask, { provider: "groq", maxWaitMs: 2000, hedge: false });
+    expect(result.text).toContain("Recovered");
+    expect(calls.groq).toBe(1);
+    expect(calls.router).toBe(1);
+  });
   it("releases caller abort listeners after a complete model response", async () => {
     fakeProviders("A complete and ordinary response.", "unused");
     const { complete } = await freshLlm();
@@ -89,5 +131,36 @@ describe("refusal routing", () => {
     const r = await complete(ask, { provider: "groq", maxWaitMs: 2000, hedge: false });
     expect(r.text).toMatch(/labelled them NSFW/);
     expect(calls.openrouter).toBe(0);
+  });
+});
+
+describe("daily quota behind a 5xx", () => {
+  it("benches a gateway whose 503 says the daily allocation is used up", async () => {
+    const calls = { groq: 0, openrouter: 0 };
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url.endsWith("/models")) {
+        const id = url.includes("groq") ? "g-model" : "vendor/r-model:free";
+        return Response.json({ data: [{ id, pricing: { prompt: "0", completion: "0" } }] });
+      }
+      if (url.includes("groq")) {
+        calls.groq++;
+        return new Response(JSON.stringify({ error: { message: "No model could answer. @cf/x: 4006: you have used up your daily free allocation of 10,000 neurons" } }), { status: 503 });
+      }
+      calls.openrouter++;
+      return sse("Hello there, this is a normal answer.");
+    });
+    process.env.LLM_ORDER = "groq,openrouter";
+    const { complete } = await freshLlm();
+    await complete(ask, { hedge: false, maxWaitMs: 0 });
+    const groqAfterFirst = calls.groq;
+    expect(groqAfterFirst).toBeGreaterThan(0);
+    // Five minutes later (well past a normal 30s error cooldown) it is still benched.
+    const start = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => start + 5 * 60_000);
+    await complete(ask, { hedge: false, maxWaitMs: 0 });
+    await complete(ask, { hedge: false, maxWaitMs: 0 });
+    // Benched for the hour: later requests go straight to the next provider.
+    expect(calls.groq).toBe(groqAfterFirst);
+    expect(calls.openrouter).toBeGreaterThanOrEqual(3);
   });
 });

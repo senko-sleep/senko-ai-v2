@@ -5,6 +5,8 @@
 const nextConfig = {
   reactCompiler: true,
   devIndicators: false,
+  // Lets a second dev server (e.g. for screenshot tests) run beside the main one.
+  ...(process.env.NEXT_DIST_DIR ? { distDir: process.env.NEXT_DIST_DIR } : {}),
   // Prisma Compute deploys the standalone server; the deploy workflow sets this.
   ...(process.env.NEXT_OUTPUT_STANDALONE === "1" ? { output: "standalone" } : {}),
   // Playwright and esbuild ship native binaries; load them from node_modules at runtime instead of bundling them.
@@ -20,6 +22,9 @@ const nextConfig = {
   // Node.js runs in the browser (WebContainers) only on cross-origin-isolated pages. Just the
   // workspace route gets these headers: on the main app they would break YouTube embeds and
   // the live browser view.
+  // Dev only: drop compiled pages that haven't been opened for a while, so a long dev
+  // session doesn't keep every route in memory.
+  onDemandEntries: { maxInactiveAge: 5 * 60_000, pagesBufferLength: 3 },
   async headers() {
     return [
       {
@@ -38,6 +43,10 @@ const nextConfig = {
     // Turbopack frees its in-memory cache past this target instead of growing until the
     // machine runs out (low-RAM dev PCs crashed with "Insufficient system resources").
     turbopackMemoryLimit: Number(process.env.TURBOPACK_MEMORY_LIMIT_MB || 1536) * 1024 * 1024,
+    // Dev uses webpack: trade a little compile speed for a much smaller peak heap, and only
+    // compile routes when they're first opened.
+    webpackMemoryOptimizations: true,
+    preloadEntriesOnStart: false,
   },
 };
 

@@ -1,0 +1,87 @@
+/* "Thinking… / Thought for 6s" dropdown. Uses Senko's --sk-* tokens (light + dark). */
+.sk-think { margin: 2px 0 6px; max-width: 640px; }
+
+.sk-think-head {
+  display: inline-flex; align-items: center; gap: 8px; max-width: 100%;
+  padding: 5px 10px 5px 6px; margin-left: -6px; border: 0; border-radius: 10px;
+  background: transparent; color: var(--sk-muted); font: inherit; font-size: 13px; cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.sk-think-head:hover { background: var(--sk-hover); color: var(--sk-text); }
+.sk-think-head:focus-visible { outline: none; box-shadow: var(--sk-focus); }
+.sk-think[data-working] .sk-think-head { color: var(--sk-text); }
+
+.sk-think-icon { display: grid; place-items: center; width: 18px; height: 18px; flex: none; color: var(--sk-accent-ink, var(--sk-accent)); }
+/* A small ember orb that breathes while Senko works */
+.sk-think-orb {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--sk-accent-grad, var(--sk-accent));
+  box-shadow: 0 0 0 0 var(--sk-accent-line);
+  animation: sk-think-breathe 1.6s ease-in-out infinite;
+}
+@keyframes sk-think-breathe {
+  0%, 100% { transform: scale(.8); box-shadow: 0 0 0 0 rgba(242, 106, 14, .45); }
+  50% { transform: scale(1.05); box-shadow: 0 0 0 6px rgba(242, 106, 14, 0); }
+}
+
+.sk-think-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+/* Shimmer sweep across the live label, like a progress glint */
+.sk-think-shimmer {
+  background: linear-gradient(90deg, var(--sk-muted) 0%, var(--sk-muted) 35%, var(--sk-strong, #fff) 50%, var(--sk-muted) 65%, var(--sk-muted) 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: sk-think-shimmer 2.2s linear infinite;
+}
+:root[data-theme="light"] .sk-think-shimmer {
+  background-image: linear-gradient(90deg, var(--sk-muted) 0%, var(--sk-muted) 35%, var(--sk-accent) 50%, var(--sk-muted) 65%, var(--sk-muted) 100%);
+}
+@keyframes sk-think-shimmer { from { background-position: 125% 0; } to { background-position: -125% 0; } }
+.sk-think-time { flex: none; font-size: 12px; color: var(--sk-faint, var(--sk-muted)); font-variant-numeric: tabular-nums; }
+.sk-think-chevron { flex: none; color: var(--sk-faint, var(--sk-muted)); transition: transform .2s ease; }
+.sk-think[data-open] .sk-think-chevron { transform: rotate(180deg); }
+
+.sk-think-body { padding: 4px 0 6px 2px; animation: sk-think-in .18s ease-out; }
+.sk-think-body[hidden] { display: none; }
+@keyframes sk-think-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+
+/* Timeline */
+.sk-think-steps { list-style: none; margin: 0; padding: 0; position: relative; }
+.sk-think-step { position: relative; display: flex; gap: 10px; padding: 4px 0 6px; }
+.sk-think-step:not(:last-child)::before {
+  content: ""; position: absolute; left: 10px; top: 26px; bottom: -2px; width: 1px;
+  background: linear-gradient(var(--sk-line-strong), var(--sk-line));
+}
+.sk-think-dot {
+  position: relative; z-index: 1; flex: none; display: grid; place-items: center;
+  width: 21px; height: 21px; border-radius: 7px; margin-top: -1px;
+  color: var(--sk-muted); background: var(--sk-surface-2, var(--sk-bg2)); border: 1px solid var(--sk-line);
+}
+.sk-think-step[data-status="running"] .sk-think-dot { color: var(--sk-accent-ink, var(--sk-accent)); background: var(--sk-accent-soft); border-color: var(--sk-accent-line); }
+.sk-think-step[data-status="error"] .sk-think-dot { color: var(--sk-danger); background: var(--sk-danger-soft); border-color: transparent; }
+.sk-think-step-text { min-width: 0; flex: 1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding-top: 1px; }
+.sk-think-step-label { font-size: 13px; font-weight: 600; color: var(--sk-text); }
+.sk-think-step[data-status="done"] .sk-think-step-label { color: var(--sk-text2, var(--sk-text)); }
+.sk-think-step-detail { flex-basis: 100%; font-size: 12.5px; line-height: 1.45; color: var(--sk-muted); }
+.sk-think-chip {
+  display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; text-decoration: none;
+  font-size: 11px; color: var(--sk-accent-ink, var(--sk-accent)); background: var(--sk-accent-soft); border: 1px solid var(--sk-accent-line);
+}
+.sk-think-chip:hover { filter: brightness(1.1); }
+
+/* The model's own thought summaries */
+.sk-think-thoughts {
+  flex-basis: 100%; margin-top: 6px; max-height: 320px; overflow-y: auto; padding: 2px 4px 2px 12px;
+  border-left: 2px solid var(--sk-accent-line);
+  font-size: 13px; line-height: 1.6; color: var(--sk-muted);
+  scrollbar-width: thin; scrollbar-color: var(--sk-line-strong) transparent;
+}
+.sk-think-thoughts p { margin: 0 0 8px; }
+.sk-think-thoughts p:last-child { margin-bottom: 0; }
+.sk-think-thoughts strong { display: block; margin-top: 6px; color: var(--sk-text); font-weight: 650; }
+.sk-think-thoughts p:first-child strong:first-child { margin-top: 0; }
+.sk-think-thoughts ul, .sk-think-thoughts ol { margin: 0 0 8px; padding-left: 18px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sk-think-orb, .sk-think-shimmer, .sk-think-body { animation: none; }
+  .sk-think-shimmer { color: var(--sk-text); background: none; }
+}

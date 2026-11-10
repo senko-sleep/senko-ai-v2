@@ -1,6 +1,6 @@
 "use client";
 
-import React, { Component, memo, useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import React, { Component, memo, useCallback, useEffect, useId, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -46,8 +46,10 @@ import { SmartImage, seedUIImageCache, type ImageDisplayStatus } from "./smart-i
 import { ChartView, DiagramView, MathView, formatLatexToReadable, resolveColor } from "./charts-and-diagrams";
 import { DocumentPreviewCard, ModelViewer3D } from "./model-and-doc-viewer";
 import { InteractiveControlsWidget, QuestionnaireWidget, QuizWidget } from "./interactive-widgets";
+import { dynamicUiThemeStyle } from "./dynamic-ui-theme";
+import "./dynamic-ui-theme.css";
+import { PlaceMap } from "./place-map";
 import {
-  GeoMapWidget,
   KeyValueWidget,
   NewsFeedWidget,
   ProductGridWidget,
@@ -1200,11 +1202,12 @@ function RankingWidget({
 
 type GalleryNode = Extract<UINode, { type: "gallery" }>;
 
-function GalleryPhoto({ item, id, index, aspect, className, onStatus }: {
+function GalleryPhoto({ item, id, index, aspect, imageFit, className, onStatus }: {
   item: GalleryNode["items"][number];
   id: string;
   index: number;
-  aspect: "natural" | "video";
+  aspect: "natural" | "video" | "square";
+  imageFit?: "cover" | "contain";
   className?: string;
   onStatus?: (id: string, status: ImageDisplayStatus) => void;
 }) {
@@ -1218,7 +1221,7 @@ function GalleryPhoto({ item, id, index, aspect, className, onStatus }: {
       height={item.height}
       alt={item.title || `Gallery image ${index + 1}`}
       aspect={aspect}
-      className={className}
+      className={`${className || ""} ${imageFit === "contain" ? "sk-ui-gallery-contain" : ""}`}
       eager={Boolean(onStatus)}
       quietActions={Boolean(onStatus)}
       onDisplayStatus={onStatus ? report : undefined}
@@ -1246,6 +1249,7 @@ function GalleryWidget({ node }: { node: GalleryNode }) {
     ? "grid-cols-2 @min-[34rem]:grid-cols-4" : "grid-cols-2 @min-[28rem]:grid-cols-3";
   const mosaic = node.layout === "mosaic" && node.cols === 3 && items.length >= 4;
   const masonry = node.layout === "masonry";
+  const imageAspect = node.aspect || (masonry ? "natural" : "video");
   const masonryCols = node.cols === 1 ? "columns-1" : node.cols === 2 ? "columns-2" : node.cols === 4
     ? "columns-2 @min-[34rem]:columns-4" : "columns-2 @min-[28rem]:columns-3";
   const loaded = items.filter(({ id }) => display[id] === "ready").length;
@@ -1276,10 +1280,10 @@ function GalleryWidget({ node }: { node: GalleryNode }) {
                   type="button"
                   onClick={() => setCat(c)}
                   aria-pressed={cat === c}
-                  className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium transition ${
+                  className={`min-h-8 rounded-md border-b-2 px-2.5 py-1 text-[11px] font-medium transition ${
                     cat === c
-                      ? "bg-[var(--sk-accent-soft)] text-[var(--sk-accent-ink)]"
-                      : "text-[var(--sk-muted)] hover:text-[var(--sk-text)]"
+                      ? "border-[var(--sk-accent-ink)] bg-[var(--sk-accent-soft)] text-[var(--sk-accent-ink)]"
+                      : "border-transparent text-[var(--sk-muted)] hover:text-[var(--sk-text)]"
                   }`}
                 >
                   {c === "ALL" ? "All" : c}
@@ -1304,8 +1308,9 @@ function GalleryWidget({ node }: { node: GalleryNode }) {
                 id={id}
                 item={item}
                 index={index}
-                aspect={masonry ? "natural" : "video"}
-                className={`${wide ? "@min-[28rem]:aspect-[32/9]" : ""} ${node.curated ? "!rounded-xl !border-0" : ""}`}
+                aspect={imageAspect}
+                imageFit={node.imageFit}
+                className={`${wide && imageAspect === "video" ? "@min-[28rem]:aspect-[32/9]" : ""} ${node.curated ? "!rounded-xl !border-0" : ""}`}
                 onStatus={node.curated ? reportDisplay : undefined}
               />
               {!node.curated && (item.title || item.subtitle || item.description || item.sourceUrl) && (
@@ -1360,24 +1365,36 @@ function TabsWidget({
   onRunPrompt?: (text: string) => void;
 }) {
   const [activeId, setActiveId] = useState(defaultTab || tabs[0]?.id);
+  const tabScope = useId();
   const current = tabs.find((t) => t.id === activeId) || tabs[0];
 
   return (
-    <div className="my-3 overflow-hidden rounded-2xl border border-[var(--sk-line)] bg-[var(--sk-glass)]">
+    <div className="my-3 min-w-0 overflow-hidden rounded-xl border border-[var(--sk-line)] bg-[var(--sk-glass)]">
       <div
         role="tablist"
+        aria-label="Content sections"
         className="flex gap-1 overflow-x-auto border-b border-[var(--sk-line)] bg-white/[0.02] p-1.5"
       >
-        {tabs.map((t) => {
+        {tabs.map((t, tabIndex) => {
           const active = t.id === current?.id;
           return (
             <button
               key={t.id}
               type="button"
               role="tab"
+              id={`${tabScope}-tab-${tabIndex}`}
+              aria-controls={`${tabScope}-panel-${tabIndex}`}
               aria-selected={active}
+              tabIndex={active ? 0 : -1}
               onClick={() => setActiveId(t.id)}
-              className={`inline-flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-1.5 text-[12px] font-medium transition ${
+              onKeyDown={(event) => {
+                const next = event.key === "ArrowRight" ? (tabIndex + 1) % tabs.length : event.key === "ArrowLeft" ? (tabIndex - 1 + tabs.length) % tabs.length : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : -1;
+                if (next < 0) return;
+                event.preventDefault(); setActiveId(tabs[next].id);
+                const target = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next];
+                target?.focus();
+              }}
+              className={`inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-[12px] font-medium transition ${
                 active
                   ? "bg-[var(--sk-accent-soft)] text-[var(--sk-accent-ink)]"
                   : "text-[var(--sk-muted)] hover:bg-[var(--sk-hover)] hover:text-[var(--sk-text)]"
@@ -1392,7 +1409,7 @@ function TabsWidget({
         })}
       </div>
       {current && (
-        <div role="tabpanel" className="p-4">
+        <div role="tabpanel" id={`${tabScope}-panel-${tabs.indexOf(current)}`} aria-labelledby={`${tabScope}-tab-${tabs.indexOf(current)}`} className="min-w-0 p-4">
           {current.content && <EnhancedMarkdown text={current.content} onRunPrompt={onRunPrompt} />}
           {current.children && (
             <div className="space-y-3">{current.children.map((c, i) => renderNode(c, i))}</div>
@@ -1632,7 +1649,8 @@ export function DynamicUIRenderer({
       if (!evaluateCondition(n.when, state)) return null;
 
       return (
-        <UINodeBoundary key={keyIdx} fallbackText={n.type === "gallery" ? "The image gallery could not be displayed." : undefined}>
+        <UINodeBoundary key={keyIdx} fallbackText={n.type === "gallery" ? "The image gallery could not be displayed." : "This interface component could not be displayed."}>
+          <div data-ui-node={n.type} className={`sk-ui-node ${n.theme ? "sk-ui-themed" : ""}`} style={dynamicUiThemeStyle(n.theme)}>
           {(() => {
             switch (n.type) {
               case "stack": {
@@ -1701,7 +1719,7 @@ export function DynamicUIRenderer({
                 };
                 return (
                   <div
-                    className={`my-2 flex flex-col justify-between rounded-2xl border p-4 ${
+                    className={`my-2 flex flex-col justify-between rounded-xl border p-4 ${
                       borderMap[n.variant || "default"] || borderMap.default
                     }`}
                   >
@@ -1841,7 +1859,26 @@ export function DynamicUIRenderer({
                 return <NewsFeedWidget node={n} />;
 
               case "map":
-                return <GeoMapWidget node={n} />;
+                return <PlaceMap node={n} />;
+
+              case "figure":
+                return (
+                  <div className="sk-figure" data-side={n.side || "right"}>
+                    <figure className="sk-figure-art">
+                      <SmartImage imageUrl={n.imageUrl} imageQuery={n.imageQuery} sourceUrl={n.sourceUrl} alt={n.caption || n.heading || "Illustration"} aspect={n.aspect || "auto"} />
+                      {n.caption && <figcaption>{n.caption}</figcaption>}
+                    </figure>
+                    {n.heading && <h4 className="sk-figure-heading">{n.heading}</h4>}
+                    <EnhancedMarkdown text={n.content} onRunPrompt={onRunPrompt} />
+                    {n.citations && n.citations.length > 0 && (
+                      <span className="mt-1 inline-flex flex-wrap gap-1">
+                        {n.citations.map((c, i) => (
+                          <CitationPill key={i} citation={c} />
+                        ))}
+                      </span>
+                    )}
+                  </div>
+                );
 
               case "steps":
                 return <StepsWidget node={n} />;
@@ -2073,6 +2110,7 @@ export function DynamicUIRenderer({
                 );
             }
           })()}
+          </div>
         </UINodeBoundary>
       );
     },

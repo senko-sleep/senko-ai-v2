@@ -39,7 +39,7 @@ function toggleBookmarkStorage(url: string): boolean {
   }
 }
 
-async function resolveImageQuery(query: string): Promise<CandidateImage[]> {
+export async function resolveImageQuery(query: string): Promise<CandidateImage[]> {
   const key = query.trim().toLowerCase();
   if (!key) return [];
   if (queryCache.has(key)) return queryCache.get(key)!;

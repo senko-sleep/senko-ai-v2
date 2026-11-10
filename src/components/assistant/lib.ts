@@ -34,6 +34,12 @@ export interface Msg {
   miniAgentRunning?: boolean;
   /** Short label for the mini-agent task (e.g. "Searching YouTube"). */
   miniAgentLabel?: string;
+  /** The model's streamed reasoning / thought summaries. */
+  thoughts?: string;
+  /** How long Senko worked before answering (ms), once known. */
+  thinkingMs?: number;
+  /** When this reply started (for the live "Thinking… 4s" timer). */
+  startedAt?: number;
 }
 
 export interface ScrapedImage {
@@ -67,6 +73,7 @@ export interface StoredMessage {
     scrapedImages?: ScrapedImage[];
     imageQuery?: string;
     uiImages?: Record<string, string[]>;
+    thinking?: { steps: AgentStep[]; thoughts?: string; ms?: number };
   };
 }
 
@@ -89,6 +96,9 @@ export function fromStored(m: StoredMessage): Msg {
     scrapedImages: meta.scrapedImages?.length ? meta.scrapedImages : undefined,
     imageQuery: meta.imageQuery || undefined,
     uiImages: meta.uiImages || undefined,
+    miniAgentSteps: meta.thinking?.steps?.length ? meta.thinking.steps : undefined,
+    thoughts: meta.thinking?.thoughts || undefined,
+    thinkingMs: meta.thinking?.ms,
     provider: meta.providerLabel ? `${meta.providerLabel}${meta.model ? ` · ${meta.model}` : ""}` : undefined,
     agent: meta.agent
       ? {

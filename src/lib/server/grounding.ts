@@ -5,6 +5,8 @@
  * 1. YouTube queries (distinguishing currently trending, all-time most viewed,
  *    recent popular, most liked, and category-specific queries).
  * 2. Current news / breaking headlines via Google News RSS.
+ * 3. Entity / character / person lookups — web-searched snippets so the AI can
+ *    produce a rich, accurate profile UI without hallucinating facts.
  *
  * Never fabricates live statistics; if live retrieval is blocked or offline,
  * returns an explicit limitation note so the AI communicates it transparently.
@@ -218,7 +220,8 @@ async function fetchGoogleNewsRss(topicQuery: string, signal?: AbortSignal): Pro
 export async function gatherLiveGroundingNote(
   userText: string,
   signal?: AbortSignal,
-  onStep?: (step: { id: number; label: string; status: "running" | "done" | "error"; detail?: string }) => void
+  onStep?: (step: { id: number; label: string; status: "running" | "done" | "error"; detail?: string }) => void,
+  opts?: { composedUI?: boolean }
 ): Promise<string> {
   if (!userText || process.env.SENKO_DISABLE_WEB_GROUNDING === "1") return "";
 
@@ -291,4 +294,207 @@ export async function gatherLiveGroundingNote(
   }
 
   return "";
+}
+
+// ─── Entity / character / person web-search grounding ────────────────────────
+
+export interface WebSnippet {
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+/**
+ * Extracts the entity/character name the user wants to look up from a combined
+ * "who is X ... and make the ui" message.  Returns null when no recognisable
+ * entity lookup pattern is found.
+ */
+export function extractEntityQuery(userText: string): string | null {
+  const lower = userText.toLowerCase();
+
+  // Reject common non-entity "what is X" queries early
+  if (/\bwhat\s+is\s+(?:the\s+)?(?:weather|time|date|temperature|capital|currency|population|distance|difference|definition|meaning|synonym)\b/i.test(userText)) return null;
+  if (/\bwrite\s+(?:me\s+)?(?:a|an)\s+\w+\b/i.test(userText)) return null;
+
+  // "who is X", "what is X" (entity-specific, not generic facts)
+  const whoIs = /\b(?:who|what)\s+is\s+([A-Za-z0-9 '\-]{2,60}?)(?:\s*[,?.!]|\s+and\b|\s+look|\s+make|\s+show|\s+create|\s+build|\s+generate|\s+(?:us|use|using|with|in|as|via)?\s*(?:an?\s+|the\s+)?(?:ui|interface)\b|\s*$)/i.exec(userText);
+  if (whoIs) {
+    const candidate = whoIs[1].trim();
+    // Reject generic/common noun phrases (single common words, weather, etc.)
+    if (/^(?:the|a|an|this|that|it|he|she|they|we|you|i|me)\b/i.test(candidate)) return null;
+    if (candidate.split(" ").length === 1 && /^(?:weather|time|date|love|life|death|war|peace|art|music|math|science|history|politics|religion|philosophy)\b/i.test(candidate)) return null;
+    return candidate;
+  }
+
+  const lookUp = /\b(?:look\s+(?:it\s+)?up|search(?:\s+for)?|find|tell\s+me\s+about|info(?:rmation)?\s+(?:on|about))\s+([A-Za-z0-9 '\-]{2,60}?)(?:\s*[,?.!]|\s+and\b|\s+look|\s+make|\s+show|\s+create|\s+build|\s+generate|\s*$)/i.exec(userText);
+  if (lookUp) return lookUp[1].trim();
+
+  // "X profile", "X wiki", "X character" — often the subject comes before the UI ask
+  if (/\b(profile|wiki|character|info|card|page)\b/i.test(lower)) {
+    const beforeUI = userText.replace(/\b(create|make|show|generate|build|design|render)\s+(the\s+)?(ui|interface|card|profile|page)\b.*/i, "").trim();
+    if (beforeUI && beforeUI.length < 80 && beforeUI !== userText) return beforeUI.trim();
+  }
+
+  // "make a ui for X", "build a ui showing goku", "X ui please": remove the request words and keep the subject.
+  if (/\b(?:ui|interface|infographic|profile|infobox)\b/i.test(userText)) {
+    const subject = userText
+      .replace(/\b(?:please|pls|can you|could you|i want|i need|give me|for me|now|thanks?)\b/gi, " ")
+      .replace(/\b(?:create|make|build|generate|design|render|show(?:ing)?|do|draw|code)\b/gi, " ")
+      .replace(/\b(?:me|an?|the|some|nice|cool|beautiful|clean|good|rich|interactive|themed|custom|full|detailed|dynamic)\b/gi, " ")
+      .replace(/\b(?:ui|interface|infographic|profile|infobox|page|card|wiki|layout|design)\b/gi, " ")
+      .replace(/\b(?:for|of|about|on|with|that shows|showing)\b/gi, " ")
+      .replace(/[^\p{L}\p{N}'\- ]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const words = subject.split(" ").filter(Boolean);
+    // A real subject is a short name-like phrase, not leftover sentence.
+    if (words.length >= 1 && words.length <= 5 && subject.length >= 3 && !/^(?:it|this|that|something|anything|everything|data|stats|dashboard|app|website|game|pokedex|encyclopedia|wiki|tracker|calculator|quiz|timer|todo|calendar|weather)$/i.test(subject)) return subject;
+  }
+
+  return null;
+}
+
+/**
+ * Fetches real web-search snippets for an entity name from the configured
+ * search proxy or by directly hitting DuckDuckGo / Bing HTML.
+ * Returns up to `limit` snippets or an empty array on failure.
+ */
+export async function fetchEntityWebSnippets(
+  entityQuery: string,
+  signal?: AbortSignal,
+  limit = 6
+): Promise<WebSnippet[]> {
+  const searchApiUrl = process.env.SEARCH_API_URL;
+  const deadline = AbortSignal.timeout(10_000);
+  const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
+
+  // Try the app's own search proxy first (Render/Railway sidecar avoids scraping blocks)
+  if (searchApiUrl) {
+    try {
+      const res = await fetch(
+        `${searchApiUrl}/search?q=${encodeURIComponent(entityQuery + " wiki character anime")}&safe=off`,
+        { signal: combined }
+      );
+      if (res.ok) {
+        const data = (await res.json()) as { results?: WebSnippet[] };
+        if (Array.isArray(data.results) && data.results.length > 0) {
+          return data.results.slice(0, limit);
+        }
+      }
+    } catch { /* fall through */ }
+  }
+
+  // Direct DuckDuckGo HTML scraping (works from Node, often blocked on serverless)
+  for (const url of [
+    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(entityQuery + " wiki character")}&kp=-2`,
+    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(entityQuery + " wiki character")}&kp=-2`,
+  ]) {
+    try {
+      const res = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; SenkoBot/1.0)", Accept: "text/html" },
+        signal: combined,
+      });
+      if (!res.ok) continue;
+      const html = await res.text();
+      const snippets = parseDDGSnippets(html, limit);
+      if (snippets.length > 0) return snippets;
+    } catch { /* next engine */ }
+  }
+
+  // Direct Bing HTML scraping fallback
+  try {
+    const res = await fetch(
+      `https://www.bing.com/search?q=${encodeURIComponent(entityQuery + " wiki character")}&safeSearch=Off`,
+      { headers: { "User-Agent": "Mozilla/5.0 (compatible; SenkoBot/1.0)", Accept: "text/html", Referer: "https://www.bing.com/" }, signal: combined }
+    );
+    if (res.ok) {
+      const html = await res.text();
+      const snippets = parseBingSnippets(html, limit);
+      if (snippets.length > 0) return snippets;
+    }
+  } catch { /* give up */ }
+
+  return [];
+}
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, "")
+    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ").trim();
+}
+
+function decodeDDGUrl(raw: string): string {
+  try {
+    const clean = raw.replace(/&amp;/g, "&");
+    const decoded = decodeURIComponent(clean);
+    if (decoded.startsWith("/") || decoded.startsWith("//")) {
+      const uddg = new URL(`https://duckduckgo.com${decoded}`);
+      return uddg.searchParams.get("uddg") || raw;
+    }
+    if (decoded.startsWith("http")) return decoded;
+  } catch { /* ignore */ }
+  return raw;
+}
+
+function parseDDGSnippets(html: string, limit: number): WebSnippet[] {
+  const results: WebSnippet[] = [];
+  const combined = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>(.*?)<\/a>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = combined.exec(html)) !== null && results.length < limit) {
+    const url = decodeDDGUrl(m[1]);
+    const title = stripHtml(m[2]);
+    const snippet = stripHtml(m[3]);
+    if (title && url.startsWith("http")) results.push({ title, url, snippet });
+  }
+  return results;
+}
+
+function parseBingSnippets(html: string, limit: number): WebSnippet[] {
+  const results: WebSnippet[] = [];
+  const algo = /<li class="b_algo"[^>]*>[\s\S]*?<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>(.*?)<\/a>[\s\S]*?<p[^>]*>(.*?)<\/p>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = algo.exec(html)) !== null && results.length < limit) {
+    const url = m[1];
+    const title = stripHtml(m[2]);
+    const snippet = stripHtml(m[3]);
+    if (title && url) results.push({ title, url, snippet });
+  }
+  return results;
+}
+
+/**
+ * Returns a grounding note for entity/character/person UI requests.
+ * Searches the web for real facts and injects them so the LLM can generate
+ * a fully populated profile/UI without inventing data.
+ */
+export async function gatherEntityGroundingNote(
+  entityQuery: string,
+  signal?: AbortSignal,
+  onStep?: (step: { id: number; label: string; status: "running" | "done" | "error"; detail?: string }) => void
+): Promise<string> {
+  if (!entityQuery) return "";
+  onStep?.({ id: 0, label: `Looking up "${entityQuery}"`, status: "running" });
+  const snippets = await fetchEntityWebSnippets(entityQuery, signal);
+  if (snippets.length === 0) {
+    onStep?.({ id: 0, label: `Looking up "${entityQuery}"`, status: "error", detail: "No search results" });
+    return (
+      `\n\n[ENTITY LOOKUP — "${entityQuery}" — SEARCH UNAVAILABLE]\n` +
+      `Web search could not be reached. Use your parametric knowledge about "${entityQuery}" to generate the richest possible UI. ` +
+      `Fill the profile with real attributes, bio, traits, abilities, relationships, and appearances from your training data. ` +
+      `Use imageQuery with the character name + series/context (e.g. "${entityQuery} official artwork") to fetch real images. ` +
+      `Never invent URLs, statistics, or facts you are not confident about.`
+    );
+  }
+  onStep?.({ id: 0, label: `Found ${snippets.length} results for "${entityQuery}"`, status: "done" });
+  return (
+    `\n\n[WEB SEARCH RESULTS — "${entityQuery}"]\n` +
+    `Use these real web snippets as your factual source. Extract all available information (description, role, attributes, relationships, ` +
+    `media appearances, trivia) from them and populate a rich, comprehensive UI node (use "profile" for characters/people, plus supporting ` +
+    `sections like "timeline", "key_value", "stat_grid", "gallery" etc. inside a "stack"). ` +
+    `Use imageQuery with specific keywords (e.g. "${entityQuery} official artwork") — NEVER invent imageUrl values.\n` +
+    `Web results:\n` +
+    snippets.map((s, i) => `${i + 1}. [${s.title}](${s.url})\n   ${s.snippet}`).join("\n\n")
+  );
 }

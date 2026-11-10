@@ -34,9 +34,13 @@ export interface StepRequest {
   canRun: boolean;
   step: number;
   maxSteps: number;
+  /** Verified facts about where commands run (platform, Node, cwd), supplied by the host. */
+  environment?: string;
+  /** Deterministic summary of the project (stack, scripts, dependencies, entry points). */
+  brief?: string;
 }
 
-export const CODE_SYSTEM = `You are a coding agent building a project in a workspace (a folder of files). You work in steps and reply with JSON only.
+export const CODE_SYSTEM = `You are a coding agent building a project in a workspace (a folder of files). You reply with JSON only. Batch as much work per reply as is safe.
 
 Each reply: {"thought":"<one short sentence>","ops":[...],"done":false}
 Ops:
@@ -58,7 +62,9 @@ Full stack when asked or when it helps: a typed API server (Express or Hono, run
 Tests: when the user asks for tests (or the app has real logic), add Vitest (+ @testing-library/react and jsdom for components), a "test": "vitest run" script, and run it. Report the real result; a failing test is fixed, not described as passing.
 
 Rules:
-- Plan the file layout first, then write several files per step. Keep files focused and well named.
+- Efficiency is a hard requirement. Every reply costs a model request and the provider rate-limits them. Finish the whole task in the fewest replies: ideally one reply that writes every file, installs dependencies, runs the tests and starts the app, in that order (ops execute in order; a later op sees earlier results on disk). Use further replies only to fix real failures or to read files you were not given.
+- Do not write one file per reply, do not narrate, and do not read files already shown under OPEN FILES or summarized in BRIEF. Use edit ops, not rewrites, for small changes to existing files.
+- Plan the layout first, then emit all files together. Keep files focused and well named. Make every file complete: no TODOs, stubs or placeholders.
 - package.json: real compatible versions and appropriate scripts. Verify the chosen stack with installation and its actual type/build/test scripts when applicable, then start the live app. For music/listening requests inspect with requireMediaPlayback:true after clicking the real play control: a label saying Playing or a clean render does not prove playback. Read errors, fix the cause and rerun. Report restrictions precisely; never claim blocked media works.
 - Make it look finished: real content, responsive layout, good spacing and typography, hover/focus states, no placeholder lorem ipsum.
 - Don't write node_modules, lockfiles or binary files.
@@ -74,6 +80,8 @@ export function buildStepPrompt(r: StepRequest): string {
   return [
     `GOAL:\n${r.goal}`,
     `STEP ${r.step} of at most ${r.maxSteps}. RUN is ${r.canRun ? "enabled" : "DISABLED (no Node here: don't use run ops; make it work as static files where possible, or write the Node project and say in the summary that it needs npm install)"}.`,
+    r.environment && `ENVIRONMENT:\n${r.environment}`,
+    r.brief && `BRIEF:\n${r.brief}`,
     `FILES:\n${files}`,
     opened && `OPEN FILES:\n${opened}`,
     history && `HISTORY:\n${history}`,
@@ -216,4 +224,47 @@ export function completionBlockers(files: { path: string; code: string }[], evid
   if (files.some((f) => /\.(html?|tsx|jsx)$/i.test(f.path)) && current.filter((e) => e.command === "inspect").at(-1)?.browserPassed !== true) failures.push("Inspect the current website in Chromium and resolve reported issues.");
   if (requirements?.playback && current.filter((e) => e.command === "inspect").at(-1)?.mediaPlaybackPassed !== true) failures.push("The primary listening/playback requirement is unverified. Verify real unmuted playback or report the external restriction; a decorative player is incomplete.");
   return failures;
+}
+
+/**
+ * Deterministic project summary built locally (no model call). It replaces the exploratory
+ * reads a model would otherwise spend requests on: stack, scripts, dependencies, entry points
+ * and test layout. Everything reported is read from the files; nothing is inferred beyond that.
+ */
+export function buildProjectBrief(files: { path: string; content: string }[], limit = 2400): string {
+  if (!files.length) return "Empty project: nothing exists yet. Create the full project in your first reply.";
+  const lines: string[] = [];
+  const manifest = files.find((f) => f.path === "package.json");
+  let deps: string[] = [];
+  if (manifest) {
+    try {
+      const pkg = JSON.parse(manifest.content) as { name?: string; type?: string; scripts?: Record<string, string>; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+      deps = [...Object.keys(pkg.dependencies || {}), ...Object.keys(pkg.devDependencies || {})];
+      lines.push(`package: ${pkg.name || "(unnamed)"}${pkg.type ? `, module type ${pkg.type}` : ""}`);
+      const scripts = Object.entries(pkg.scripts || {}).map(([name, cmd]) => `${name}=${cmd}`);
+      if (scripts.length) lines.push(`scripts: ${scripts.join("; ")}`);
+      if (deps.length) lines.push(`declared dependencies: ${deps.join(", ")}`);
+    } catch { lines.push("package.json exists but is not valid JSON: fix it first."); }
+  }
+  const has = (name: string) => deps.includes(name);
+  const stack = [
+    has("next") && "Next.js", has("vite") && "Vite", has("react") && "React", has("express") && "Express", has("hono") && "Hono",
+    has("vitest") && "Vitest", has("jest") && "Jest", has("typescript") && "TypeScript",
+    files.some((f) => /\.test\.[cm]?[jt]s$/.test(f.path)) && !has("vitest") && !has("jest") && "node:test files",
+  ].filter(Boolean);
+  if (stack.length) lines.push(`stack: ${stack.join(", ")}`);
+  const entries = files.filter((f) => /^(index\.html|server\.[cm]?[jt]s|src\/(main|index)\.[jt]sx?|app\/(page|layout)\.[jt]sx?|src\/app\/(page|layout)\.[jt]sx?)$/.test(f.path)).map((f) => f.path).sort();
+  if (entries.length) lines.push(`entry points: ${entries.join(", ")}`);
+  const tests = files.filter((f) => /(^|\/)(__tests__|tests?)\/|\.(test|spec)\./.test(f.path)).map((f) => f.path);
+  if (tests.length) lines.push(`tests (${tests.length}): ${tests.slice(0, 8).join(", ")}${tests.length > 8 ? ", ..." : ""}`);
+  const imported = new Set<string>();
+  for (const f of files) for (const m of f.content.matchAll(/(?:from\s+|require\()["']([^"'./][^"']*)["']/g)) imported.add(m[1].startsWith("@") ? m[1].split("/").slice(0, 2).join("/") : m[1].split("/")[0]);
+  const builtin = new Set(["fs", "path", "os", "http", "https", "net", "url", "util", "crypto", "stream", "events", "child_process", "assert", "zlib", "readline", "buffer"]);
+  const undeclared = [...imported].filter((name) => !name.startsWith("node:") && !builtin.has(name) && !deps.includes(name));
+  if (manifest && undeclared.length) lines.push(`imported but not declared in package.json: ${undeclared.slice(0, 12).join(", ")}`);
+  const dirs = new Map<string, number>();
+  for (const f of files) { const top = f.path.includes("/") ? f.path.split("/")[0] : "."; dirs.set(top, (dirs.get(top) || 0) + 1); }
+  lines.push(`layout: ${[...dirs].map(([dir, count]) => `${dir} (${count})`).join(", ")}`);
+  const out = lines.join("\n");
+  return out.length > limit ? out.slice(0, limit) + "\n..." : out;
 }

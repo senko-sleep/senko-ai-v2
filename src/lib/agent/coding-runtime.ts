@@ -304,7 +304,7 @@ export interface VerificationLedger {
   codeWritten: boolean;
   codeExecuted: boolean;
   testStatus: VerificationTestStatus;
-  files: Record<string, { path: string; code: string; sizeBytes: number; updatedAt: number }>;
+  files: Record<string, { path: string; code: string; sizeBytes: number; updatedAt: number; binary?: boolean }>;
   diffs: FileDiffRecord[];
   commands: CommandExecutionRecord[];
   testRuns: TestRunSummary[];
@@ -812,9 +812,9 @@ export class CodingWorkspaceRuntime {
     this.ledger.updatedAt = Date.now();
   }
 
-  async listFiles(): Promise<{ path: string; code: string; sizeBytes: number }[]> {
+  async listFiles(): Promise<{ path: string; code: string; sizeBytes: number; binary?: boolean }[]> {
     await this.ensureWorkspace();
-    const results: { path: string; code: string; sizeBytes: number }[] = [];
+    const results: { path: string; code: string; sizeBytes: number; binary?: boolean }[] = [];
 
     const walk = async (dir: string) => {
       const entries = await fsp.readdir(dir, { withFileTypes: true }).catch(() => []);
@@ -826,10 +826,14 @@ export class CodingWorkspaceRuntime {
           await walk(full);
         } else if (entry.isFile()) {
           const stat = await fsp.stat(full).catch(() => null);
-          if (!stat || stat.size > 512 * 1024) continue;
-          const code = await fsp.readFile(full, "utf8").catch(() => "");
-          results.push({ path: rel, code, sizeBytes: stat.size });
-          this.ledger.files[rel] = { path: rel, code, sizeBytes: stat.size, updatedAt: stat.mtimeMs };
+          if (!stat) continue;
+          const knownBinary = /\.(?:png|jpe?g|gif|webp|avif|ico|bmp|pdf|woff2?|ttf|otf|mp[34]|m4a|wav|ogg|webm|zip|gz|wasm)$/i.test(rel);
+          if (stat.size > (knownBinary ? 20 * 1024 * 1024 : 512 * 1024)) continue;
+          const bytes = knownBinary ? null : await fsp.readFile(full).catch(() => Buffer.alloc(0));
+          const binary = knownBinary || bytes!.includes(0);
+          const code = binary ? "" : bytes!.toString("utf8");
+          results.push({ path: rel, code, sizeBytes: stat.size, ...(binary ? { binary: true } : {}) });
+          this.ledger.files[rel] = { path: rel, code, sizeBytes: stat.size, updatedAt: stat.mtimeMs, ...(binary ? { binary: true } : {}) };
         }
       }
     };
@@ -839,6 +843,54 @@ export class CodingWorkspaceRuntime {
     for (const tracked of Object.keys(this.ledger.files)) if (!livePaths.has(tracked)) delete this.ledger.files[tracked];
     results.sort((a, b) => a.path.localeCompare(b.path));
     return results;
+  }
+
+  /** Reload real tool evidence when the worker and polling API use different processes. */
+  async refreshPersistedEvidence(): Promise<void> {
+    const newestSource = Math.max(0, ...Object.values(this.ledger.files).map((file) => file.updatedAt));
+    try {
+      const absPath = await this.internalEvidencePath("task.json");
+      const saved = JSON.parse(await fsp.readFile(absPath, "utf8")) as import("./coding-loop").CodingTaskJournal;
+      if (typeof saved.goal !== "string" || !["running", "verified", "incomplete", "stopped"].includes(saved.status) || !Number.isFinite(saved.updatedAt) || !Number.isFinite(saved.step)) return;
+      const stale = newestSource > saved.updatedAt;
+      const interrupted = saved.status === "running" && Date.now() - saved.updatedAt > 120_000;
+      this.ledger.codingTask = {
+        goal: saved.goal, status: interrupted ? "stopped" : stale && saved.status === "verified" ? "incomplete" : saved.status,
+        activity: interrupted ? "Execution heartbeat expired; resume to reverify." : saved.activity,
+        step: saved.step, checks: Array.isArray(saved.requirements?.checks) ? saved.requirements.checks.filter((item) => typeof item === "string") : [],
+        playbackRequired: saved.requirements?.playback === true,
+        mediaPlaybackVerified: !stale && Array.isArray(saved.evidence) && saved.evidence.filter((item) => item.revision === saved.revision && item.command === "inspect").at(-1)?.mediaPlaybackPassed === true,
+        sourcesCount: Array.isArray(saved.sources) ? saved.sources.length : 0,
+      };
+    } catch { /* No persisted task yet; live ledger remains authoritative. */ }
+    try {
+      const absPath = await this.internalEvidencePath("browser-evidence.json");
+      const records = JSON.parse(await fsp.readFile(absPath, "utf8")) as BrowserInspectionRecord[];
+      if (Array.isArray(records)) for (const record of records) {
+        if (typeof record.id !== "string" || !Number.isFinite(record.timestamp) || !Array.isArray(record.layoutIssues)) continue;
+        const hydrated = record.timestamp < newestSource ? { ...record, passed: false, mediaPlayback: record.mediaPlayback?.map((media) => ({ ...media, verified: false })), layoutIssues: [...record.layoutIssues, "Source files changed after this inspection; reverify."] } : record;
+        const existing = this.ledger.browserInspections.findIndex((item) => item.id === record.id);
+        if (existing < 0) this.ledger.browserInspections.push(hydrated);
+        else this.ledger.browserInspections[existing] = hydrated;
+      }
+      this.ledger.browserInspections.sort((a, b) => a.timestamp - b.timestamp);
+    } catch { /* No browser evidence has been produced. */ }
+  }
+
+  private async internalEvidencePath(name: "task.json" | "browser-evidence.json"): Promise<string> {
+    const directory = path.join(this.workspaceDir, ".senko");
+    const target = path.join(directory, name);
+    for (const candidate of [directory, target]) {
+      const stat = await fsp.lstat(candidate).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+      if (stat?.isSymbolicLink()) throw new WorkspaceSecurityError("Internal evidence cannot use symbolic links.");
+    }
+    return target;
+  }
+
+  private async persistBrowserEvidence(): Promise<void> {
+    const absPath = await this.internalEvidencePath("browser-evidence.json");
+    await fsp.mkdir(path.dirname(absPath), { recursive: true });
+    await fsp.writeFile(absPath, JSON.stringify(this.ledger.browserInspections.slice(-5)), "utf8");
   }
 
   /**
@@ -1485,6 +1537,17 @@ ${jsOut.replace(/<\/script/gi, "<\\/script")}
 
     // Spawn a real custom Node.js / TypeScript server process
     let serverExecCmd = commandLabel;
+    // Vite and Next do not read PORT consistently (Vite ignores it). Pass the
+    // managed port through their actual CLI so readiness probes target this server.
+    const scriptMatch = commandLabel.match(/^npm\s+(?:run\s+)?(dev|start|serve|preview)$/);
+    if (scriptMatch) {
+      try {
+        const pkg = JSON.parse(await fsp.readFile(path.join(this.workspaceDir, "package.json"), "utf8"));
+        const script = pkg.scripts?.[scriptMatch[1]];
+        if (typeof script === "string" && /^vite(?:\s|$)/.test(script.trim())) serverExecCmd += ` -- --port ${port} --host 127.0.0.1 --strictPort`;
+        else if (typeof script === "string" && /^next\s+(dev|start)(?:\s|$)/.test(script.trim())) serverExecCmd += ` -- --port ${port} --hostname 127.0.0.1`;
+      } catch { /* Missing package metadata: use the caller's command and PORT. */ }
+    }
     const srvTsMatch = commandLabel.match(/^node\s+(?:--experimental-strip-types\s+)?([^\s"']+\.(?:ts|tsx))(.*)$/i);
     if (srvTsMatch) {
       try {
@@ -1663,6 +1726,7 @@ ${jsOut.replace(/<\/script/gi, "<\\/script")}
           timestamp: Date.now(),
         };
         this.ledger.browserInspections.push(rec);
+        await this.persistBrowserEvidence();
         this.ledger.updatedAt = Date.now();
         return rec;
       }
@@ -1717,7 +1781,7 @@ ${jsOut.replace(/<\/script/gi, "<\\/script")}
         try {
           const btnLoc = page.locator("button:not([disabled])");
           const count = await btnLoc.count();
-          const maxProbes = Math.min(count, 2);
+          const maxProbes = Math.min(count, opts.requireMediaPlayback ? 1 : 2);
           for (let i = 0; i < maxProbes; i++) {
             const btn = btnLoc.nth(i);
             const isVis = await btn.isVisible().catch(() => false);
@@ -1732,11 +1796,31 @@ ${jsOut.replace(/<\/script/gi, "<\\/script")}
               action: "click",
               target: `button ("${label || i + 1}")`,
               ok: true,
-              detail: `Verified interactive button "${label || i + 1}" is playable`,
+              detail: `Clicked "${label || i + 1}"; outcome requires separate assertions.`,
             });
           }
         } catch {
           /* ignore non-fatal auto-probe error */
+        }
+      }
+
+      if (opts.requireMediaPlayback) {
+        // A provider's own Play button may be inside a cross-origin iframe.
+        // Use a real user gesture; never bypass autoplay policy or synthesize state.
+        for (const frame of page.frames()) {
+          let providerFrame = false;
+          try { const url = new URL(frame.url()); providerFrame = /(^|\.)(youtube\.com|youtube-nocookie\.com)$/.test(url.hostname) && url.pathname.startsWith("/embed/"); } catch { /* Non-URL frame. */ }
+          if (!providerFrame) continue;
+          const alreadyPlaying = await frame.locator("video").evaluateAll((nodes) => nodes.some((node) => !(node as HTMLVideoElement).paused)).catch(() => false);
+          if (alreadyPlaying) continue;
+          const play = frame.locator(".ytp-large-play-button, .ytp-play-button[title^='Play']").first();
+          if (await play.isVisible().catch(() => false)) {
+            try {
+              await play.click({ timeout: 3000 });
+              interactions.push({ action: "click", target: "YouTube embedded Play control", ok: true, detail: "Clicked the provider's native control; media progression is checked separately." });
+              await page.waitForTimeout(1500);
+            } catch (error) { interactions.push({ action: "click", target: "YouTube embedded Play control", ok: false, detail: error instanceof Error ? error.message : String(error) }); }
+          }
         }
       }
 
@@ -1820,6 +1904,7 @@ ${jsOut.replace(/<\/script/gi, "<\\/script")}
         timestamp: Date.now(),
       };
       this.ledger.browserInspections.push(rec);
+      await this.persistBrowserEvidence();
       this.ledger.updatedAt = Date.now();
       return rec;
     } finally {

@@ -81,7 +81,7 @@ export function Sidebar({
           className="sk-btn h-8 w-full justify-start gap-2 rounded-lg border border-[var(--sk-line)] bg-[var(--sk-surface-1)] px-2.5 text-[12.5px] font-medium text-[var(--sk-text)] hover:border-[var(--sk-accent-line)] hover:bg-[var(--sk-hover)]"
         >
           <SquarePen size={13} className="text-[var(--sk-accent-ink)]" aria-hidden />
-          New workspace
+          New chat
           <kbd className="sk-kbd ml-auto hidden lg:inline">
             Ctrl ⇧ O
           </kbd>

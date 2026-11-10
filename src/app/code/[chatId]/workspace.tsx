@@ -1,6 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { connect, getChat } from "@/components/assistant/api";
 import { WorkspacePanel, type WorkspaceTab } from "@/components/assistant/workspace-panel";
 
 /**
@@ -11,6 +13,23 @@ import { WorkspacePanel, type WorkspaceTab } from "@/components/assistant/worksp
 export function CodeWorkspace({ chatId }: { chatId: string }) {
   const [tab, setTab] = useState<WorkspaceTab>("agent");
   const [expanded, setExpanded] = useState(false);
+  const [access, setAccess] = useState<"loading" | "ready" | "error">("loading");
+  const [accessError, setAccessError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        if (await connect() === "needs-key") throw new Error("Sign in from the chat page to open this workspace.");
+        await getChat(chatId);
+        if (!cancelled) setAccess("ready");
+      } catch (error) {
+        if (!cancelled) { setAccessError(error instanceof Error ? error.message : "Workspace could not be opened."); setAccess("error"); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [chatId]);
+
+  if (access !== "ready") return <main className="sk flex min-h-dvh items-center justify-center bg-[var(--sk-bg)] p-6 text-[var(--sk-text)]"><div className="max-w-md space-y-4"><p role={access === "error" ? "alert" : "status"}>{access === "error" ? accessError : "Opening workspace…"}</p>{access === "error" && <Link href="/" className="underline underline-offset-4">Return to chat</Link>}</div></main>;
 
   return (
     <main className="sk flex h-dvh w-full flex-row overflow-hidden bg-[var(--sk-bg)] text-[var(--sk-text)]">

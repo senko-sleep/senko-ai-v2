@@ -1,0 +1,234 @@
+/* Senko map card. Uses the app's --sk-* tokens so it follows light/dark automatically. */
+.sk-map {
+  --map-h: 420px;
+  --map-radius: 18px;
+  container-type: inline-size;
+  position: relative;
+  margin: 10px 0;
+  border-radius: var(--map-radius);
+  border: 1px solid var(--sk-line-strong, var(--sk-border));
+  background:
+    radial-gradient(120% 70% at 0% 0%, var(--sk-glow-top, transparent), transparent 60%),
+    var(--sk-surface-1, var(--sk-surface));
+  box-shadow: var(--sk-elevation-1, none);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* Header */
+.sk-map-head { display: flex; align-items: center; gap: 12px; padding: 14px 16px 12px; }
+.sk-map-badge {
+  flex: none; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 11px;
+  color: var(--sk-on-accent, #fff); background: var(--sk-accent-grad, var(--sk-accent));
+  box-shadow: 0 6px 18px -6px var(--sk-accent-line, rgba(242, 106, 14, .5)), inset 0 1px 0 rgba(255, 255, 255, .25);
+}
+.sk-map-heading { min-width: 0; flex: 1; }
+.sk-map-heading h4 {
+  margin: 0; font-family: var(--font-sk-display, inherit); font-size: 15.5px; font-weight: 700; letter-spacing: -.01em;
+  color: var(--sk-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sk-map-heading p { margin: 2px 0 0; font-size: 12px; color: var(--sk-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sk-map-chips { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.sk-map-chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+  font-size: 11px; font-weight: 650; color: var(--sk-muted); background: var(--sk-raised, var(--sk-bg2)); border: 1px solid var(--sk-line);
+}
+.sk-map-chip.is-accent { color: var(--sk-accent-ink, var(--sk-accent)); background: var(--sk-accent-soft); border-color: var(--sk-accent-line); }
+
+/* Body: map + list side by side on wide cards, stacked with a swipeable list on narrow ones */
+.sk-map-body { display: grid; grid-template-columns: minmax(0, 1fr); border-top: 1px solid var(--sk-line); }
+.sk-map-stage { position: relative; height: 300px; background: var(--sk-bg-2, #0d0b09); }
+.sk-map-canvas { position: absolute; inset: 0; background: var(--sk-bg-2, #0d0b09); font: inherit; }
+.sk-map-canvas:focus-visible { outline: 2px solid var(--sk-accent); outline-offset: -2px; }
+/* Soft inner vignette so tiles melt into the card */
+.sk-map-stage::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 401;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .04), inset 0 -40px 60px -40px rgba(0, 0, 0, .35);
+}
+
+/* Warm the dark tiles toward Senko's ember palette */
+.sk-map-canvas[data-theme="dark"][data-basemap="map"] .leaflet-tile-pane { filter: sepia(.38) hue-rotate(-14deg) saturate(1.35) brightness(.92) contrast(1.06); }
+.sk-map-canvas[data-theme="light"][data-basemap="map"] .leaflet-tile-pane { filter: sepia(.14) saturate(1.08); }
+.sk-map-canvas[data-basemap="satellite"] .leaflet-tile-pane { filter: saturate(1.1) contrast(1.04); }
+
+.sk-map-loading { position: absolute; inset: 0; display: grid; place-items: center; z-index: 402; }
+.sk-map-loading span {
+  width: 26px; height: 26px; border-radius: 50%;
+  border: 2.5px solid var(--sk-line-strong); border-top-color: var(--sk-accent);
+  animation: sk-map-spin .8s linear infinite;
+}
+@keyframes sk-map-spin { to { transform: rotate(360deg); } }
+
+/* Floating glass controls */
+.sk-map-tools { position: absolute; top: 12px; right: 12px; z-index: 500; display: flex; gap: 6px; }
+.sk-map-seg, .sk-map-tool, .sk-map .leaflet-control-zoom {
+  background: var(--sk-glass, rgba(18, 14, 11, .82)) !important;
+  border: 1px solid var(--sk-glass-border, var(--sk-line)) !important;
+  -webkit-backdrop-filter: blur(14px) saturate(1.4); backdrop-filter: blur(14px) saturate(1.4);
+  box-shadow: 0 8px 22px -10px rgba(0, 0, 0, .55), inset 0 1px 0 var(--sk-specular, transparent) !important;
+  border-radius: 11px !important;
+}
+.sk-map-seg { display: flex; padding: 3px; gap: 2px; }
+.sk-map-seg button {
+  display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border-radius: 8px; border: 0; cursor: pointer;
+  font: inherit; font-size: 11.5px; font-weight: 650; color: var(--sk-muted); background: transparent; transition: color .15s, background .15s;
+}
+.sk-map-seg button:hover { color: var(--sk-text); }
+.sk-map-seg button[aria-pressed="true"] { color: var(--sk-on-accent, #fff); background: var(--sk-accent-grad, var(--sk-accent)); }
+.sk-map-tool {
+  display: grid; place-items: center; width: 34px; height: 34px; cursor: pointer; color: var(--sk-text); padding: 0;
+  transition: color .15s, transform .15s;
+}
+.sk-map-tool:hover { color: var(--sk-accent-ink, var(--sk-accent)); transform: translateY(-1px); }
+
+.sk-map .leaflet-control-zoom { overflow: hidden; margin: 0 12px 12px 0 !important; }
+.sk-map .leaflet-control-zoom a {
+  width: 32px !important; height: 32px !important; line-height: 30px !important; font-size: 17px !important;
+  background: transparent !important; color: var(--sk-text) !important; border: 0 !important;
+}
+.sk-map .leaflet-control-zoom a + a { border-top: 1px solid var(--sk-line) !important; }
+.sk-map .leaflet-control-zoom a:hover { color: var(--sk-accent-ink, var(--sk-accent)) !important; background: var(--sk-hover) !important; }
+.sk-map .leaflet-control-attribution {
+  font-size: 9.5px; padding: 1px 7px; border-radius: 8px 0 0 0;
+  background: var(--sk-glass, rgba(0, 0, 0, .5)) !important; color: var(--sk-faint, #999) !important;
+}
+.sk-map .leaflet-control-attribution a { color: var(--sk-muted) !important; }
+.sk-map .leaflet-container { font-family: inherit; }
+
+/* Pins */
+.sk-pin-wrap { background: none !important; border: 0 !important; }
+.sk-pin {
+  position: relative; width: 30px; height: 30px; margin: 2px auto 0;
+  border-radius: 50% 50% 50% 4px; transform: rotate(-45deg);
+  background: var(--sk-accent-grad, #f26a0e); border: 2px solid #fff;
+  box-shadow: 0 6px 14px -4px rgba(0, 0, 0, .6), 0 0 0 4px rgba(242, 106, 14, .14);
+  display: grid; place-items: center; transition: transform .2s cubic-bezier(.3, 1.4, .5, 1), box-shadow .2s;
+}
+.sk-pin span { transform: rotate(45deg); color: #fff; font-size: 12.5px; font-weight: 800; letter-spacing: -.02em; text-shadow: 0 1px 2px rgba(0, 0, 0, .35); }
+.sk-pin-wrap:hover .sk-pin { transform: rotate(-45deg) scale(1.08); }
+.sk-pin.is-active { transform: rotate(-45deg) scale(1.22); box-shadow: 0 10px 22px -6px rgba(0, 0, 0, .7), 0 0 0 5px rgba(242, 106, 14, .28); }
+.sk-pin.is-active::after {
+  content: ""; position: absolute; inset: -9px; border-radius: inherit; border: 2px solid rgba(255, 152, 79, .7);
+  animation: sk-pin-pulse 1.8s ease-out infinite;
+}
+@keyframes sk-pin-pulse { from { opacity: .9; transform: scale(.75); } to { opacity: 0; transform: scale(1.45); } }
+
+.sk-map-route { filter: drop-shadow(0 0 6px rgba(242, 106, 14, .55)); }
+
+.sk-map .sk-map-tip {
+  padding: 5px 10px; border-radius: 9px; font-size: 12px; font-weight: 700;
+  background: var(--sk-glass-strong, #14100c); color: var(--sk-text); border: 1px solid var(--sk-line-strong);
+  box-shadow: 0 10px 24px -10px rgba(0, 0, 0, .7);
+}
+.sk-map .sk-map-tip::before { border-top-color: var(--sk-glass-strong, #14100c) !important; }
+
+/* Place list */
+.sk-map-list {
+  list-style: none; margin: 0; padding: 12px; display: flex; gap: 10px;
+  overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: thin; scrollbar-color: var(--sk-line-strong) transparent;
+}
+.sk-place {
+  flex: 0 0 min(82%, 300px); scroll-snap-align: start; position: relative;
+  display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "art main" "actions actions";
+  gap: 10px 12px; padding: 12px; border-radius: 14px;
+  border: 1px solid var(--sk-line); background: var(--sk-surface-2, var(--sk-bg2));
+  transition: border-color .18s, background .18s, box-shadow .18s, transform .18s;
+}
+.sk-place:not(:has(.sk-place-art)) { grid-template-areas: "main main" "actions actions"; }
+.sk-place:hover { border-color: var(--sk-line-strong); transform: translateY(-1px); }
+.sk-place[data-active] {
+  border-color: var(--sk-accent-line); background: color-mix(in srgb, var(--sk-accent) 7%, var(--sk-surface-2, var(--sk-bg2)));
+  box-shadow: 0 0 0 3px var(--sk-accent-soft), 0 12px 26px -16px rgba(0, 0, 0, .7);
+}
+.sk-place-art { grid-area: art; width: 68px; height: 68px; border-radius: 11px; overflow: hidden; background: var(--sk-bg-2); border: 1px solid var(--sk-line); }
+.sk-place-art > * { width: 100%; height: 100%; }
+.sk-place-art img { width: 100% !important; height: 100% !important; object-fit: cover !important; }
+.sk-place-main {
+  grid-area: main; display: flex; gap: 10px; align-items: flex-start; min-width: 0; padding: 0; border: 0; background: none;
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.sk-place-main:focus-visible { outline: 2px solid var(--sk-accent); outline-offset: 4px; border-radius: 6px; }
+.sk-place-num {
+  flex: none; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 7px; margin-top: 1px;
+  font-size: 11px; font-weight: 800; color: var(--sk-accent-ink, var(--sk-accent)); background: var(--sk-accent-soft); border: 1px solid var(--sk-accent-line);
+}
+.sk-place[data-active] .sk-place-num { color: var(--sk-on-accent, #fff); background: var(--sk-accent-grad, var(--sk-accent)); border-color: transparent; }
+.sk-place-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.sk-place-name { font-size: 13.5px; font-weight: 700; color: var(--sk-text); line-height: 1.3; }
+.sk-place-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 9px; font-size: 11.5px; color: var(--sk-muted); }
+.sk-place-meta > span { display: inline-flex; align-items: center; gap: 3px; }
+.sk-place-rating { color: var(--sk-accent-2, #ffad42); font-weight: 700; }
+.sk-place-addr { font-size: 11.5px; color: var(--sk-faint, var(--sk-muted)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sk-place-desc {
+  font-size: 12.5px; line-height: 1.45; color: var(--sk-text2, var(--sk-muted));
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.sk-place[data-active] .sk-place-desc { -webkit-line-clamp: 6; }
+.sk-place-actions { grid-area: actions; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.sk-place-actions a {
+  display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border-radius: 9px; text-decoration: none;
+  font-size: 11.5px; font-weight: 650; color: var(--sk-text); background: var(--sk-raised, transparent); border: 1px solid var(--sk-line);
+  transition: border-color .15s, color .15s, background .15s;
+}
+.sk-place-actions a:hover { border-color: var(--sk-accent-line); color: var(--sk-accent-ink, var(--sk-accent)); }
+.sk-place-actions a.is-primary { color: var(--sk-accent-ink, var(--sk-accent)); background: var(--sk-accent-soft); border-color: var(--sk-accent-line); }
+.sk-place-leg { margin-left: auto; font-size: 11px; color: var(--sk-faint, var(--sk-muted)); }
+
+/* One place: the card spans the full width under the map */
+.sk-map[data-single] .sk-place { flex-basis: 100%; }
+
+/* Wide cards: list on the right, scrolling vertically next to the map */
+@container (min-width: 720px) {
+  .sk-map:not([data-single]) .sk-map-body { grid-template-columns: minmax(0, 1fr) 330px; }
+  .sk-map:not([data-single]) .sk-map-stage { height: var(--map-h); }
+  .sk-map:not([data-single]) .sk-map-list {
+    flex-direction: column; overflow-x: hidden; overflow-y: auto; max-height: var(--map-h);
+    scroll-snap-type: y proximity; border-left: 1px solid var(--sk-line);
+  }
+  .sk-map:not([data-single]) .sk-place { flex: none; }
+  .sk-map[data-single] .sk-map-stage { height: 360px; }
+}
+
+/* Fullscreen (native API or overlay fallback) */
+.sk-map-backdrop { position: fixed; inset: 0; z-index: 90; background: rgba(0, 0, 0, .62); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+.sk-map[data-full="overlay"] { position: fixed; inset: 14px; z-index: 91; margin: 0; }
+.sk-map[data-full] { display: flex; flex-direction: column; --map-h: 100%; }
+.sk-map:fullscreen { border-radius: 0; border: 0; }
+.sk-map[data-full] .sk-map-body { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr) auto; }
+.sk-map[data-full] .sk-map-stage { height: auto; min-height: 280px; }
+@container (min-width: 720px) {
+  .sk-map[data-full] .sk-map-body { grid-template-columns: minmax(0, 1fr) 360px; grid-template-rows: minmax(0, 1fr); }
+  .sk-map[data-full] .sk-map-list { flex-direction: column; overflow-y: auto; overflow-x: hidden; max-height: none; border-left: 1px solid var(--sk-line); }
+  .sk-map[data-full] .sk-place { flex: none; }
+}
+
+@media (max-width: 520px) {
+  .sk-map-head { flex-wrap: wrap; padding: 12px 12px 10px; }
+  .sk-map-chips { width: 100%; justify-content: flex-start; }
+  .sk-map-seg button { padding: 5px 7px; }
+  .sk-map-stage { height: 260px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sk-pin.is-active::after, .sk-map-loading span { animation: none; }
+  .sk-pin, .sk-place { transition: none; }
+}
+
+/* Figure: a paragraph with a picture beside it (ChatGPT-style inline image placement) */
+.sk-figure { container-type: inline-size; margin: 10px 0; }
+.sk-figure::after { content: ""; display: block; clear: both; }
+.sk-figure-art {
+  width: 100%; margin: 0 0 12px; border-radius: 14px; overflow: hidden;
+  border: 1px solid var(--sk-line); background: var(--sk-bg-2); box-shadow: var(--sk-elevation-1, none);
+}
+/* Tall art (posters, cards) shouldn't tower over a short paragraph. */
+.sk-figure-art > div { max-height: 320px; }
+.sk-figure-art img { max-height: 320px; width: 100%; object-fit: contain; }
+.sk-figure-art figcaption { padding: 7px 10px; font-size: 11.5px; color: var(--sk-muted); border-top: 1px solid var(--sk-line); }
+.sk-figure-heading { margin: 0 0 6px; font-family: var(--font-sk-display, inherit); font-size: 16px; font-weight: 700; color: var(--sk-text); letter-spacing: -.01em; }
+@container (min-width: 520px) {
+  .sk-figure-art { width: min(38%, 280px); }
+  .sk-figure-art > div, .sk-figure-art img { max-height: 280px; }
+  .sk-figure[data-side="right"] .sk-figure-art { float: right; margin: 4px 0 10px 18px; }
+  .sk-figure[data-side="left"] .sk-figure-art { float: left; margin: 4px 18px 10px 0; }
+}

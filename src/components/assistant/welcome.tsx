@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ArrowUpRight, Bot, Code2, Compass, Globe2, MonitorPlay, RefreshCw, UserRound } from "lucide-react";
+import { ArrowUpRight, Bot, Globe2, RefreshCw, UserRound } from "lucide-react";
 import { FoxMark } from "./fox-mark";
 import { SuggestionIcon } from "./suggestion-icon";
 import type { Mode, Suggestion } from "./lib";
@@ -53,58 +53,6 @@ export function Welcome({
 
       <div className="sk-in mt-5" style={{ animationDelay: "40ms" }}>
         {composer}
-      </div>
-
-      {/* Task-Adaptive Capability Strip */}
-      <div className="sk-in mt-3 flex flex-wrap items-center justify-center gap-1.5" style={{ animationDelay: "60ms" }}>
-        <button
-          type="button"
-          onClick={() =>
-            onPick({
-              id: "cap-code",
-              title: "Interactive Prototype",
-              prompt: "Build a self-contained, interactive HTML/CSS/JS dashboard prototype with live charts and clean dark-mode styling.",
-              icon: "code",
-              mode: "chat",
-            })
-          }
-          className="sk-follow-chip"
-        >
-          <Code2 size={11.5} className="text-[var(--sk-accent-ink)]" aria-hidden />
-          <span>Code & Live Preview</span>
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            onPick({
-              id: "cap-research",
-              title: "Structured Research",
-              prompt: "Compare the top modern local and cloud LLM inference engines with benchmarks, trade-offs, and architecture notes.",
-              icon: "compass",
-              mode: "chat",
-            })
-          }
-          className="sk-follow-chip"
-        >
-          <Compass size={11.5} className="text-[var(--sk-accent-ink)]" aria-hidden />
-          <span>Deep Analysis</span>
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            onPick({
-              id: "cap-agent",
-              title: "Browser Operator",
-              prompt: "Open Hacker News in the live browser, inspect the top 5 stories today, and summarize their key discussions.",
-              icon: "globe",
-              mode: "agent",
-            })
-          }
-          className="sk-follow-chip"
-        >
-          <MonitorPlay size={11.5} className="text-[var(--sk-accent-ink)]" aria-hidden />
-          <span>Live Browser Agent</span>
-        </button>
       </div>
 
       <section aria-labelledby="sk-suggest-h" className="sk-in mt-5" style={{ animationDelay: "80ms" }}>

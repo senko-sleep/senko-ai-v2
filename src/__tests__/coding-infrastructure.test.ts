@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { applyExactEdit, completionBlockers, parseStep, readablePath, selectProjectContext, validateStepRequest, writablePath } from "@/lib/code-job";
-import { CodingWorkspaceRuntime, resolveSafeWorkspacePath } from "@/lib/agent/coding-runtime";
+import { CodingWorkspaceRuntime, resetVerificationLedger, resolveSafeWorkspacePath } from "@/lib/agent/coding-runtime";
 import { runCodingToolLoop } from "@/lib/agent/coding-loop";
 import { createWorkspaceCheckpoint, listWorkspaceCheckpoints, restoreWorkspaceCheckpoint } from "@/lib/agent/workspace-checkpoints";
 import { detectWorkspaceTestCommand } from "@/lib/agent/coding-agent";
@@ -22,6 +22,39 @@ afterEach(async () => {
 });
 
 describe("model-independent coding contracts", () => {
+  it("keeps image bytes out of model text context and restores binary checkpoints exactly", async () => {
+    const runtime = await workspace();
+    const original = Buffer.from([0xff, 0xd8, 0, 1, 128, 255, 0xff, 0xd9]);
+    await fs.writeFile(path.join(runtime.workspaceDir, "photo.jpg"), original);
+    const image = (await runtime.listFiles()).find((file) => file.path === "photo.jpg");
+    expect(image).toMatchObject({ binary: true, code: "", sizeBytes: original.length });
+    const checkpoint = await createWorkspaceCheckpoint(runtime, "Binary round trip");
+    await fs.writeFile(path.join(runtime.workspaceDir, "photo.jpg"), Buffer.from("changed"));
+    await restoreWorkspaceCheckpoint(runtime, checkpoint.id);
+    expect(await fs.readFile(path.join(runtime.workspaceDir, "photo.jpg"))).toEqual(original);
+    await runCodingToolLoop({ runtime, goal: "Inspect available images", maxSteps: 1, modelCall: async (request) => {
+      expect(request.files.some((file) => file.path === "photo.jpg")).toBe(true);
+      expect(request.opened?.some((file) => file.path === "photo.jpg")).toBe(false);
+      return { model: "labelled-context-test-adapter", text: '{"ops":[]}' };
+    } });
+  });
+  it("stops repeated unchanged reads and records actual progress metrics", async () => {
+    const runtime = await workspace();
+    await runtime.writeFile("index.html", "<!doctype html><h1>Existing fixture</h1>");
+    let calls = 0;
+    const result = await runCodingToolLoop({ runtime, goal: "Improve this page", maxSteps: 12, modelCall: async (request, options) => {
+      calls++;
+      expect(options.hedge).toBe(false);
+      if (calls === 2) { expect(request.opened?.[0].content).toContain("Existing fixture"); expect(request.history.join(" ")).toContain("full contents included"); }
+      return { model: "labelled-stalled-test-adapter", text: '{"ops":[{"op":"read","path":"index.html"}]}' };
+    } });
+    expect(calls).toBe(3);
+    expect(result.task.status).toBe("incomplete");
+    expect(result.task.history.at(-1)).toContain("Stopped repeated reads");
+    expect(result.task.metrics?.modelCalls).toBe(3);
+    expect(result.task.metrics?.inferenceRequests).toBe(0); // This labelled adapter makes no provider HTTP requests.
+    expect((await runtime.listFiles())[0].code).toContain("Existing fixture");
+  });
   it("rejects malformed request arrays and step bounds before context construction", () => {
     expect(validateStepRequest({ goal: "app" })).toBe(false);
     expect(validateStepRequest({ goal: "app", files: [], history: [], canRun: true, step: 1, maxSteps: 24 })).toBe(true);
@@ -124,6 +157,13 @@ describe("model-independent coding contracts", () => {
     const journal = JSON.parse(await fs.readFile(path.join(runtime.workspaceDir, ".senko", "task.json"), "utf8"));
     expect(journal.status).toBe("verified");
     expect(result.changedFiles.map((f) => f.path)).toEqual(["sum.cjs", "sum.test.cjs"]);
+    resetVerificationLedger(runtime.chatId, path.dirname(runtime.workspaceDir));
+    const reader = new CodingWorkspaceRuntime(runtime.chatId, path.dirname(runtime.workspaceDir));
+    await reader.listFiles(); await reader.refreshPersistedEvidence();
+    expect(reader.ledger.codingTask?.status).toBe("verified");
+    await reader.writeFile("sum.cjs", "module.exports = () => 0;");
+    await reader.listFiles(); await reader.refreshPersistedEvidence();
+    expect(reader.ledger.codingTask?.status).toBe("incomplete");
   }, 30_000);
 
   it("never calls a step-limit stop verified, and resumes saved context", async () => {

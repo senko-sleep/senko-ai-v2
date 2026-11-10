@@ -2,23 +2,13 @@ import { memo, useEffect, useRef, useState } from "react";
 import { CodeJobCard } from "./code-job-card";
 import { AlertTriangle, Bot, Check, CheckCircle2, Code2, Compass, Copy, Download, ExternalLink, Eye, GitBranch, Grid3X3, PauseCircle, PawPrint, Pencil, RotateCcw, Sparkles, Square } from "lucide-react";
 import { FoxMark } from "./fox-mark";
-import { activitySources } from "./activity";
+import { activitySources, visibleTrail, websiteUrl } from "./activity";
 import { AgentTrail } from "./activity-trail";
 import { ImageGallery } from "../chat/image-gallery";
 import { RichMessageContent } from "../ui-renderer/dynamic-ui-renderer";
-import { MiniAgentPanel } from "./mini-agent-panel";
+import { ThinkingPanel } from "./thinking-panel";
 import type { Msg } from "./lib";
 import { downloadTextFile, type FollowUpAction } from "./workspace-artifacts";
-
-function TypingDots() {
-  return (
-    <span className="inline-flex items-center gap-1 py-1.5" role="status" aria-label="Senko is thinking">
-      {[0, 1, 2].map((i) => (
-        <span key={i} className="sk-dot h-1.5 w-1.5 rounded-full bg-[var(--sk-accent)]" style={{ animationDelay: `${i * 0.15}s` }} />
-      ))}
-    </span>
-  );
-}
 
 function hostOf(url: string) {
   try {
@@ -364,7 +354,7 @@ export const MessageBubble = memo(function MessageBubble({
         </button>
       )}
       {agent && agent.status !== "running" && (
-        <span className="inline-flex items-center gap-1 px-0.5">
+        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap px-0.5">
           {agent.status === "done" ? <CheckCircle2 size={10.5} /> : agent.status === "paused" ? <PauseCircle size={10.5} /> : <Square size={8.5} />}
           {agent.status === "done" ? "Agent finished" : agent.status === "paused" ? "Paused" : agent.status === "error" ? "Agent hit an error" : "Agent stopped"}
         </span>
@@ -375,7 +365,7 @@ export const MessageBubble = memo(function MessageBubble({
           <span className="truncate">{msg.mood}</span>
         </span>
       )}
-      {msg.provider && <span className="hidden truncate px-0.5 sm:inline">{msg.provider}</span>}
+      {msg.provider && <span className="hidden min-w-0 max-w-[24ch] truncate px-0.5 sm:inline" title={msg.provider}>{msg.provider}</span>}
     </>
   ) : null;
 
@@ -385,20 +375,30 @@ export const MessageBubble = memo(function MessageBubble({
         <FoxMark size={18} className={msg.pending ? "sk-thinking" : ""} />
       </div>
       <div className="min-w-0 flex-1 space-y-2">
+        {/* While the agent works: the same live dropdown as chat replies, with its browser steps. */}
         {running && (
-          <div className="flex items-center gap-1.5 text-[11.5px] text-[var(--sk-muted)]" aria-live="polite">
-            <span className="sk-pulse h-1.5 w-1.5 rounded-full bg-[var(--sk-accent)]" aria-hidden />
-            Working in the browser
-          </div>
+          <ThinkingPanel
+            steps={[
+              { id: -1, label: "Working in the live browser", status: "done" as const, detail: agent.goal.length > 140 ? `${agent.goal.slice(0, 140)}…` : agent.goal },
+              ...visibleTrail(agent.trail || []).map((entry, i, all) => {
+                const item = typeof entry === "string" ? { label: entry } : entry;
+                return { id: i, label: item.label, url: websiteUrl(item.url) || undefined, status: (i === all.length - 1 ? "running" : "done") as "running" | "done" };
+              }),
+            ]}
+            pending
+            answering={false}
+            startedAt={msg.startedAt}
+          />
         )}
 
-        {thinking && <TypingDots />}
-
-        {msg.miniAgentSteps && msg.miniAgentSteps.length > 0 && (
-          <MiniAgentPanel
+        {!agent && (thinking || msg.miniAgentSteps?.length || msg.thoughts) && (
+          <ThinkingPanel
             steps={msg.miniAgentSteps}
-            running={!!msg.miniAgentRunning}
-            taskLabel={msg.miniAgentLabel}
+            thoughts={msg.thoughts}
+            pending={!!msg.pending}
+            answering={Boolean(msg.content)}
+            startedAt={msg.startedAt}
+            thinkingMs={msg.thinkingMs}
           />
         )}
 
@@ -475,7 +475,7 @@ export const MessageBubble = memo(function MessageBubble({
           </button>
         )}
 
-        {hasTrail ? (
+        {hasTrail && !running ? (
           <AgentTrail trail={agent.trail} finalUrl={finalUrl} running={running} meta={metaContent} />
         ) : (
           showMeta && (

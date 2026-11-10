@@ -1,4 +1,7 @@
 export type TrailEntry = string | { label: string; url?: string };
+export function visibleTrail(trail: TrailEntry[] = []): TrailEntry[] {
+  return trail.filter((entry) => typeof entry === "string" ? Boolean(entry.trim()) : Boolean(entry && typeof entry.label === "string" && entry.label.trim()));
+}
 
 export function websiteUrl(value?: string): string | undefined {
   try {

@@ -1,4 +1,13 @@
+const envPath = require("path");
+// Started from the repo root by `npm run dev` (or on its own): read the app's .env files so
+// the Google search keys and other settings are shared. Real environment variables win.
+for (const file of [".env.local", ".env"]) {
+  for (const dir of [process.cwd(), envPath.join(__dirname, "..")]) {
+    try { process.loadEnvFile(envPath.join(dir, file)); } catch { /* not there */ }
+  }
+}
 const express = require("express");
+const { cseAvailable, cseConfigured, cseImageSearch } = require("./google-cse");
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 puppeteer.use(StealthPlugin());
@@ -15,6 +24,7 @@ const PORT = process.env.PORT || 3010;
 // repeated identical searches are answered from a short-lived cache.
 // ============================================================================
 const googleGate = { last: 0, queue: Promise.resolve(), blockedUntil: 0, strikes: 0 };
+let googleQuotaNoted = false;
 const GOOGLE_MIN_GAP_MS = Number(process.env.GOOGLE_MIN_GAP_MS || 4000);
 const GOOGLE_COOLDOWN_MS = Number(process.env.GOOGLE_COOLDOWN_MS || 5 * 60_000);
 
@@ -1873,9 +1883,31 @@ app.get("/images", async (req, res) => {
       return results;
     })(),
 
-    // Strategy 3: Google Images — fetch 10 pages in parallel (ALWAYS runs)
+    // Strategy 3: Google Images — the official search API with our keys first (no robot
+    // checks); scraping google.com only when no key is set up or every key is out of quota.
     (async () => {
       const results = [];
+      if (cseAvailable()) {
+        try {
+          const starts = [0, 1, 2].map((i) => Math.min(91, (page - 1) * 30 + i * 10 + 1));
+          const first = await cseImageSearch(pageQuery, { start: starts[0] });
+          const rest = first.length && cseAvailable() ? await Promise.allSettled(starts.slice(1).map((start) => cseImageSearch(pageQuery, { start }))) : [];
+          const items = [...first, ...rest.flatMap((p) => (p.status === "fulfilled" ? p.value : []))];
+          for (const item of items) {
+            if (!item.link || !isValidImageUrl(item.link) || results.some((i) => i.url === item.link)) continue;
+            results.push({ url: item.link, alt: item.title || query, source: (item.image && item.image.contextLink) || "", engine: "google" });
+          }
+          console.log(`[images] Google API found ${results.length} images`);
+          if (results.length) return results;
+        } catch (e) { console.log("[images] Google API error:", e.message); }
+      }
+      if (cseConfigured() && !cseAvailable() && !googleQuotaNoted) {
+        googleQuotaNoted = true;
+        console.log("[images] every Google search key is out of quota today; the app searches Google in its real browser instead");
+      }
+      // Plain-HTTP google.com scraping gets robot-checked (0 results) and keeps the IP flagged for
+      // the agent's browser too. The app searches Google in its real browser instead.
+      if (process.env.GOOGLE_HTML_SCRAPE !== "1") return results;
       try {
         // Previously 10 result pages were fetched at once for every gallery page: a burst that
         // reliably earned this IP a robot check. Now a couple of pages, spaced out, and none

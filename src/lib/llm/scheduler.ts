@@ -87,7 +87,9 @@ const DEFAULTS: { provider: string; model?: RegExp; limits: Limits }[] = [
   { provider: "sambanova", limits: { concurrency: 2 } },
   { provider: "cloudflare", limits: { concurrency: 2 } },
   { provider: "deepseek", limits: { concurrency: 4 } },
-  { provider: "senko", limits: { concurrency: 1 } },
+  // A local senko-llm is one model on one machine; on Cloudflare it scales out, so a reply
+  // must never queue behind the chat title or suggestions.
+  { provider: "senko", limits: { concurrency: /^https:/i.test(process.env.SENKO_LLM_URL || "") && !/localhost|127\.0\.0\.1/.test(process.env.SENKO_LLM_URL || "") ? 64 : 1 } },
   { provider: "ollama", limits: { concurrency: 1 } },
   { provider: "paid", limits: { concurrency: 4 } },
 ];

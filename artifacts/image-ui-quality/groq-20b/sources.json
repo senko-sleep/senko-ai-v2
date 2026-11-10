@@ -1,0 +1,23 @@
+[
+  {
+    "id": "earth",
+    "title": "The Earth & Moon",
+    "credit": "JPL",
+    "url": "https://images-assets.nasa.gov/image/PIA00342/PIA00342~medium.jpg",
+    "localPath": "assets/earth.jpg"
+  },
+  {
+    "id": "mars",
+    "title": "Global Color Views of Mars",
+    "credit": "JPL",
+    "url": "https://images-assets.nasa.gov/image/PIA00407/PIA00407~medium.jpg",
+    "localPath": "assets/mars.jpg"
+  },
+  {
+    "id": "moon",
+    "title": "Nearside of the Moon",
+    "credit": "JPL",
+    "url": "https://images-assets.nasa.gov/image/PIA12235/PIA12235~medium.jpg",
+    "localPath": "assets/moon.jpg"
+  }
+]

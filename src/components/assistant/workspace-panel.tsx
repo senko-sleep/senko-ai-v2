@@ -10,9 +10,7 @@ import {
   Check,
   CheckCircle2,
   ChevronRight,
-  Code2,
   Columns2,
-  Compass,
   Copy,
   Download,
   ExternalLink,
@@ -22,7 +20,6 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
-  GitCompare,
   History,
   Globe,
   Image as ImageIcon,
@@ -35,14 +32,10 @@ import {
   Play,
   RefreshCw,
   Search,
-  Send,
   ShieldCheck,
   Smartphone,
   Sparkles,
-  Square,
-  Terminal,
   Trash2,
-  Wrench,
   WrapText,
   X,
 } from "lucide-react";
@@ -64,6 +57,8 @@ import {
   type TreeNode,
   type WorkspaceProject,
 } from "./workspace-files";
+import { WorkspaceActivityLog } from "./workspace-activity-log";
+import { applyStep, type ActivityEntry } from "@/lib/agent/activity-log";
 import { WorkspaceExecutionEvidence, type WorkspaceCodingTask, type WorkspaceMediaEvidence } from "./workspace-execution-evidence";
 import { EnhancedMarkdown } from "@/components/ui-renderer/dynamic-ui-renderer";
 
@@ -140,7 +135,7 @@ interface ServerLedger {
   codeWritten: boolean;
   codeExecuted: boolean;
   testStatus: "passed" | "failed" | "not_run" | "blocked";
-  files: Record<string, { path: string; code: string; sizeBytes: number }>;
+  files: Record<string, { path: string; code: string; sizeBytes: number; binary?: boolean }>;
   diffs: ServerDiffRecord[];
   commands: ServerCommandRecord[];
   browserInspections: ServerBrowserInspection[];
@@ -158,7 +153,7 @@ interface ServerLedger {
 }
 
 interface WorkspaceFileOp {
-  action: "Analyzed" | "Created" | "Edited" | "Deleted";
+  action: "On disk" | "Created" | "Edited" | "Deleted";
   path: string;
   langBadge: string;
   linesRange?: string;
@@ -266,6 +261,7 @@ export function WorkspacePanel({
   const [agentPrompt, setAgentPrompt] = useState("");
   const [agentBusy, setAgentBusy] = useState(false);
   const [agentRuns, setAgentRuns] = useState<WorkspaceAgentRun[]>([]);
+  const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [editingGoal, setEditingGoal] = useState(false);
   const [goalDraft, setGoalDraft] = useState("");
   const agentAbortRef = useRef<AbortController | null>(null);
@@ -347,10 +343,10 @@ export function WorkspacePanel({
             for (const sf of srvFiles) {
               const idx = nextFiles.findIndex((f) => f.path === sf.path);
               if (idx < 0) {
-                nextFiles.push({ path: sf.path, code: sf.code, edited: false });
+                nextFiles.push({ path: sf.path, code: sf.code, binary: sf.binary, edited: false });
                 changed = true;
-              } else if (nextFiles[idx].code !== sf.code && !nextFiles[idx].edited) {
-                nextFiles[idx] = { ...nextFiles[idx], code: sf.code, edited: false };
+              } else if ((nextFiles[idx].binary !== sf.binary || nextFiles[idx].code !== sf.code) && !nextFiles[idx].edited) {
+                nextFiles[idx] = { ...nextFiles[idx], code: sf.code, binary: sf.binary, edited: false };
                 changed = true;
               }
             }
@@ -365,6 +361,17 @@ export function WorkspacePanel({
   }, []);
 
   useEffect(() => () => { agentAbortRef.current?.abort(); }, []);
+
+  useEffect(() => {
+    if (!chatId) return;
+    let busy = false;
+    const timer = setInterval(() => {
+      if (document.visibilityState !== "visible" || busy) return;
+      busy = true;
+      void refreshServerWorkspace(chatId).finally(() => { busy = false; });
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [chatId, refreshServerWorkspace]);
 
   useEffect(() => {
     const loaded = loadProject(chatId);
@@ -783,6 +790,7 @@ export function WorkspacePanel({
 
               if (evt.type === "step" && evt.step) {
                 const step = evt.step;
+                setActivity((prev) => applyStep(prev, runId, step));
                 if ((step.stage === "implement" || step.stage === "repair") && step.status === "done") {
                   setPreviewKey((k) => k + 1);
                 }
@@ -1068,12 +1076,6 @@ export function WorkspacePanel({
               aria-hidden
             />
             <span className="min-w-0 truncate font-mono text-[11.5px] text-[var(--sk-muted)]">{entry.path}</span>
-            {(agentBusy || inspectBusy) && (
-              <span className="hidden items-center gap-1 rounded-full border border-[var(--sk-accent-line)] bg-[var(--sk-accent-soft)] px-2 py-0.5 text-[10px] font-medium text-[var(--sk-accent-ink)] sm:inline-flex">
-                <Loader2 className="h-2.5 w-2.5 sk-spin" />
-                <span>AI Inspecting & Live Editing…</span>
-              </span>
-            )}
           </div>
           <span className="flex shrink-0 items-center gap-1">
             {chatId && (
@@ -1086,15 +1088,10 @@ export function WorkspacePanel({
                   )
                 }
                 disabled={agentBusy || inspectBusy}
-                className="sk-btn h-6.5 rounded-md border border-[var(--sk-accent-line)] bg-[var(--sk-accent-soft)] px-2 text-[11px] font-medium text-[var(--sk-accent-ink)] hover:bg-[var(--sk-accent)] hover:text-white"
-                title="AI Inspect Website, Assign Problems, Debug & Fix Until Playable"
+                className="sk-btn h-6.5 rounded-md border border-[var(--sk-line)] bg-[var(--sk-surface-2)] px-2 text-[11px] hover:border-[var(--sk-line-strong)]"
+                title="Inspect website and attempt repairs"
               >
-                {agentBusy || inspectBusy ? (
-                  <Loader2 className="h-3 w-3 sk-spin" />
-                ) : (
-                  <Wrench className="h-3 w-3" />
-                )}
-                <span className="hidden sm:inline">AI Inspect & Fix</span>
+                <span>{agentBusy || inspectBusy ? "Working" : "Inspect and repair"}</span>
               </button>
             )}
             {latestInspection?.screenshotBase64 && (
@@ -1103,13 +1100,12 @@ export function WorkspacePanel({
                 onClick={() => setShowAiVision((v) => !v)}
                 className={`sk-btn h-6.5 rounded-md border px-2 text-[10.5px] font-medium ${
                   showAiVision
-                    ? "border-[var(--sk-accent-line)] bg-[var(--sk-accent-soft)] text-[var(--sk-accent-ink)]"
+                    ? "border-[var(--sk-line-strong)] bg-[var(--sk-surface-2)] text-[var(--sk-text)]"
                     : "border-[var(--sk-line)] text-[var(--sk-muted)] hover:text-[var(--sk-text)]"
                 }`}
                 title="Toggle AI Chromium Vision Frame vs Interactive Live Website"
               >
-                <Eye className="h-3 w-3" />
-                <span className="hidden md:inline">{showAiVision ? "Live App" : "AI Vision"}</span>
+                <span className="hidden md:inline">{showAiVision ? "Live app" : "Screenshot"}</span>
               </button>
             )}
             <button
@@ -1201,7 +1197,6 @@ export function WorkspacePanel({
                   }
                   className="sk-btn h-5.5 shrink-0 rounded border border-[var(--sk-accent-line)] bg-[var(--sk-accent-soft)] px-2 text-[10.5px] font-medium text-[var(--sk-accent-ink)]"
                 >
-                  <Wrench className="h-3 w-3" />
                   <span>Auto-Fix All ({openIssuesCount})</span>
                 </button>
               )}
@@ -1361,10 +1356,9 @@ export function WorkspacePanel({
             onClick={() => onTabChange("code")}
             className={tabBtn(activeTab === "code")}
           >
-            <Code2 className="h-3.5 w-3.5 text-[var(--sk-accent-ink)]" />
             <span>Files</span>
             {project.files.length > 0 && (
-              <span className="sk-tabular rounded-full bg-white/[0.06] px-1.5 text-[10px] text-[var(--sk-muted)]">
+              <span className="sk-tabular text-[10.5px] text-[var(--sk-muted)]">
                 {project.files.length}
               </span>
             )}
@@ -1379,7 +1373,6 @@ export function WorkspacePanel({
             }}
             className={tabBtn(activeTab === "preview")}
           >
-            <Eye className="h-3.5 w-3.5 text-[var(--sk-accent-ink)]" />
             <span>Preview</span>
             {entry && <span className="h-1.5 w-1.5 rounded-full bg-[var(--sk-ok)]" aria-hidden />}
           </button>
@@ -1390,12 +1383,11 @@ export function WorkspacePanel({
             onClick={() => onTabChange("agent")}
             className={tabBtn(activeTab === "agent")}
           >
-            <Bot className="h-3.5 w-3.5 text-[var(--sk-accent-ink)]" />
             <span>Agent</span>
             {agentBusy ? (
-              <Loader2 className="h-3 w-3 sk-spin text-[var(--sk-accent-ink)]" />
+              <span className="text-[10.5px] text-[var(--sk-muted)]">running</span>
             ) : agentRuns.length > 0 ? (
-              <span className="sk-tabular rounded-full bg-white/[0.06] px-1.5 text-[10px] text-[var(--sk-muted)]">
+              <span className="sk-tabular text-[10.5px] text-[var(--sk-muted)]">
                 {agentRuns.length}
               </span>
             ) : null}
@@ -1407,19 +1399,18 @@ export function WorkspacePanel({
             onClick={() => onTabChange("terminal")}
             className={tabBtn(activeTab === "terminal")}
           >
-            <Terminal className="h-3.5 w-3.5 text-[var(--sk-accent-ink)]" />
             <span>Terminal</span>
             {ledger && ledger.commands.length > 0 && (
               <span
-                className={`sk-tabular rounded-full px-1.5 text-[10px] ${
+                className={`sk-tabular text-[10.5px] ${
                   ledger.testStatus === "passed"
-                    ? "bg-[var(--sk-ok-soft)] text-[var(--sk-ok)]"
+                    ? "text-[var(--sk-ok)]"
                     : ledger.testStatus === "failed"
-                      ? "bg-[var(--sk-danger-soft)] text-[var(--sk-danger)]"
-                      : "bg-white/[0.06] text-[var(--sk-muted)]"
+                      ? "text-[var(--sk-danger)]"
+                      : "text-[var(--sk-muted)]"
                 }`}
               >
-                {ledger.testStatus === "passed" ? "PASS" : ledger.testStatus === "failed" ? "FAIL" : ledger.commands.length}
+                {ledger.testStatus === "passed" ? "pass" : ledger.testStatus === "failed" ? "fail" : ledger.commands.length}
               </span>
             )}
           </button>
@@ -1431,9 +1422,8 @@ export function WorkspacePanel({
               onClick={() => onTabChange("sources")}
               className={tabBtn(activeTab === "sources")}
             >
-              <Compass className="h-3.5 w-3.5 text-[var(--sk-accent-ink)]" />
               <span>Sources</span>
-              <span className="sk-tabular rounded-full bg-white/[0.06] px-1.5 text-[10px] text-[var(--sk-muted)]">
+              <span className="sk-tabular text-[10.5px] text-[var(--sk-muted)]">
                 {sources.length + scrapedImages.length}
               </span>
             </button>
@@ -1448,7 +1438,7 @@ export function WorkspacePanel({
               onClick={() => setSplitPreview((v) => !v)}
               className={`sk-btn h-7 px-2 text-[11px] inline-flex ${
                 splitPreview
-                  ? "border border-[var(--sk-accent-line)] bg-[var(--sk-accent-soft)] text-[var(--sk-accent-ink)]"
+                  ? "border border-[var(--sk-line-strong)] bg-[var(--sk-surface-2)] text-[var(--sk-text)]"
                   : "text-[var(--sk-muted)] hover:text-[var(--sk-text)]"
               }`}
               title={splitPreview ? "Hide side-by-side live website" : "Show side-by-side live website"}
@@ -1568,12 +1558,11 @@ export function WorkspacePanel({
                         onClick={() => setShowDiff((v) => !v)}
                         className={`sk-btn h-6.5 rounded-md border px-2 font-mono text-[10.5px] ${
                           showDiff
-                            ? "border-[var(--sk-accent-line)] bg-[var(--sk-accent-soft)] text-[var(--sk-accent-ink)]"
+                            ? "border-[var(--sk-line-strong)] bg-[var(--sk-surface-2)] text-[var(--sk-text)]"
                             : "border-[var(--sk-line)] text-[var(--sk-muted)] hover:text-[var(--sk-text)]"
                         }`}
                         title="Toggle file diff view"
                       >
-                        <GitCompare className="h-3 w-3" />
                         <span className="text-emerald-400">+{currentFileDiff.addedLines}</span>
                         <span className="text-rose-400">-{currentFileDiff.removedLines}</span>
                       </button>
@@ -1602,32 +1591,10 @@ export function WorkspacePanel({
                     >
                       <Download className="h-3.5 w-3.5" />
                     </button>
-                    <button
-                      type="button"
-                      className="sk-btn h-6.5 rounded-md border border-[var(--sk-line)] bg-[var(--sk-surface-2)] px-2 text-[11px] font-medium text-[var(--sk-text)] hover:border-[var(--sk-accent-line)]"
-                      title="Open Workspace Coding Agent for live edits & debugging"
-                      aria-label="Workspace Agent"
-                      onClick={() => onTabChange("agent")}
-                    >
-                      <Bot className="h-3 w-3 text-[var(--sk-accent-ink)]" />
-                      <span className="hidden sm:inline">Live Agent</span>
-                    </button>
-                    {entry && !splitPreview && (
-                      <button
-                        type="button"
-                        className="sk-btn h-6.5 rounded-md border border-[var(--sk-accent-line)] bg-[var(--sk-accent-soft)] px-2 text-[11px] font-medium text-[var(--sk-accent-ink)] hover:bg-[var(--sk-accent)] hover:text-white"
-                        title="Open Live Preview"
-                        aria-label="Preview"
-                        onClick={() => onTabChange("preview")}
-                      >
-                        <Eye className="h-3 w-3" />
-                        <span>Preview</span>
-                      </button>
-                    )}
                   </div>
                 </div>
 
-                {showDiff && currentFileDiff ? (
+                {file.binary ? <div role="status" className="flex flex-1 items-center justify-center p-8 text-center text-sm text-[var(--sk-muted)]">Binary asset: {file.path}. Reference this file from your page and inspect it in Preview. Text editing is unavailable for this asset.</div> : showDiff && currentFileDiff ? (
                   <div className="sk-scroll flex-1 overflow-auto bg-[var(--sk-code-bg)] p-3 font-mono text-[12px] leading-[1.6] select-text">
                     {currentFileDiff.unifiedDiff.split("\n").map((dLine, idx) => {
                       const cls = dLine.startsWith("+") && !dLine.startsWith("+++")
@@ -1683,9 +1650,6 @@ export function WorkspacePanel({
                 <Bot className="h-4 w-4 text-[var(--sk-accent-ink)]" />
                 <div>
                   <span className="font-medium text-[var(--sk-text)]">Workspace Coding Agent</span>
-                  <span className="ml-2 text-[11px] text-[var(--sk-muted)]">
-                    Live edits · Live fixes · Live debugs ({project.files.length} file{project.files.length === 1 ? "" : "s"})
-                  </span>
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
@@ -1700,8 +1664,7 @@ export function WorkspacePanel({
                   }
                   className="sk-btn h-6.5 rounded-md border border-[var(--sk-accent-line)] bg-[var(--sk-accent-soft)] px-2 text-[11px] font-medium text-[var(--sk-accent-ink)] hover:bg-[var(--sk-accent)] hover:text-white"
                 >
-                  <Wrench className="h-3 w-3" />
-                  <span>Inspect & repair</span>
+                  <span>Inspect and repair</span>
                 </button>
                 <button
                   type="button"
@@ -1714,22 +1677,7 @@ export function WorkspacePanel({
                   }
                   className="sk-btn h-6.5 rounded-md border border-[var(--sk-line)] bg-[var(--sk-surface-2)] px-2 text-[11px] hover:border-[var(--sk-accent-line)]"
                 >
-                  <Play className="h-3 w-3 text-emerald-400" />
-                  <span>Add & Run Tests</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={agentBusy || !chatId}
-                  onClick={() =>
-                    void runWorkspaceAgentTask(
-                      "Improve typography, spacing, accessibility, responsive layouts and interaction states while preserving the existing stack and working functionality. Inspect actual screenshots and distinguish design review from functional verification.",
-                      { applyLiveInstruction: true, inspectBrowser: Boolean(entry) },
-                    )
-                  }
-                  className="sk-btn h-6.5 rounded-md border border-[var(--sk-line)] bg-[var(--sk-surface-2)] px-2 text-[11px] hover:border-[var(--sk-accent-line)]"
-                >
-                  <Sparkles className="h-3 w-3 text-[var(--sk-accent-ink)]" />
-                  <span>Polish UI</span>
+                  <span>Add and run tests</span>
                 </button>
                 {agentBusy && (
                   <button
@@ -1737,7 +1685,6 @@ export function WorkspacePanel({
                     onClick={stopWorkspaceAgent}
                     className="sk-btn h-6.5 rounded-md border border-rose-500/40 bg-rose-500/15 px-2 text-[11px] text-rose-300 hover:bg-rose-500/25"
                   >
-                    <Square className="h-3 w-3" />
                     <span>Stop</span>
                   </button>
                 )}
@@ -1748,8 +1695,8 @@ export function WorkspacePanel({
             <div className="border-b border-[var(--sk-line)] bg-[var(--sk-surface-1)]/40 px-3.5 py-2 text-[11.5px]">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex min-w-0 flex-1 items-center gap-2">
-                  <span className="shrink-0 rounded bg-[var(--sk-accent-soft)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--sk-accent-ink)]">
-                    Main Goal
+                  <span className="shrink-0 text-[10.5px] text-[var(--sk-muted)]">
+                    Goal
                   </span>
                   {editingGoal ? (
                     <input
@@ -1770,12 +1717,12 @@ export function WorkspacePanel({
                           setEditingGoal(false);
                         }
                       }}
-                      placeholder="Describe the overarching goal of this workspace..."
+                      placeholder="Project goal"
                       className="h-6 min-w-0 flex-1 rounded border border-[var(--sk-accent-line)] bg-[var(--sk-bg)] px-2 text-[11.5px] text-[var(--sk-text)] outline-none"
                     />
                   ) : (
                     <span className="truncate text-[var(--sk-text)]" title={ledger?.primaryGoal || ""}>
-                      {ledger?.primaryGoal || "Set the project goal to guide implementation and acceptance checks."}
+                      {ledger?.primaryGoal || "No goal set"}
                     </span>
                   )}
                 </div>
@@ -1798,7 +1745,7 @@ export function WorkspacePanel({
                   }}
                   className="shrink-0 rounded border border-[var(--sk-line)] bg-[var(--sk-surface-2)] px-2 py-0.5 text-[10.5px] text-[var(--sk-muted)] hover:text-[var(--sk-text)]"
                 >
-                  {editingGoal ? "Save Goal" : "Edit Goal"}
+                  {editingGoal ? "Save" : "Edit"}
                 </button>
               </div>
             </div>
@@ -1807,8 +1754,8 @@ export function WorkspacePanel({
             {assignedIssues.length > 0 && (
               <div className="border-b border-[var(--sk-line)] bg-black/25 px-3.5 py-2.5">
                 <div className="mb-1.5 flex items-center justify-between text-[11px]">
-                  <span className="font-semibold uppercase tracking-wider text-amber-300">
-                    Assigned Problems & Live Debug Queue ({assignedIssues.filter((i) => i.status !== "fixed").length} open ·{" "}
+                  <span className="font-medium text-amber-300">
+                    Problems ({assignedIssues.filter((i) => i.status !== "fixed").length} open ·{" "}
                     {assignedIssues.filter((i) => i.status === "fixed").length} fixed)
                   </span>
                 </div>
@@ -1856,84 +1803,10 @@ export function WorkspacePanel({
             {/* Live Activity & Conversation Feed */}
             <div className="sk-scroll flex-1 space-y-3 overflow-y-auto p-3.5 text-[12px]">
               <WorkspaceExecutionEvidence task={ledger?.codingTask} media={latestInspection?.mediaPlayback} primaryGoal={ledger?.primaryGoal} />
-              {project.files.length > 0 && (
-                <details
-                  open
-                  className="group rounded-xl border border-white/[0.08] bg-black/40 p-3 font-mono text-[11.5px]"
-                >
-                  <summary className="flex cursor-pointer list-none items-center gap-2 text-zinc-200 select-none">
-                    <span className="font-medium">
-                      {agentBusy
-                        ? `Editing ${(file?.path || project.files[project.files.length - 1]?.path || "workspace").split("/").pop()}`
-                        : `Workspace File Operations (${project.files.length} files)`}
-                    </span>
-                    <ChevronRight className="h-3.5 w-3.5 text-zinc-400 transition-transform group-open:rotate-90" />
-                  </summary>
-                  <div className="mt-2.5 space-y-1.5 pl-1">
-                    {project.files.map((pf) => {
-                      const ext = (pf.path.split(".").pop() || "").toLowerCase();
-                      const badge =
-                        ext === "tsx"
-                          ? "TSX"
-                          : ext === "ts"
-                            ? "TS"
-                            : ext === "jsx"
-                              ? "JSX"
-                              : ext === "js" || ext === "mjs" || ext === "cjs"
-                                ? "JS"
-                                : ext === "json"
-                                  ? "{}"
-                                  : ext === "css"
-                                    ? "CSS"
-                                    : ext.toUpperCase() || "FILE";
-                      const badgeCls =
-                        badge === "TSX" || badge === "JSX"
-                          ? "text-sky-400"
-                          : badge === "TS"
-                            ? "text-blue-400"
-                            : badge === "{}"
-                              ? "text-amber-400"
-                              : "text-emerald-400";
-                      const diff = [...(ledger?.diffs || [])].reverse().find((d) => d.path === pf.path);
-                      const lineCount = Math.max(1, pf.code.split("\n").length);
-                      const baseName = pf.path.split("/").pop() || pf.path;
-                      const actionLabel = diff
-                        ? diff.status === "created"
-                          ? "Created"
-                          : "Edited"
-                        : "Analyzed";
-                      return (
-                        <div key={pf.path} className="flex items-center gap-2.5 text-[11.5px]">
-                          <span className="w-16 shrink-0 text-zinc-500">{actionLabel}</span>
-                          <span className={`w-7 shrink-0 text-center text-[10px] font-bold ${badgeCls}`}>
-                            {badge}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelected(pf.path);
-                              onTabChange("code");
-                            }}
-                            title={pf.path}
-                            className="truncate text-zinc-200 hover:text-[var(--sk-accent-ink)] hover:underline"
-                          >
-                            {baseName}
-                          </button>
-                          {diff ? (
-                            <span className="flex shrink-0 items-center gap-1.5 text-[11px]">
-                              <span className="text-emerald-400">+{diff.addedLines}</span>
-                              <span className="text-rose-400">-{diff.removedLines}</span>
-                            </span>
-                          ) : (
-                            <span className="shrink-0 text-zinc-500">#L1-{lineCount}</span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </details>
-              )}
-
+              <details className="group border-b border-[var(--sk-line)] pb-3">
+                <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] font-medium text-[var(--sk-text)]">Activity log{activity.length > 0 ? ` (${activity.length})` : ""}</summary>
+                <div className="mt-2"><WorkspaceActivityLog entries={activity} /></div>
+              </details>
               {agentRuns.length > 0 ? (
                 agentRuns.map((run) => (
                   <div key={run.id} className="space-y-2 rounded-xl border border-white/[0.08] bg-white/[0.02] p-3">
@@ -2045,13 +1918,7 @@ export function WorkspacePanel({
                   </div>
                 ))
               ) : (
-                <div className="rounded-xl border border-white/[0.06] bg-white/[0.015] p-6 text-center text-xs text-[var(--sk-muted)]">
-                  <Bot className="mx-auto mb-2 h-6 w-6 text-[var(--sk-accent-ink)] opacity-80" />
-                  <p className="font-medium text-[var(--sk-text)]">Dedicated Workspace Coding Agent</p>
-                  <p className="mt-1 text-[11.5px] text-[var(--sk-faint)]">
-                    Ask the workspace agent to make live edits to your `.tsx` / `.ts` / `.js` files, debug errors, add features, or run & repair tests while you keep chatting with Senko on the left.
-                  </p>
-                </div>
+                <p className="text-[11.5px] text-[var(--sk-muted)]">No agent runs yet.</p>
               )}
             </div>
 
@@ -2066,7 +1933,6 @@ export function WorkspacePanel({
               }}
               className="flex h-10 shrink-0 items-center gap-2 border-t border-[var(--sk-line)] bg-[var(--sk-surface-1)] px-3"
             >
-              <Bot className="h-3.5 w-3.5 shrink-0 text-[var(--sk-accent-ink)]" />
               <input
                 type="text"
                 value={agentPrompt}
@@ -2074,8 +1940,8 @@ export function WorkspacePanel({
                 disabled={agentBusy || !chatId}
                 placeholder={
                   file
-                    ? `Live edit ${file.path}, fix bugs, or add features in workspace…`
-                    : "Ask Workspace Agent to build, edit, fix, or debug live…"
+                    ? `Change ${file.path} or describe a task`
+                    : "Describe a task"
                 }
                 aria-label="Workspace agent instruction"
                 className="flex-1 bg-transparent text-[12px] text-[var(--sk-text)] placeholder:text-[var(--sk-faint)] outline-none"
@@ -2094,8 +1960,7 @@ export function WorkspacePanel({
                   disabled={!agentPrompt.trim() || !chatId}
                   className="sk-btn sk-primary h-6.5 rounded-md px-2.5 text-[11px]"
                 >
-                  <Send className="h-3 w-3" />
-                  <span>Apply Live</span>
+                  <span>Run</span>
                 </button>
               )}
             </form>
@@ -2107,23 +1972,8 @@ export function WorkspacePanel({
             {/* Verification Status Banner */}
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--sk-line)] bg-[var(--sk-surface-1)] px-3 py-2 text-[11.5px]">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="font-medium text-[var(--sk-text)]">Verification Ledger:</span>
-                <span className={`rounded-full px-2 py-0.5 text-[10.5px] font-medium ${ledger?.codeWritten || project.files.length > 0 ? "bg-[var(--sk-ok-soft)] text-[var(--sk-ok)]" : "bg-white/[0.05] text-[var(--sk-faint)]"}`}>
-                  Code Written: {ledger?.codeWritten || project.files.length > 0 ? "Yes" : "No"}
-                </span>
-                <span className={`rounded-full px-2 py-0.5 text-[10.5px] font-medium ${ledger?.codeExecuted ? "bg-[var(--sk-ok-soft)] text-[var(--sk-ok)]" : "bg-white/[0.05] text-[var(--sk-faint)]"}`}>
-                  Executed: {ledger?.codeExecuted ? "Yes" : "No"}
-                </span>
-                <span
-                  className={`rounded-full px-2 py-0.5 text-[10.5px] font-medium ${
-                    ledger?.testStatus === "passed"
-                      ? "bg-[var(--sk-ok-soft)] text-[var(--sk-ok)]"
-                      : ledger?.testStatus === "failed"
-                        ? "bg-[var(--sk-danger-soft)] text-[var(--sk-danger)]"
-                        : "bg-white/[0.05] text-[var(--sk-muted)]"
-                  }`}
-                >
-                  Tests: {(ledger?.testStatus || "not_run").toUpperCase()}
+                <span className="text-[var(--sk-muted)]">
+                  Written: {ledger?.codeWritten || project.files.length > 0 ? "yes" : "no"} · Executed: {ledger?.codeExecuted ? "yes" : "no"} · Tests: <span className={ledger?.testStatus === "passed" ? "text-[var(--sk-ok)]" : ledger?.testStatus === "failed" ? "text-[var(--sk-danger)]" : ""}>{(ledger?.testStatus || "not_run").replace("_", " ")}</span>
                 </span>
               </div>
 
@@ -2135,7 +1985,7 @@ export function WorkspacePanel({
                   className="sk-btn h-6.5 rounded-md border border-[var(--sk-line)] bg-[var(--sk-surface-2)] px-2 text-[11px] hover:border-[var(--sk-accent-line)]"
                 >
                   <Play className="h-3 w-3 text-[var(--sk-accent-ink)]" />
-                  <span>Run Tests</span>
+                  <span>Run tests</span>
                 </button>
                 <button
                   type="button"

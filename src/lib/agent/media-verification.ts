@@ -31,6 +31,7 @@ export async function inspectMediaPlayback(page: Page): Promise<MediaPlaybackChe
     const values = after[index];
     if (!values.length && surface.kind === "youtube") return [{ kind: surface.kind, url: surface.url, currentTime: 0, advancedSeconds: 0, paused: true, muted: false, readyState: 0, error: providerErrors[index] || "Embedded provider exposed no playable media; inspect its restriction or loading state.", verified: false }];
     return values.map((value, mediaIndex) => ({ ...value, kind: surface.kind, url: surface.url,
+      ...(surface.kind === "youtube" && value.readyState < 2 && !value.error ? { error: providerErrors[index] || "Embedded media has not loaded enough data to play; the cause is not yet established." } : {}),
       advancedSeconds: Math.max(0, value.currentTime - (before[index][mediaIndex]?.currentTime ?? value.currentTime)),
       verified: !value.paused && !value.muted && value.readyState >= 2 && !value.error && value.currentTime - (before[index][mediaIndex]?.currentTime ?? value.currentTime) >= 0.2 }));
   });

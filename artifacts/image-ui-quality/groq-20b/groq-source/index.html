@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Planetary Photo Gallery</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>Planetary Photo Gallery</h1>
+    <nav>
+      <button id="filter-all" data-testid="filter-all">All</button>
+      <button id="filter-mars" data-testid="filter-mars">Mars</button>
+    </nav>
+  </header>
+  <main id="gallery" aria-live="polite"></main>
+
+  <!-- Earth Detail Dialog -->
+  <dialog id="earth-dialog" role="dialog" aria-labelledby="dialog-title">
+    <h2 id="dialog-title">The Earth & Moon</h2>
+    <img id="dialog-img" src="" alt="The Earth & Moon">
+    <p id="dialog-credit"></p>
+    <button id="close-dialog" aria-label="Close">Close</button>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

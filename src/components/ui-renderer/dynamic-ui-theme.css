@@ -1,0 +1,38 @@
+/* Widget color tokens. A model-supplied theme overrides these inline; without one they
+   follow the app theme (they were previously undefined, which left borders and panels invisible). */
+.sk-ui-root {
+  min-width: 0;
+  --sk-border: var(--sk-line);
+  --sk-border-hover: var(--sk-line-strong);
+  --sk-surface: var(--sk-surface-1);
+  --sk-bg2: var(--sk-bg-2);
+  --sk-text2: color-mix(in srgb, var(--sk-text) 74%, var(--sk-muted));
+  --sk-accent-Bg: var(--sk-accent-soft);
+  --sk-accent-line: color-mix(in srgb, var(--sk-accent) 45%, transparent);
+  --sk-accent-ink: var(--sk-accent);
+}
+.sk-ui-node { min-width: 0; max-width: 100%; }
+.sk-ui-themed[data-ui-node="stack"], .sk-ui-themed[data-ui-node="grid"] { padding: clamp(16px, 3vw, 28px); border: 1px solid var(--sk-line); border-radius: 16px; }
+.sk-ui-root button:focus-visible, .sk-ui-root a:focus-visible { outline: 2px solid var(--sk-accent-ink); outline-offset: 3px; }
+.sk-ui-profile { container-type: inline-size; }
+.sk-ui-profile-hero { grid-template-columns: minmax(180px, .9fr) minmax(0, 1.5fr); }
+.sk-ui-profile-art img { object-fit: contain !important; padding: 12px; }
+.sk-ui-gallery-contain img { object-fit: contain !important; padding: 10px; }
+.sk-ui-profile-art { max-width: 360px; margin-inline: auto; width: 100%; }
+.sk-ui-profile-title { font-family: var(--ui-heading-font, inherit); }
+.sk-ui-profile-tab { transition: color 150ms ease, border-color 150ms ease; }
+.sk-ui-profile-tab:hover { color: var(--sk-text) !important; border-color: var(--sk-accent) !important; }
+.sk-ui-root [data-ui-node="card"] h4, .sk-ui-root [data-ui-node="gallery"] h4 { font-family: var(--ui-heading-font, inherit); }
+@container (max-width: 560px) { .sk-ui-profile-hero { grid-template-columns: minmax(0, 1fr) !important; } .sk-ui-profile-art { max-width: 300px; } }
+@media (prefers-reduced-motion: reduce) { .sk-ui-root *, .sk-ui-root *::before, .sk-ui-root *::after { animation: none !important; transition-duration: 0.01ms !important; } }
+.sk-ui-people { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: 10px; }
+.sk-ui-person { display: flex; align-items: center; gap: 12px; padding: 10px; text-align: left; border-radius: 12px; border: 1px solid var(--sk-border); background: var(--sk-surface); color: inherit; font: inherit; min-width: 0; cursor: pointer; transition: border-color 150ms ease, background 150ms ease, transform 150ms ease; }
+.sk-ui-person:disabled { cursor: default; }
+.sk-ui-person:not(:disabled):hover { border-color: var(--sk-accent); background: var(--sk-panel); transform: translateY(-1px); }
+.sk-ui-person-art { flex: none; width: 52px; height: 52px; border-radius: 10px; overflow: hidden; background: var(--sk-bg2); border: 1px solid var(--sk-border); display: grid; place-items: center; }
+.sk-ui-person-art img { width: 100%; height: 100%; object-fit: cover; object-position: 50% 12%; display: block; }
+.sk-ui-person-initials { font-size: 15px; font-weight: 800; color: var(--sk-accent); letter-spacing: .02em; }
+.sk-ui-person-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sk-ui-person-name { font-size: 13.5px; font-weight: 700; color: var(--sk-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sk-ui-person-role { font-size: 11.5px; font-weight: 600; color: var(--sk-accent); }
+.sk-ui-person-desc { font-size: 12px; color: var(--sk-text2); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }

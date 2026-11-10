@@ -15,7 +15,8 @@ it("runs the original Mixed Nuts request through the actual autonomous coding ag
   const runtime = new CodingWorkspaceRuntime(chatId);
   const goal = "Build me a beautiful website where I can listen to 'Mixed Nuts' from SPY × FAMILY. Make it in my workspace.";
   const began = performance.now(); let last = "";
-  const result = await runCodingToolLoop({ runtime, goal, primaryGoal: goal, maxSteps: 20, signal: AbortSignal.timeout(240_000),
+  const preferredProvider = process.env.MUSIC_ACCEPTANCE_PROVIDER || undefined;
+  const result = await runCodingToolLoop({ runtime, goal, primaryGoal: goal, provider: preferredProvider, maxSteps: 20, signal: AbortSignal.timeout(240_000),
     onProgress: (task) => {
       const activity = `${task.step}: ${task.activity || task.status}`;
       if (activity !== last) { console.log(activity); last = activity; }
@@ -23,7 +24,7 @@ it("runs the original Mixed Nuts request through the actual autonomous coding ag
   });
   await fs.mkdir("artifacts/music-acceptance", { recursive: true });
   for (const [index, inspection] of runtime.ledger.browserInspections.entries()) if (inspection.screenshotBase64) await fs.writeFile(`artifacts/music-acceptance/browser-${index + 1}.jpg`, Buffer.from(inspection.screenshotBase64, "base64"));
-  const report = { timestamp: new Date().toISOString(), goal, chatId, workspaceDir: runtime.workspaceDir, durationMs: Math.round(performance.now() - began), task: result.task,
+  const report = { timestamp: new Date().toISOString(), goal, chatId, preferredProvider, workspaceDir: runtime.workspaceDir, durationMs: Math.round(performance.now() - began), task: result.task,
     files: (await runtime.listFiles()).map((f) => f.path), commands: runtime.ledger.commands,
     browser: runtime.ledger.browserInspections.map(({ screenshotBase64: _screenshot, ...inspection }) => inspection), summary: result.summary };
   await fs.writeFile(path.join("artifacts/music-acceptance", "result.json"), JSON.stringify(report, null, 2));

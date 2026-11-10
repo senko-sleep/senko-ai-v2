@@ -7,6 +7,7 @@ import type { CodeArtifact } from "./workspace-artifacts";
 export interface WorkspaceFile {
   path: string; // "src/app.js", no leading slash
   code: string;
+  binary?: boolean;
   /** Artifact this file was last filled from, so a newer reply updates it but user edits stick. */
   sourceId?: string;
   edited?: boolean;

@@ -1,0 +1,586 @@
+{
+  "source": "PokeAPI pokemon, species and evolution-chain resources; exact image URLs returned in sprites.other.official-artwork",
+  "retrievedAt": "2026-11-08T02:44:06.646Z",
+  "species": "Evolution Pokémon",
+  "description": "Harbors the potential to evolve into manifold forms. Within Eevee lies the key to the mysteries of Pokémon evolution—I'm certain of it.",
+  "evolutionVersionNote": "Source lists alternate conditions across game versions; do not present every alternative as simultaneously required.",
+  "entities": [
+    {
+      "name": "eevee",
+      "id": 133,
+      "types": [
+        "normal"
+      ],
+      "heightMetres": 0.3,
+      "weightKg": 6.5,
+      "abilities": [
+        {
+          "name": "run-away",
+          "hidden": false
+        },
+        {
+          "name": "adaptability",
+          "hidden": false
+        },
+        {
+          "name": "anticipation",
+          "hidden": true
+        }
+      ],
+      "evolutionMethods": [],
+      "sourceUrl": "https://pokeapi.co/api/v2/pokemon/eevee",
+      "imageSourceUrl": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/133.png",
+      "imageUrl": "http://localhost:3000/test-fixtures/ui-generation/assets/133.png"
+    },
+    {
+      "name": "vaporeon",
+      "id": 134,
+      "types": [
+        "water"
+      ],
+      "heightMetres": 1,
+      "weightKg": 29,
+      "abilities": [
+        {
+          "name": "water-absorb",
+          "hidden": false
+        },
+        {
+          "name": "hydration",
+          "hidden": true
+        }
+      ],
+      "evolutionMethods": [
+        {
+          "version_group": {
+            "name": "red-blue",
+            "url": "https://pokeapi.co/api/v2/version-group/1/"
+          },
+          "is_default": true,
+          "item": {
+            "name": "water-stone",
+            "url": "https://pokeapi.co/api/v2/item/84/"
+          },
+          "trigger": {
+            "name": "use-item",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/3/"
+          },
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        }
+      ],
+      "sourceUrl": "https://pokeapi.co/api/v2/pokemon/vaporeon",
+      "imageSourceUrl": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/134.png",
+      "imageUrl": "http://localhost:3000/test-fixtures/ui-generation/assets/134.png"
+    },
+    {
+      "name": "jolteon",
+      "id": 135,
+      "types": [
+        "electric"
+      ],
+      "heightMetres": 0.8,
+      "weightKg": 24.5,
+      "abilities": [
+        {
+          "name": "volt-absorb",
+          "hidden": false
+        },
+        {
+          "name": "quick-feet",
+          "hidden": true
+        }
+      ],
+      "evolutionMethods": [
+        {
+          "version_group": {
+            "name": "red-blue",
+            "url": "https://pokeapi.co/api/v2/version-group/1/"
+          },
+          "is_default": true,
+          "item": {
+            "name": "thunder-stone",
+            "url": "https://pokeapi.co/api/v2/item/83/"
+          },
+          "trigger": {
+            "name": "use-item",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/3/"
+          },
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        }
+      ],
+      "sourceUrl": "https://pokeapi.co/api/v2/pokemon/jolteon",
+      "imageSourceUrl": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/135.png",
+      "imageUrl": "http://localhost:3000/test-fixtures/ui-generation/assets/135.png"
+    },
+    {
+      "name": "flareon",
+      "id": 136,
+      "types": [
+        "fire"
+      ],
+      "heightMetres": 0.9,
+      "weightKg": 25,
+      "abilities": [
+        {
+          "name": "flash-fire",
+          "hidden": false
+        },
+        {
+          "name": "guts",
+          "hidden": true
+        }
+      ],
+      "evolutionMethods": [
+        {
+          "version_group": {
+            "name": "red-blue",
+            "url": "https://pokeapi.co/api/v2/version-group/1/"
+          },
+          "is_default": true,
+          "item": {
+            "name": "fire-stone",
+            "url": "https://pokeapi.co/api/v2/item/82/"
+          },
+          "trigger": {
+            "name": "use-item",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/3/"
+          },
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        }
+      ],
+      "sourceUrl": "https://pokeapi.co/api/v2/pokemon/flareon",
+      "imageSourceUrl": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/136.png",
+      "imageUrl": "http://localhost:3000/test-fixtures/ui-generation/assets/136.png"
+    },
+    {
+      "name": "espeon",
+      "id": 196,
+      "types": [
+        "psychic"
+      ],
+      "heightMetres": 0.9,
+      "weightKg": 26.5,
+      "abilities": [
+        {
+          "name": "synchronize",
+          "hidden": false
+        },
+        {
+          "name": "magic-bounce",
+          "hidden": true
+        }
+      ],
+      "evolutionMethods": [
+        {
+          "version_group": {
+            "name": "gold-silver",
+            "url": "https://pokeapi.co/api/v2/version-group/3/"
+          },
+          "is_default": true,
+          "trigger": {
+            "name": "level-up",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/1/"
+          },
+          "min_happiness": 160,
+          "time_of_day": "day",
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        }
+      ],
+      "sourceUrl": "https://pokeapi.co/api/v2/pokemon/espeon",
+      "imageSourceUrl": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/196.png",
+      "imageUrl": "http://localhost:3000/test-fixtures/ui-generation/assets/196.png"
+    },
+    {
+      "name": "umbreon",
+      "id": 197,
+      "types": [
+        "dark"
+      ],
+      "heightMetres": 1,
+      "weightKg": 27,
+      "abilities": [
+        {
+          "name": "synchronize",
+          "hidden": false
+        },
+        {
+          "name": "inner-focus",
+          "hidden": true
+        }
+      ],
+      "evolutionMethods": [
+        {
+          "version_group": {
+            "name": "gold-silver",
+            "url": "https://pokeapi.co/api/v2/version-group/3/"
+          },
+          "is_default": true,
+          "trigger": {
+            "name": "level-up",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/1/"
+          },
+          "min_happiness": 160,
+          "time_of_day": "night",
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        }
+      ],
+      "sourceUrl": "https://pokeapi.co/api/v2/pokemon/umbreon",
+      "imageSourceUrl": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/197.png",
+      "imageUrl": "http://localhost:3000/test-fixtures/ui-generation/assets/197.png"
+    },
+    {
+      "name": "leafeon",
+      "id": 470,
+      "types": [
+        "grass"
+      ],
+      "heightMetres": 1,
+      "weightKg": 25.5,
+      "abilities": [
+        {
+          "name": "leaf-guard",
+          "hidden": false
+        },
+        {
+          "name": "chlorophyll",
+          "hidden": true
+        }
+      ],
+      "evolutionMethods": [
+        {
+          "version_group": {
+            "name": "diamond-pearl",
+            "url": "https://pokeapi.co/api/v2/version-group/8/"
+          },
+          "trigger": {
+            "name": "level-up",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/1/"
+          },
+          "location": {
+            "name": "eterna-forest",
+            "url": "https://pokeapi.co/api/v2/location/8/"
+          },
+          "near_special_rock": true,
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        },
+        {
+          "version_group": {
+            "name": "black-white",
+            "url": "https://pokeapi.co/api/v2/version-group/11/"
+          },
+          "trigger": {
+            "name": "level-up",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/1/"
+          },
+          "location": {
+            "name": "pinwheel-forest",
+            "url": "https://pokeapi.co/api/v2/location/375/"
+          },
+          "near_special_rock": true,
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        },
+        {
+          "version_group": {
+            "name": "x-y",
+            "url": "https://pokeapi.co/api/v2/version-group/15/"
+          },
+          "trigger": {
+            "name": "level-up",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/1/"
+          },
+          "location": {
+            "name": "kalos-route-20",
+            "url": "https://pokeapi.co/api/v2/location/650/"
+          },
+          "near_special_rock": true,
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        },
+        {
+          "version_group": {
+            "name": "sword-shield",
+            "url": "https://pokeapi.co/api/v2/version-group/20/"
+          },
+          "is_default": true,
+          "item": {
+            "name": "leaf-stone",
+            "url": "https://pokeapi.co/api/v2/item/85/"
+          },
+          "trigger": {
+            "name": "use-item",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/3/"
+          },
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        },
+        {
+          "version_group": {
+            "name": "omega-ruby-alpha-sapphire",
+            "url": "https://pokeapi.co/api/v2/version-group/16/"
+          },
+          "trigger": {
+            "name": "level-up",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/1/"
+          },
+          "location": {
+            "name": "petalburg-woods",
+            "url": "https://pokeapi.co/api/v2/location/438/"
+          },
+          "near_special_rock": true,
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        },
+        {
+          "version_group": {
+            "name": "sun-moon",
+            "url": "https://pokeapi.co/api/v2/version-group/17/"
+          },
+          "trigger": {
+            "name": "level-up",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/1/"
+          },
+          "location": {
+            "name": "lush-jungle",
+            "url": "https://pokeapi.co/api/v2/location/750/"
+          },
+          "near_special_rock": true,
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        }
+      ],
+      "sourceUrl": "https://pokeapi.co/api/v2/pokemon/leafeon",
+      "imageSourceUrl": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/470.png",
+      "imageUrl": "http://localhost:3000/test-fixtures/ui-generation/assets/470.png"
+    },
+    {
+      "name": "glaceon",
+      "id": 471,
+      "types": [
+        "ice"
+      ],
+      "heightMetres": 0.8,
+      "weightKg": 25.9,
+      "abilities": [
+        {
+          "name": "snow-cloak",
+          "hidden": false
+        },
+        {
+          "name": "ice-body",
+          "hidden": true
+        }
+      ],
+      "evolutionMethods": [
+        {
+          "version_group": {
+            "name": "diamond-pearl",
+            "url": "https://pokeapi.co/api/v2/version-group/8/"
+          },
+          "trigger": {
+            "name": "level-up",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/1/"
+          },
+          "location": {
+            "name": "sinnoh-route-217",
+            "url": "https://pokeapi.co/api/v2/location/48/"
+          },
+          "near_special_rock": true,
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        },
+        {
+          "version_group": {
+            "name": "black-white",
+            "url": "https://pokeapi.co/api/v2/version-group/11/"
+          },
+          "trigger": {
+            "name": "level-up",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/1/"
+          },
+          "location": {
+            "name": "twist-mountain",
+            "url": "https://pokeapi.co/api/v2/location/380/"
+          },
+          "near_special_rock": true,
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        },
+        {
+          "version_group": {
+            "name": "x-y",
+            "url": "https://pokeapi.co/api/v2/version-group/15/"
+          },
+          "trigger": {
+            "name": "level-up",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/1/"
+          },
+          "location": {
+            "name": "frost-cavern",
+            "url": "https://pokeapi.co/api/v2/location/640/"
+          },
+          "near_special_rock": true,
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        },
+        {
+          "version_group": {
+            "name": "sword-shield",
+            "url": "https://pokeapi.co/api/v2/version-group/20/"
+          },
+          "is_default": true,
+          "item": {
+            "name": "ice-stone",
+            "url": "https://pokeapi.co/api/v2/item/885/"
+          },
+          "trigger": {
+            "name": "use-item",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/3/"
+          },
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        },
+        {
+          "version_group": {
+            "name": "omega-ruby-alpha-sapphire",
+            "url": "https://pokeapi.co/api/v2/version-group/16/"
+          },
+          "trigger": {
+            "name": "level-up",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/1/"
+          },
+          "location": {
+            "name": "shoal-cave",
+            "url": "https://pokeapi.co/api/v2/location/445/"
+          },
+          "near_special_rock": true,
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        },
+        {
+          "version_group": {
+            "name": "sun-moon",
+            "url": "https://pokeapi.co/api/v2/version-group/17/"
+          },
+          "trigger": {
+            "name": "level-up",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/1/"
+          },
+          "location": {
+            "name": "mount-lanakila",
+            "url": "https://pokeapi.co/api/v2/location/775/"
+          },
+          "near_special_rock": true,
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        }
+      ],
+      "sourceUrl": "https://pokeapi.co/api/v2/pokemon/glaceon",
+      "imageSourceUrl": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/471.png",
+      "imageUrl": "http://localhost:3000/test-fixtures/ui-generation/assets/471.png"
+    },
+    {
+      "name": "sylveon",
+      "id": 700,
+      "types": [
+        "fairy"
+      ],
+      "heightMetres": 1,
+      "weightKg": 23.5,
+      "abilities": [
+        {
+          "name": "cute-charm",
+          "hidden": false
+        },
+        {
+          "name": "pixilate",
+          "hidden": true
+        }
+      ],
+      "evolutionMethods": [
+        {
+          "version_group": {
+            "name": "x-y",
+            "url": "https://pokeapi.co/api/v2/version-group/15/"
+          },
+          "trigger": {
+            "name": "level-up",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/1/"
+          },
+          "known_move_type": {
+            "name": "fairy",
+            "url": "https://pokeapi.co/api/v2/type/18/"
+          },
+          "min_affection": 2,
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        },
+        {
+          "version_group": {
+            "name": "sword-shield",
+            "url": "https://pokeapi.co/api/v2/version-group/20/"
+          },
+          "is_default": true,
+          "trigger": {
+            "name": "level-up",
+            "url": "https://pokeapi.co/api/v2/evolution-trigger/1/"
+          },
+          "known_move_type": {
+            "name": "fairy",
+            "url": "https://pokeapi.co/api/v2/type/18/"
+          },
+          "min_happiness": 160,
+          "required_pokemon_form": {
+            "name": "eevee",
+            "url": "https://pokeapi.co/api/v2/pokemon-form/133/"
+          }
+        }
+      ],
+      "sourceUrl": "https://pokeapi.co/api/v2/pokemon/sylveon",
+      "imageSourceUrl": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/700.png",
+      "imageUrl": "http://localhost:3000/test-fixtures/ui-generation/assets/700.png"
+    }
+  ]
+}

@@ -107,10 +107,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           finishRun(chatId, ctl);
           sessions.get(chatId)?.endAgent(ctl.signal);
         }
-        if (e.type === "step") trail[e.id - 1] = { label: e.label, url: e.url };
+        if (e.type === "step" && e.label.trim()) trail[e.id - 1] = { label: e.label, url: e.url };
+        if (e.type === "images" || e.type === "done") for (const id of e.imageIds) if (!imageIds.includes(id)) imageIds.push(id);
         if (e.type === "done") {
           content = e.answer;
-          imageIds.push(...e.imageIds);
           meta.agent = { goal, status: "done", trail, url: e.url };
           if (e.url) meta.actions = [{ url: e.url, label: "Open on my device" }];
           if (e.provider) Object.assign(meta, { providerLabel: e.provider, model: e.model });

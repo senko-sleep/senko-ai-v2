@@ -43,6 +43,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const chat = await requireChat(who.ownerId, chatId);
     const ws = new CodingWorkspaceRuntime(chatId);
     await ws.listFiles();
+    await ws.refreshPersistedEvidence();
     const derivedGoal = await derivePrimaryGoalForChat(chatId, chat.title);
     await ws.syncPrimaryGoal(derivedGoal);
     return Response.json({ ledger: ws.ledger, checkpoints: await listWorkspaceCheckpoints(ws) });

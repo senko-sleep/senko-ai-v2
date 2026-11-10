@@ -707,7 +707,6 @@ export default function AssistantApp() {
         if (!res.ok) throw new Error(await errorFromResponse(res));
         let failed: string | null = null;
         let finished = false;
-        let previewed = false;
         let rafId = 0;
         const flushDelta = () => {
           if (rafId) {
@@ -716,6 +715,15 @@ export default function AssistantApp() {
           }
           const shown = extractOpenTags(stripLiveTags(text)).clean;
           patch(replyId, (m) => ({ ...m, content: shown, miniAgentRunning: false }));
+        };
+        // Thoughts can arrive in many tiny chunks: batch them per frame like the answer text.
+        let thoughtBuf = "";
+        let thoughtRaf = 0;
+        const flushThoughts = () => {
+          thoughtRaf = 0;
+          const add = thoughtBuf;
+          thoughtBuf = "";
+          if (add) patch(replyId, (m) => ({ ...m, thoughts: (m.thoughts || "") + add }));
         };
         await readSSE(res, (d) => {
           if (ctl.signal.aborted || abortRef.current !== ctl) return;
@@ -739,6 +747,11 @@ export default function AssistantApp() {
               patch(opts.userId, (m) => ({ ...m, id: e.userMessageId! }));
             }
             patch(replyId, (m) => ({ ...m, provider: e.providerLabel ? `${e.providerLabel} · ${e.model}` : undefined }));
+          } else if (e.type === "thought" && e.text) {
+            clearTimeout(timer);
+            timer = setTimeout(onIdle, 180_000);
+            thoughtBuf += e.text;
+            if (!thoughtRaf) thoughtRaf = requestAnimationFrame(flushThoughts);
           } else if (e.type === "mini_agent_step" && e.step) {
             patch(replyId, (m) => {
               const existing = m.miniAgentSteps ?? [];
@@ -749,7 +762,6 @@ export default function AssistantApp() {
               return { ...m, miniAgentSteps: updated, miniAgentRunning: true };
             });
           } else if (e.type === "preview" && e.content) {
-            previewed = true;
             clearTimeout(timer);
             timer = setTimeout(onIdle, 180_000);
             patch(replyId, (m) => ({ ...m, content: e.content! }));
@@ -767,7 +779,9 @@ export default function AssistantApp() {
             }
             finished = true;
             const final = fromStored(e.message);
-            patch(replyId, (m) => ({ ...final, id: m.id, provider: final.provider || m.provider, miniAgentSteps: previewed ? undefined : m.miniAgentSteps, miniAgentRunning: false, miniAgentLabel: m.miniAgentLabel }));
+            if (thoughtRaf) { cancelAnimationFrame(thoughtRaf); flushThoughts(); }
+            // The saved trace (steps, thoughts, duration) replaces the live one.
+            patch(replyId, (m) => ({ ...final, id: m.id, provider: final.provider || m.provider, miniAgentSteps: final.miniAgentSteps || m.miniAgentSteps, thoughts: final.thoughts || m.thoughts, thinkingMs: final.thinkingMs, miniAgentRunning: false, miniAgentLabel: m.miniAgentLabel }));
             if (final.actions?.[0]) openTab(final.actions[0].url); // may be blocked; the card stays
           } else if (e.type === "error") {
             if (rafId) {
@@ -1041,6 +1055,9 @@ export default function AssistantApp() {
               patch(replyId, (m) => ({ ...m, agent: { ...m.agent!, trail: trail.filter(Boolean) } }));
               break;
             }
+            case "images":
+              patch(replyId, (m) => ({ ...m, imageIds: [...new Set([...(m.imageIds || []), ...((e.imageIds as string[]) || [])])] }));
+              break;
             case "done": {
               finished = true;
               const url = e.url ? String(e.url) : "";
@@ -1166,7 +1183,7 @@ export default function AssistantApp() {
   const resumeAgent = useCallback(() => {
     const chatId = activeRef.current;
     if (!chatId || busy) return;
-    const reply: Msg = { id: uid(), role: "assistant", content: "", pending: true, agent: { goal: "Continue", status: "running", trail: [] } };
+    const reply: Msg = { id: uid(), role: "assistant", content: "", pending: true, startedAt: Date.now(), agent: { goal: "Continue", status: "running", trail: [] } };
     setMessages((ms) => [...ms, reply]);
     void runAgent(chatId, "", [], reply.id, true);
   }, [busy, runAgent]);
@@ -1252,7 +1269,7 @@ export default function AssistantApp() {
       }
 
       const user: Msg = { id: uid(), role: "user", content: fullPayload, imageIds };
-      const reply: Msg = { id: uid(), role: "assistant", content: "", pending: true };
+      const reply: Msg = { id: uid(), role: "assistant", content: "", pending: true, startedAt: Date.now() };
       if (m === "agent") reply.agent = { goal: fullPayload, status: "running", trail: [] };
 
       // Quick "open X" commands open right inside the click/Enter, so the tab isn't blocked as a pop-up.
@@ -1310,7 +1327,7 @@ export default function AssistantApp() {
       chattedSinceSuggest.current = true;
       const prior = ms.slice(0, idx);
       const user: Msg = { id: uid(), role: "user", content: text, imageIds };
-      const reply: Msg = { id: uid(), role: "assistant", content: "", pending: true };
+      const reply: Msg = { id: uid(), role: "assistant", content: "", pending: true, startedAt: Date.now() };
       const m = mode;
       if (m === "agent") reply.agent = { goal: text, status: "running", trail: [] };
 
@@ -1367,7 +1384,7 @@ export default function AssistantApp() {
       }
       const prevUser = userIdx >= 0 ? ms[userIdx] : undefined;
       if (!failed || !prevUser) return;
-      const reply: Msg = { id: uid(), role: "assistant", content: "", pending: true };
+      const reply: Msg = { id: uid(), role: "assistant", content: "", pending: true, startedAt: Date.now() };
       if (failed.agent) reply.agent = { goal: failed.agent.goal, status: "running", trail: [] };
       setMessages([...ms.slice(0, idx), reply]);
       const ids = prevUser.imageIds || [];
@@ -1653,7 +1670,7 @@ export default function AssistantApp() {
       {/* Center Conversation Column */}
       <main className="flex min-w-0 flex-1 flex-col">
         {/* Precision Workspace Header */}
-        <header className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-[var(--sk-line)] px-2.5 sm:gap-3 sm:px-4">
+        <header className="@container flex h-11 shrink-0 items-center justify-between gap-2 border-b border-[var(--sk-line)] px-2.5 sm:gap-3 sm:px-4">
           <div className="flex min-w-0 flex-1 items-center gap-1">
             {!sidebarOpen && (
               <>
@@ -1665,7 +1682,7 @@ export default function AssistantApp() {
                 </button>
               </>
             )}
-            <span className="hidden min-w-0 truncate pl-1 text-[12px] font-medium text-[var(--sk-muted)] md:block">
+            <span className="hidden min-w-0 truncate pl-1 text-[12px] font-medium text-[var(--sk-muted)] @[700px]:block">
               {activeChat && activeChat.title !== "New chat" ? activeChat.title : ""}
             </span>
           </div>
@@ -1700,7 +1717,8 @@ export default function AssistantApp() {
           <div className="flex shrink-0 items-center justify-end gap-1.5">
             <label
               className={`relative hidden h-7 min-w-0 shrink items-center gap-1.5 overflow-hidden rounded-md border border-transparent px-2 text-[11.5px] text-[var(--sk-muted)] transition hover:border-[var(--sk-line)] hover:bg-[var(--sk-hover)] hover:text-[var(--sk-text)] has-[:focus-visible]:shadow-[var(--sk-focus)] ${
-                workspaceOpen || panelOpen ? "max-w-[130px] xl:inline-flex" : "max-w-[175px] sm:inline-flex"
+                // Sized by the header's own width, so an open browser/workspace panel never squeezes it.
+                "max-w-[150px] @[580px]:inline-flex @[760px]:max-w-[200px]"
               }`}
               title={activeProvider?.model ? `${activeProvider.label} · ${activeProvider.model}${activeProvider.local ? " (Local)" : " (Cloud)"}` : "Select AI Model"}
             >
@@ -1757,7 +1775,7 @@ export default function AssistantApp() {
                 title="Toggle Code, Preview & Sources Workspace (Alt+W)"
               >
                 {codeArtifacts.length > 0 ? <Code2 size={12} aria-hidden /> : <Compass size={12} aria-hidden />}
-                <span className="hidden sm:inline">Workspace</span>
+                <span className="hidden @[520px]:inline">Workspace</span>
                 {(codeArtifacts.length > 0 || researchSources.length > 0) && (
                   <span className="sk-tabular rounded-full bg-[var(--sk-raised)] px-1.5 py-0.2 text-[10px]">
                     {codeArtifacts.length || researchSources.length}
@@ -1787,7 +1805,7 @@ export default function AssistantApp() {
                 title={panelOpen ? "Hide live browser (Alt+B)" : "Show live browser (Alt+B)"}
               >
                 {browserOpening ? <Loader2 size={12.5} className="sk-spin text-[var(--sk-accent)]" /> : <Globe size={12.5} aria-hidden />}
-                <span className="hidden sm:inline">{verification?.active ? "Verify" : "Browser"}</span>
+                <span className="hidden @[520px]:inline">{verification?.active ? "Verify" : "Browser"}</span>
                 {(browser.running || verification?.active) && (
                   <span className="sk-pulse h-1.5 w-1.5 rounded-full bg-[var(--sk-accent)]" aria-hidden />
                 )}
@@ -1799,7 +1817,7 @@ export default function AssistantApp() {
               <button
                 type="button"
                 onClick={exportCurrentChat}
-                className="sk-btn hidden h-7 w-7 shrink-0 rounded-md text-[var(--sk-muted)] hover:text-[var(--sk-text)] sm:inline-flex"
+                className="sk-btn hidden h-7 w-7 shrink-0 rounded-md text-[var(--sk-muted)] hover:text-[var(--sk-text)] @[440px]:inline-flex"
                 aria-label="Export conversation as Markdown"
                 title="Export conversation (.md)"
               >
@@ -1919,7 +1937,7 @@ export default function AssistantApp() {
             onResume={resumeAgent}
             onInput={sendInput}
             onViewport={sendViewport}
-            agentName={activeProvider?.label ? `Senko · ${activeProvider.label}` : "Senko"}
+            agentName={activeProvider?.label && !/^senko/i.test(activeProvider.label) ? `Senko · ${activeProvider.label}` : "Senko"}
             onNav={(n) => sendInput("url" in n ? { type: "goto", url: n.url } : { type: "nav", action: n.action })}
           />
         </div>

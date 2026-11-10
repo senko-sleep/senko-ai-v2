@@ -11,6 +11,7 @@
 // - Every request is paced by the central scheduler (./scheduler.ts) so it doesn't break a
 //   provider's per-minute limits in the first place.
 import { scheduler, type Priority } from "./scheduler";
+import { InferenceBudgetExceeded, type InferenceRequestBudget } from "./request-budget";
 import { startsLikeRefusal } from "@/lib/refusal";
 import { knownProviderHealth, modelUnavailable, providerHealth, recordProviderFailure, recordProviderSuccess, resetProviderHealth, type ProviderHealth } from "./provider-health";
 export { scheduler } from "./scheduler";
@@ -28,6 +29,8 @@ export interface LlmMessage {
 }
 
 export interface LlmOptions {
+  /** Shared across coding steps, fallbacks, and compatibility retries. Discovery GETs are separate. */
+  requestBudget?: InferenceRequestBudget;
   /** Task-local exclusions after repeated invalid tool output; explicit model pins never fall back. */
   excludeModels?: string[];
   /** Pin an available model exactly; never silently benchmark a fallback model. */
@@ -37,7 +40,7 @@ export interface LlmOptions {
   signal?: AbortSignal;
   temperature?: number;
   maxTokens?: number;
-  /** Ask for JSON output where the provider supports it (Ollama). */
+  /** Ask for JSON output on compatible providers and Ollama. */
   json?: boolean;
   /**
    * A shorter system prompt to use instead of the first system message when a request
@@ -68,6 +71,13 @@ export interface LlmOptions {
   cacheTtlMs?: number;
   /** Internal: sees each provider response's headers (rate-limit learning). */
   onResponse?: (headers: Headers) => void;
+  /** Receives the model's reasoning / thought summary text as it streams (kept out of the answer). */
+  onThought?: (text: string) => void;
+  /**
+   * How hard to think before answering. "off" (default) keeps replies fast; "medium" / "high"
+   * think longer (and stream thought summaries to onThought where the provider supports it).
+   */
+  thinking?: "off" | "medium" | "high";
 }
 
 /** Every provider is rate-limited or failing; `retryInMs` says when the first frees up (if known). */
@@ -186,6 +196,8 @@ function coolKey(provider: string, model: string) {
   return `${provider}|${model}`;
 }
 function isCooling(provider: string, model: string) {
+  const account = cooldowns.get(coolKey(provider, "*"));
+  if (account && account.until > Date.now()) return account;
   const c = cooldowns.get(coolKey(provider, model));
   return c && c.until > Date.now() ? c : null;
 }
@@ -260,7 +272,7 @@ interface Candidate {
 /** Most capable models per provider, best first, for work where quality beats speed. */
 const STRONG_MODELS: Record<string, string[]> = {
   deepseek: ["deepseek-v4-pro"],
-  gemini: ["gemini-3-pro", "gemini-3-pro-preview", "gemini-2.5-pro"],
+  gemini: ["gemini-3.1-pro-preview", "gemini-3-pro", "gemini-3-pro-preview"],
   groq: ["openai/gpt-oss-120b"],
 };
 const STRONG_PROVIDER_ORDER = ["deepseek", "gemini", "groq", "paid", "sambanova", "openrouter"];
@@ -303,7 +315,7 @@ interface CompatConfig {
   modelFallbackOnly?: boolean;
   isVision?: (m: LiveModel) => boolean;
   headers?: () => Record<string, string>;
-  extras?: (model: string) => Record<string, unknown>;
+  extras?: (model: string, opts?: LlmOptions) => Record<string, unknown>;
   /** How many models from this provider to try per request. */
   maxModels?: number;
   missingDetail: string;
@@ -406,6 +418,7 @@ function compatProvider(c: CompatConfig): Provider {
         stream: true,
         temperature: opts.temperature ?? 0.7,
         max_tokens: opts.maxTokens ?? c.budget().output,
+        ...(opts.json ? { response_format: { type: "json_object" } } : {}),
         messages: messages.map((m) =>
           m.images?.length
             ? {
@@ -418,39 +431,44 @@ function compatProvider(c: CompatConfig): Provider {
             : { role: m.role, content: m.content }
         ),
       };
-      const extras = c.extras ? c.extras(cand.model) : {};
+      const extras = c.extras ? c.extras(cand.model, opts) : {};
       let res = await connect(`${c.baseUrl()}/chat/completions`, { ...body, ...extras }, {
         Authorization: `Bearer ${c.key()}`,
         ...(c.headers ? c.headers() : {}),
-      }, opts.signal);
+      }, opts.signal, opts.requestBudget, c.id);
       if (res.status === 400 && Object.keys(extras).length) {
         res = await connect(`${c.baseUrl()}/chat/completions`, body, {
           Authorization: `Bearer ${c.key()}`,
           ...(c.headers ? c.headers() : {}),
-        }, opts.signal);
+        }, opts.signal, opts.requestBudget, c.id);
       }
       opts.onResponse?.(res.headers);
       await throwIfBad(res, c.label, cand.model);
-      return stripThink(sseContent(res.body!));
+      return stripThink(sseContent(res.body!, opts.onThought), opts.onThought);
     },
   };
 }
 
 /** POST with a 45s limit on *connecting* only (long answers can keep streaming). */
-async function connect(url: string, body: unknown, headers: Record<string, string>, signal?: AbortSignal) {
+async function connect(url: string, body: unknown, headers: Record<string, string>, signal?: AbortSignal, budget?: InferenceRequestBudget, provider = "unknown") {
+  signal?.throwIfAborted();
+  const attempt = budget?.take(provider, String((body as { model?: string })?.model || "unknown"));
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 45_000);
   try {
-    return await fetch(url, {
+    const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify(body),
       signal: signal ? AbortSignal.any([signal, ctl.signal]) : ctl.signal,
     });
+    if (attempt) attempt.status = response.status;
+    return response;
   } catch (e) {
     if (signal?.aborted) throw e;
     throw new ProviderError(`couldn't connect (${e instanceof Error ? e.message : e})`, 0, 30_000);
   } finally {
+    if (attempt) { attempt.responseHeadersMs = Date.now() - attempt.startedAt; attempt.status ??= 0; }
     clearTimeout(timer);
   }
 }
@@ -487,7 +505,7 @@ async function throwIfBad(res: Response, label: string, model: string) {
   throw new ProviderError(`${label} ${res.status} (${model}): ${String(msg).slice(0, 240)}`, res.status, retry);
 }
 
-async function* sseContent(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+async function* sseContent(body: ReadableStream<Uint8Array>, onThought?: (text: string) => void): AsyncGenerator<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -504,7 +522,7 @@ async function* sseContent(body: ReadableStream<Uint8Array>): AsyncGenerator<str
         const data = line.slice(5).trim();
         if (data === "[DONE]") return;
         if (!data) continue;
-        let j: { error?: { message?: string } | string; choices?: { delta?: { content?: string }; finish_reason?: string | null }[] };
+        let j: { error?: { message?: string } | string; choices?: { delta?: { content?: string; reasoning_content?: string; reasoning?: string }; finish_reason?: string | null }[] };
         try {
           j = JSON.parse(data);
         } catch {
@@ -518,6 +536,9 @@ async function* sseContent(body: ReadableStream<Uint8Array>): AsyncGenerator<str
         if (fr && /content_filter|safety|prohibited/i.test(fr)) {
           throw new ProviderError("stream blocked by provider content filter", 422, null);
         }
+        // DeepSeek / Groq / OpenRouter send reasoning in a separate field.
+        const r = j.choices?.[0]?.delta?.reasoning_content || j.choices?.[0]?.delta?.reasoning;
+        if (r && onThought) onThought(r);
         const c = j.choices?.[0]?.delta?.content;
         if (c) yield c;
       }
@@ -652,11 +673,11 @@ const ollama: Provider = {
         ...(isOllamaCloud() ? {} : { num_ctx: ollamaCtx() }),
       },
     });
-    let res = await connect(`${ollamaUrl()}/api/chat`, payload(true), ollamaHeaders(), opts.signal);
-    if (res.status === 400) res = await connect(`${ollamaUrl()}/api/chat`, payload(false), ollamaHeaders(), opts.signal);
+    let res = await connect(`${ollamaUrl()}/api/chat`, payload(true), ollamaHeaders(), opts.signal, opts.requestBudget, "ollama");
+    if (res.status === 400) res = await connect(`${ollamaUrl()}/api/chat`, payload(false), ollamaHeaders(), opts.signal, opts.requestBudget, "ollama");
     opts.onResponse?.(res.headers);
     await throwIfBad(res, "Ollama", cand.model);
-    return stripThink(ollamaLines(res.body!));
+    return stripThink(ollamaLines(res.body!), opts.onThought);
   },
 };
 
@@ -664,6 +685,17 @@ const ollama: Provider = {
 
 const isGeminiChat = (id: string) =>
   /^gemini-/.test(id) && !/image|tts|audio|live|embedding|veo|imagen|learnlm|computer-use|robotics/i.test(id);
+
+/**
+ * The senko-llm gateway on Cloudflare (or any https host) runs big-context cloud models, so
+ * it gets Senko's full prompt. On this PC / a private network it's a small local model that
+ * needs the compact one. SENKO_LLM_COMPACT=1 forces the compact prompt (cheaper per request).
+ */
+const senkoCloud = () => {
+  const url = env("SENKO_LLM_URL");
+  return url.toLowerCase().startsWith("https:") && !/localhost|127\.0\.0\.1/.test(url);
+};
+const senkoCompact = () => env("SENKO_LLM_COMPACT") === "1" || !senkoCloud();
 
 // Ollama first: when it is reachable (your PC, your server, or Ollama Cloud) it is free and uncapped.
 const PROVIDERS: Provider[] = [
@@ -674,14 +706,18 @@ const PROVIDERS: Provider[] = [
     baseUrl: () => `${env("SENKO_LLM_URL").replace(/\/$/, "")}/v1`,
     // The gateway may run without a key on a private network.
     key: () => (env("SENKO_LLM_URL") ? env("SENKO_LLM_KEY") || "none" : ""),
-    envModel: () => env("SENKO_LLM_MODEL"),
-    envVisionModel: () => env("SENKO_LLM_VISION_MODEL"),
+    // On Cloudflare, "senko" routes each request itself (instant model for chat, frontier model
+    // for hard work) and reads images.
+    envModel: () => env("SENKO_LLM_MODEL") || (senkoCloud() ? "senko" : ""),
+    envVisionModel: () => env("SENKO_LLM_VISION_MODEL") || (senkoCloud() ? "senko" : ""),
     preferred: [],
     isVision: (m) => m.vision,
     maxModels: 1,
-    local: true,
+    local: senkoCompact(),
+    // Replies that deserve deep thinking (reply-depth.ts) ask for the frontier tier.
+    extras: (_model, opts) => (opts?.thinking && opts.thinking !== "off" ? { reasoning_effort: "high" } : {}),
     missingDetail: "Optional: run the senko-llm gateway and set SENKO_LLM_URL (+ SENKO_LLM_KEY)",
-    budget: () => ({ input: num("SENKO_LLM_TOKEN_BUDGET", 7000), output: num("SENKO_LLM_MAX_OUTPUT", 1024) }),
+    budget: () => ({ input: num("SENKO_LLM_TOKEN_BUDGET", senkoCloud() ? 60_000 : 7000), output: num("SENKO_LLM_MAX_OUTPUT", senkoCloud() ? 4096 : 1024) }),
   }),
   ollama,
   compatProvider({
@@ -692,14 +728,20 @@ const PROVIDERS: Provider[] = [
     envModel: () => env("GEMINI_MODEL"),
     envVisionModel: () => env("GEMINI_MODEL"),
     // Prefer flagship pro & flash models over lite previews for coding and reasoning depth.
-    preferred: ["gemini-2.5-pro", "gemini-3-flash", "gemini-2.5-flash", "gemini-3.8-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest", "gemini-3.5-flash-lite"],
-    preferredVision: ["gemini-2.5-pro", "gemini-3-flash", "gemini-2.5-flash", "gemini-3.8-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"],
+    preferred: ["gemini-3.8-flash", "gemini-3-flash", "gemini-3.8-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest", "gemini-3.5-flash-lite"],
+    preferredVision: ["gemini-3.8-flash", "gemini-3-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"],
     // Measured: flash answers quickly for browser agent steps.
-    fastPreferred: ["gemini-2.5-flash", "gemini-3-flash", "gemini-3.1-flash-lite-preview", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"],
+    fastPreferred: ["gemini-3.8-flash", "gemini-3-flash", "gemini-3.1-flash-lite-preview", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"],
     // Allow both "pro" and "flash" chat models.
     filter: (m) => isGeminiChat(m.id) && (/pro|flash/.test(m.id)),
     isVision: (m) => isGeminiChat(m.id),
-    extras: () => ({ reasoning_effort: "low" }),
+    // Replies that benefit from thinking (thinking: "medium" | "high") ask Gemini 3 to think and
+    // stream its thought summaries (<thought>…</thought>; a 400 falls back to the plain request).
+    // That costs ~4-8s, so casual messages keep the fast "low" setting.
+    extras: (model, opts) =>
+      opts?.onThought && opts.thinking && opts.thinking !== "off" && /gemini-3/.test(model)
+        ? { extra_body: { google: { thinking_config: { include_thoughts: true, thinking_level: env("GEMINI_THINKING_LEVEL") || opts.thinking } } } }
+        : { reasoning_effort: "low" },
     maxModels: 3,
     missingDetail: "Add GEMINI_API_KEY (free at aistudio.google.com/apikey)",
     budget: () => ({ input: num("GEMINI_TOKEN_BUDGET", 60_000), output: 8192 }),
@@ -830,26 +872,33 @@ function orderedProviders(first?: string): Provider[] {
 // Strip <think>...</think> blocks some models emit inline
 // ---------------------------------------------------------------------------
 
-async function* stripThink(src: AsyncGenerator<string>): AsyncGenerator<string> {
-  let inside = false;
+export async function* stripThink(src: AsyncGenerator<string>, onThought?: (text: string) => void): AsyncGenerator<string> {
+  // <think> (DeepSeek/Qwen style) and <thought> (Gemini thought summaries) are reasoning, not answer.
+  const OPEN = /<(think|thought)>/;
+  let close = "";
   let pending = "";
+  const think = (t: string) => { if (t && onThought) onThought(t); };
   for await (const chunk of src) {
     pending += chunk;
     let out = "";
     while (pending) {
-      if (inside) {
-        const end = pending.indexOf("</think>");
+      if (close) {
+        const end = pending.indexOf(close);
         if (end === -1) {
-          pending = pending.slice(-8);
+          // Keep a tail in case the closing tag is split across chunks.
+          const keep = Math.min(pending.length, close.length - 1);
+          think(pending.slice(0, pending.length - keep));
+          pending = pending.slice(pending.length - keep);
           break;
         }
-        pending = pending.slice(end + 8);
-        inside = false;
+        think(pending.slice(0, end));
+        pending = pending.slice(end + close.length);
+        close = "";
       } else {
-        const start = pending.indexOf("<think>");
-        if (start === -1) {
+        const m = OPEN.exec(pending);
+        if (!m) {
           const lt = pending.lastIndexOf("<");
-          if (lt !== -1 && pending.length - lt < 7) {
+          if (lt !== -1 && pending.length - lt < 9) {
             out += pending.slice(0, lt);
             pending = pending.slice(lt);
           } else {
@@ -858,14 +907,15 @@ async function* stripThink(src: AsyncGenerator<string>): AsyncGenerator<string> 
           }
           break;
         }
-        out += pending.slice(0, start);
-        pending = pending.slice(start + 7);
-        inside = true;
+        out += pending.slice(0, m.index);
+        pending = pending.slice(m.index + m[0].length);
+        close = `</${m[1]}>`;
       }
     }
     if (out) yield out;
   }
-  if (!inside && pending) yield pending;
+  if (close) think(pending);
+  else if (pending) yield pending;
 }
 
 /** Re-yield a generator whose first chunk we've already pulled. */
@@ -909,6 +959,22 @@ const MAX_PARALLEL = () => Math.max(1, num("LLM_MAX_PARALLEL", 2));
 const HEDGE_MAX_PRESSURE = 0.5;
 /** Give up on a model that hasn't sent its first words after this long. */
 const FIRST_TOKEN_MS = () => num("LLM_FIRST_TOKEN_MS", 20_000);
+/** The same limit for quick calls (agent steps), where a healthy model answers in 1-3s. */
+const FAST_FIRST_TOKEN_MS = () => num("LLM_FAST_FIRST_TOKEN_MS", 10_000);
+/** Longest a reasoning model may think before its first word. */
+const THINKING_MAX_MS = () => num("LLM_THINKING_MAX_MS", 60_000);
+
+/**
+ * A model that keeps timing out is benched for longer each time (30s, 2 min, 8 min, 15 min)
+ * instead of costing every other request a full timeout. One answer in time clears it.
+ */
+const slowStrikes = new Map<string, number>();
+function slowCooldownMs(provider: string, model: string): number {
+  const key = `${provider}:${model}`;
+  const strikes = (slowStrikes.get(key) ?? 0) + 1;
+  slowStrikes.set(key, strikes);
+  return Math.min(15 * 60_000, 30_000 * 4 ** (strikes - 1));
+}
 
 interface QueueEntry {
   p: Provider;
@@ -1004,6 +1070,8 @@ async function raceCandidates(
     let done = false;
     let hedge: ReturnType<typeof setTimeout> | null = null;
     const attempts: { ctl: AbortController; timer: ReturnType<typeof setTimeout>; abort: () => void }[] = [];
+    // Only one attempt's reasoning reaches the caller, so a hedged backup can't interleave thoughts.
+    let thoughtOwner: AbortController | null = null;
 
     const finish = (result: { c: Candidate; stream: AsyncGenerator<string> } | null, keep?: AbortController) => {
       if (done) return;
@@ -1028,6 +1096,7 @@ async function raceCandidates(
 
     function launch(asBackup = false): void {
       if (done) return;
+      if (opts.requestBudget?.remaining === 0) { if (running === 0) finish(null); return; }
       // A backup only while fewer than MAX_PARALLEL are in flight; failures still move on at once.
       if (asBackup && running >= MAX_PARALLEL()) return;
       // A backup should come from another provider (one provider is often slow as a whole)
@@ -1049,6 +1118,7 @@ async function raceCandidates(
       const q = queue[i];
       const { p, c } = q;
       // Time has passed since the queue was built (hedge timer, earlier failures): re-check.
+      if (isCooling(c.provider, c.model)) return launch(asBackup);
       const late = scheduler.delayFor(c.provider, c.model, q.est, priority);
       if (late > 0) {
         onPaced(late);
@@ -1062,14 +1132,35 @@ async function raceCandidates(
       const abort = () => ctl.abort();
       opts.signal?.addEventListener("abort", abort, { once: true });
       let slow = false;
-      const timer = setTimeout(() => {
+      const giveUp = () => {
         slow = true;
         ctl.abort();
-      }, FIRST_TOKEN_MS());
-      attempts.push({ ctl, timer, abort });
-      tryCandidate(q, messages, opts, ctl.signal).then(
+      };
+      // Agent steps (fast) expect an answer in a second or two: don't sit 20s on a stalled
+      // cloud model. Local models keep the long limit (they may still be loading).
+      const waitMs = p.local || !opts.fast ? FIRST_TOKEN_MS() : Math.min(FIRST_TOKEN_MS(), messages.some((m) => m.images?.length) ? 15_000 : FAST_FIRST_TOKEN_MS());
+      const attempt = { ctl, timer: setTimeout(giveUp, waitMs), abort };
+      attempts.push(attempt);
+      // Reasoning models think before the first word. Thinking counts as being alive (whether
+      // or not the caller shows it), but not forever.
+      const attemptOpts: LlmOptions = {
+        ...opts,
+        onThought: (t) => {
+          if (thoughtOwner && thoughtOwner !== ctl) return;
+          if (!thoughtOwner) {
+            thoughtOwner = ctl;
+            clearTimeout(attempt.timer);
+            attempt.timer = setTimeout(giveUp, THINKING_MAX_MS());
+            // Don't start a backup model that would race (and replace) this one.
+            if (hedge) { clearTimeout(hedge); hedge = null; }
+          }
+          opts.onThought?.(t);
+        },
+      };
+      tryCandidate(q, messages, attemptOpts, ctl.signal).then(
         ({ stream, inputTokens }) => {
-          clearTimeout(timer);
+          clearTimeout(attempt.timer);
+          slowStrikes.delete(`${c.provider}:${c.model}`);
           running--;
           live.delete(p.id);
           scheduler.onSuccess(c.provider, c.model);
@@ -1085,7 +1176,8 @@ async function raceCandidates(
           }) }, ctl);
         },
         (e) => {
-          clearTimeout(timer);
+          clearTimeout(attempt.timer);
+          if (thoughtOwner === ctl) thoughtOwner = null;
           opts.signal?.removeEventListener("abort", abort);
           running--;
           live.delete(p.id);
@@ -1093,7 +1185,8 @@ async function raceCandidates(
           // A rejected request (rate limit, connection failure) used no tokens; an aborted or failed one may have.
           ticket.release(status === 429 || status === 0 || status === 401 || status === 403 ? 0 : undefined);
           if (done) return;
-          const err = slow ? new ProviderError(`${c.label} (${c.model}): no answer within ${Math.round(FIRST_TOKEN_MS() / 1000)}s`, 408, null) : e;
+          if (e instanceof InferenceBudgetExceeded) { finish(null); return; }
+          const err = slow ? new ProviderError(`${c.label} (${c.model}): no answer within ${Math.round((thoughtOwner === ctl ? THINKING_MAX_MS() : waitMs) / 1000)}s`, 408, null) : e;
           onFail(q, err);
           // Failed: move to the next model right away instead of waiting for the hedge timer.
           launch();
@@ -1183,20 +1276,27 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
         // Only real daily caps get the long cooldown. Gemini says "exceeded your current quota" for
         // per-minute limits too, so "quota" alone isn't a sign; trust its retry hint instead.
         const daily = /per ?day|daily|RPD|free-models-per-day/i.test(pe?.message || "") || (pe?.retryMs ?? 0) > 60 * 60_000;
+        // A gateway can wrap a used-up daily allocation in a 5xx (e.g. Cloudflare's 4006 inside a 503).
+        const dailyOut = status >= 500 && /\b4006\b|daily free allocation|used up your daily|neurons? (?:per|a) day/i.test(pe?.message || "");
         // A 429 shrinks the model's limit in the scheduler and backs off exponentially with jitter.
         const backoff = status === 429 ? scheduler.onRateLimited(c.provider, c.model, pe?.retryMs ?? null) : 0;
         const ms =
           isTooLarge(e) ? 5_000 // not the provider's fault; a smaller request may work right away
+          : dailyOut ? 60 * 60_000
           : status === 429 ? (daily ? Math.max(backoff, 60 * 60_000) : backoff)
           : status === 402 ? 60 * 60_000 // out of credit
           : status === 401 || status === 403 ? 10 * 60_000
           : status === 404 || status === 410 ? 24 * 60 * 60_000
           : status === 422 ? (/refused/.test(pe?.message || "") ? 20_000 : 2_000) // a model that just refused is likely to again: let the others take this stretch
-          : status === 408 ? 20_000 // too slow to answer: let faster models take over for a bit
+          : status === 408 ? slowCooldownMs(c.provider, c.model) // too slow: benched longer each time it happens
           : health.retryAt ? Math.max(1000, health.retryAt - Date.now()) : 30_000;
         // Worth waiting for: rate limits, network blips and server errors (not refusals/bad keys).
         const retryable = status === 429 || status === 0 || status === 408 || status >= 500;
-        coolDown(c.provider, c.model, ms, status === 429 ? (daily ? "daily limit reached" : "rate limited") : status === 408 ? "too slow" : `error ${status || "network"}`, retryable);
+        coolDown(c.provider, c.model, ms, dailyOut ? "daily limit reached" : status === 429 ? (daily ? "daily limit reached" : "rate limited") : status === 408 ? "too slow" : `error ${status || "network"}`, retryable);
+        // Credentials and account credit apply to the whole account, not each model.
+        // A 403 may be model-specific, so it retains the narrower cooldown.
+        if (status === 401 || status === 402) coolDown(c.provider, "*", ms, health.reason, false);
+        if (dailyOut) coolDown(c.provider, "*", ms, "daily limit reached", true);
         if (retryable) soonest = Math.min(soonest, ms);
       }
       const msg = friendly(e);
@@ -1207,6 +1307,7 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
 
     const won = await raceCandidates(queue, messages, opts, onFail, (w) => (soonest = Math.min(soonest, w)));
     if (won) return { provider: won.c.provider, providerLabel: won.c.label, model: won.c.model, stream: won.stream, skipped };
+    opts.requestBudget?.assertAvailable();
     if (opts.signal?.aborted) throw new Error("Aborted");
 
     // Everything is paced or rate-limited for now: wait for the first model to free up
@@ -1351,6 +1452,12 @@ export async function probeProvider(provider: string, model: string, signal?: Ab
   if (!selected) throw new Error("Provider is not configured.");
   resetProviderHealth(provider, model);
   cooldowns.delete(coolKey(provider, model));
+  cooldowns.delete(coolKey(provider, "*"));
+  // An explicit probe must also supersede the shared account cooldown.
+  try {
+    const { q } = await import("@/lib/server/db");
+    await q("DELETE FROM app_kv WHERE key = $1 OR key = $2", [`llm.cool:${coolKey(provider, model)}`, `llm.cool:${coolKey(provider, "*")}`]);
+  } catch { /* The local probe can still run if shared diagnostics are unavailable. */ }
   const candidates = await selected.candidates(false);
   if (!candidates.some((candidate) => candidate.model === model)) throw new Error("Model is not available in this provider's configured catalog.");
   try {

@@ -22,6 +22,13 @@ export interface MessageMeta {
   imageQuery?: string;
   /** Pre-resolved image URLs keyed by imageQuery for dynamic UI components. */
   uiImages?: Record<string, string[]>;
+  /** What Senko did and thought before answering (the "Thought for Ns" dropdown). */
+  thinking?: {
+    steps: { id: number; label: string; status: "running" | "done" | "error"; detail?: string; url?: string }[];
+    thoughts?: string;
+    /** Time from the request to the first words of the answer. */
+    ms?: number;
+  };
 }
 
 export interface StoredMessage {

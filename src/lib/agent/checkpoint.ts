@@ -13,6 +13,8 @@ export interface Checkpoint {
   actionsTaken: number;
   sources: [string, SourcePage][];
   requirements?: TaskRequirement[];
+  imageIds?: string[];
+  deliveredImages?: [string, string][];
   /** Why the task stopped last (shown when it resumes). */
   reason?: string;
   updatedAt: number;

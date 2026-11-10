@@ -35,9 +35,13 @@ export function MapEmbed({ map }: MapEmbedProps) {
         attributionControl: false,
       });
 
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-        maxZoom: 19,
-      }).addTo(m);
+      // CARTO basemaps now require an API key; Esri's canvas tiles are keyless.
+      for (const service of ["Canvas/World_Dark_Gray_Base", "Canvas/World_Dark_Gray_Reference"]) {
+        L.tileLayer(`https://server.arcgisonline.com/ArcGIS/rest/services/${service}/MapServer/tile/{z}/{y}/{x}`, {
+          maxZoom: 19,
+          maxNativeZoom: 16,
+        }).addTo(m);
+      }
 
       // Force a resize after tiles load to prevent white grid
       setTimeout(() => m.invalidateSize(), 200);

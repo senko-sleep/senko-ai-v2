@@ -217,6 +217,16 @@ export interface UIMapMarker {
   imageUrl?: string;
   imageQuery?: string;
   url?: string;
+  /** Kind of place: "Cafe", "Museum", "Hiking trail"... */
+  category?: string;
+  /** Street address or "City, Country"; shown on the card and used for geocoding. */
+  address?: string;
+  /** Short rating text, e.g. "4.6" or "4.6 (2.1k)". */
+  rating?: string;
+  /** Price level or ticket price, e.g. "$" or "Free". */
+  price?: string;
+  /** Opening hours or best time to visit. */
+  hours?: string;
 }
 
 export interface UIStepItem {
@@ -297,7 +307,7 @@ export interface UIDiagramEdge {
   dashed?: boolean;
 }
 
-export type UINode =
+type UIShape =
   | {
       type: "stack";
       direction?: "vertical" | "horizontal";
@@ -403,6 +413,16 @@ export type UINode =
       relationships?: UIProfileRelationship[];
       appearances?: UIProfileAppearance[];
       trivia?: string[];
+      /** Name in its original script (e.g. アーニャ・フォージャー). */
+      nativeName?: string;
+      aliases?: string[];
+      /** 2-4 headline facts shown in the hero. */
+      highlights?: { label: string; value: string }[];
+      /** Infobox facts grouped by theme (Identity, Appearance, Affiliation, Media…). */
+      facts?: { group: string; items: { label: string; value: string }[] }[];
+      /** Long-form sections (background, personality, creation, reception). */
+      sections?: { title: string; body: string }[];
+      sources?: { label: string; url: string }[];
       when?: UICondition;
     }
   | {
@@ -448,7 +468,25 @@ export type UINode =
       title?: string;
       subtitle?: string;
       region?: string;
+      /** Draw a line through the markers in order (itineraries, routes, road trips). */
+      route?: boolean;
+      /** Zoom for a single place (3 = country, 10 = city, 15 = street). */
+      zoom?: number;
       markers: UIMapMarker[];
+      when?: UICondition;
+    }
+  | {
+      /** Prose with a picture placed beside it (wraps under on narrow screens). */
+      type: "figure";
+      heading?: string;
+      content: string;
+      imageUrl?: string;
+      imageQuery?: string;
+      caption?: string;
+      side?: "left" | "right";
+      aspect?: "portrait" | "video" | "square" | "auto";
+      sourceUrl?: string;
+      citations?: UICitation[];
       when?: UICondition;
     }
   | {
@@ -495,6 +533,8 @@ export type UINode =
     }
   | {
       type: "gallery";
+      imageFit?: "cover" | "contain";
+      aspect?: "video" | "square" | "natural";
       title?: string;
       subtitle?: string;
       cols?: 1 | 2 | 3 | 4;
@@ -659,6 +699,19 @@ export type UINode =
     };
 
 const MAX_DEPTH = 8;
+export interface UITheme {
+  background?: string; surface?: string; text?: string; muted?: string; accent?: string; border?: string;
+  font?: "editorial" | "technical" | "default";
+}
+export type UINode = UIShape & { theme?: UITheme };
+
+export function validateUITheme(value: unknown): UITheme | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  const source = value as Record<string, unknown>; const theme: UITheme = {};
+  for (const key of ["background", "surface", "text", "muted", "accent", "border"] as const) if (typeof source[key] === "string" && /^#[0-9a-f]{6}$/i.test(source[key] as string)) theme[key] = source[key] as string;
+  if (["editorial", "technical", "default"].includes(String(source.font))) theme.font = source.font as UITheme["font"];
+  return Object.keys(theme).length ? theme : undefined;
+}
 const MAX_CHILDREN = 40;
 
 function asStr(v: unknown, fallback = ""): string {
@@ -696,6 +749,42 @@ function sanitizeUrl(v: unknown): string | undefined {
     return s;
   }
   return undefined;
+}
+
+/**
+ * Normalizes an `imageQuery` string so that if a smaller model accidentally passes a URL,
+ * markdown link, or `[ImageQuery: ...]` wrapper instead of search keywords, we extract
+ * clean search keywords (e.g. `https://www.serebii.net/pokédex/eevee/eevee-1.png` -> `eevee pokedex`)
+ * so `/api/images` fetches real verified images instead of failing.
+ */
+export function normalizeImageQuery(v: unknown, fallbackContext?: string): string | undefined {
+  let s = asOptStr(v);
+  if (!s) return fallbackContext?.trim() || undefined;
+  // Unwrap `[ImageQuery: ...]` or markdown link `[label](url)`
+  s = s.replace(/^\[\s*image_?query\s*:\s*([\s\S]+?)\s*\]$/i, "$1").trim();
+  const mdLink = /^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/.exec(s);
+  if (mdLink) {
+    const label = mdLink[1].trim();
+    if (!/^https?:\/\//i.test(label)) return label;
+    s = mdLink[2].trim();
+  }
+  if (/^https?:\/\//i.test(s)) {
+    try {
+      const u = new URL(s);
+      const tokens = decodeURIComponent(u.pathname)
+        .replace(/\.[a-z0-9]{2,5}$/i, "")
+        .split(/[/_-]+/)
+        .map((t) => t.replace(/^\d+$/, "").trim())
+        .filter((t) => t.length >= 2 && !/^(www|http|https|html|htm|php|asp|index|images?|img|assets|media|static|uploads?|thumb|thumbnails?)$/i.test(t));
+      const unique = [...new Set(tokens)];
+      const derived = unique.join(" ").trim();
+      if (derived) return fallbackContext && !derived.toLowerCase().includes(fallbackContext.toLowerCase()) ? `${fallbackContext} ${derived}`.trim() : derived;
+    } catch {
+      // fall through
+    }
+    return fallbackContext?.trim() || undefined;
+  }
+  return s;
 }
 
 /**
@@ -822,6 +911,13 @@ function parseScenarios(raw: unknown): UIScenario[] | undefined {
  * Validate and normalize an untrusted JSON value into a safe UINode (or null if unusable).
  */
 export function validateUINode(raw: unknown, depth = 0): UINode | null {
+  const node = validateUIShape(raw, depth);
+  if (!node) return null;
+  const theme = validateUITheme(isObj(raw) ? raw.theme : undefined);
+  return theme ? { ...node, theme } : node;
+}
+
+function validateUIShape(raw: unknown, depth = 0): UINode | null {
   if (depth > MAX_DEPTH || raw == null) return null;
 
   if (typeof raw === "string") {
@@ -1018,7 +1114,7 @@ export function validateUINode(raw: unknown, depth = 0): UINode | null {
           name,
           subtitle: asOptStr(c.subtitle || c.universe || c.origin || c.series || c.source || c.role),
           imageUrl: sanitizeUrl(c.imageUrl || c.image || c.img || c.avatar),
-          imageQuery: asOptStr(c.imageQuery || c.query || c.searchQuery) || queryFallback,
+          imageQuery: normalizeImageQuery(c.imageQuery || c.query || c.searchQuery, queryFallback),
           badge: asOptStr(c.badge || c.tag || c.rank),
           color: asOptStr(c.color),
           stats: stats.length ? stats : undefined,
@@ -1286,7 +1382,7 @@ export function validateUINode(raw: unknown, depth = 0): UINode | null {
           description: asOptStr(item.description || item.summary || item.reason),
           details: asOptStr(item.details || item.explanation || item.notes),
           imageUrl: sanitizeUrl(item.imageUrl || item.image),
-          imageQuery: asOptStr(item.imageQuery || item.query),
+          imageQuery: normalizeImageQuery(item.imageQuery || item.query),
           url: sanitizeUrl(item.url || item.link || item.sourceUrl),
           color: asOptStr(item.color),
         });
@@ -1366,7 +1462,7 @@ export function validateUINode(raw: unknown, depth = 0): UINode | null {
             role: asOptStr(r.role || r.relation || r.relationship || r.badge),
             description: asOptStr(r.description || r.detail || r.summary),
             imageUrl: sanitizeUrl(r.imageUrl || r.image),
-            imageQuery: asOptStr(r.imageQuery || r.query) || `${rName} ${series || ""}`.trim(),
+            imageQuery: normalizeImageQuery(r.imageQuery || r.query, `${rName} ${series || ""}`.trim()),
           };
         })
         .filter((x): x is NonNullable<typeof x> => x !== null);
@@ -1393,12 +1489,12 @@ export function validateUINode(raw: unknown, depth = 0): UINode | null {
         .slice(0, 8)
         .map((g) => {
           if (typeof g === "string") {
-            return g.startsWith("http") ? { imageUrl: g } : { title: g, imageQuery: g };
+            return { title: g.startsWith("http") ? name : g, imageQuery: normalizeImageQuery(g, name) };
           }
           if (!isObj(g)) return null;
           const imgUrl = sanitizeUrl(g.imageUrl || g.url || g.src);
           const gTitle = asOptStr(g.title || g.caption || g.label);
-          const imgQ = asOptStr(g.imageQuery || g.query) || (!imgUrl ? gTitle : undefined);
+          const imgQ = normalizeImageQuery(g.imageQuery || g.query, !imgUrl ? gTitle || name : undefined);
           if (!imgUrl && !imgQ) return null;
           return {
             title: gTitle,
@@ -1410,7 +1506,7 @@ export function validateUINode(raw: unknown, depth = 0): UINode | null {
         .filter((x): x is NonNullable<typeof x> => x !== null);
 
       const imageUrl = sanitizeUrl(raw.imageUrl || raw.image || raw.portrait || raw.avatar);
-      const imageQuery = asOptStr(raw.imageQuery || raw.query) || (!imageUrl ? `${name} ${series || ""}`.trim() : undefined);
+      const imageQuery = normalizeImageQuery(raw.imageQuery || raw.query, !imageUrl ? `${name} ${series || ""}`.trim() : undefined);
 
       return {
         type: "profile",
@@ -1430,6 +1526,15 @@ export function validateUINode(raw: unknown, depth = 0): UINode | null {
         relationships: relationships.length ? relationships : undefined,
         appearances: appearances.length ? appearances : undefined,
         trivia: trivia.length ? trivia : undefined,
+        nativeName: asOptStr(raw.nativeName),
+        aliases: asArr(raw.aliases).map((a) => asStr(a).trim()).filter(Boolean).slice(0, 12) || undefined,
+        highlights: asArr(raw.highlights).filter(isObj).map((h) => ({ label: asStr(h.label), value: asStr(h.value) })).filter((h) => h.label && h.value).slice(0, 4),
+        facts: asArr(raw.facts).filter(isObj).map((g) => ({
+          group: asStr(g.group || g.title, "Details"),
+          items: asArr(g.items).filter(isObj).map((i) => ({ label: asStr(i.label), value: asStr(i.value) })).filter((i) => i.label && i.value).slice(0, 14),
+        })).filter((g) => g.items.length).slice(0, 8),
+        sections: asArr(raw.sections).filter(isObj).map((x) => ({ title: asStr(x.title), body: asStr(x.body || x.content) })).filter((x) => x.title && x.body).slice(0, 10),
+        sources: asArr(raw.sources).filter(isObj).map((x) => ({ label: asStr(x.label), url: sanitizeUrl(x.url) || "" })).filter((x) => x.label && x.url).slice(0, 8),
         when,
       };
     }
@@ -1645,7 +1750,7 @@ export function validateUINode(raw: unknown, depth = 0): UINode | null {
     case "places": {
       const rawMarkers = asArr(raw.markers || raw.locations || raw.places || raw.points || raw.items);
       const markers: UIMapMarker[] = [];
-      for (const [idx, m] of rawMarkers.slice(0, 24).entries()) {
+      for (const [idx, m] of rawMarkers.slice(0, 30).entries()) {
         if (!isObj(m)) continue;
         const label = asOptStr(m.label || m.name || m.title || m.place);
         if (!label) continue;
@@ -1662,17 +1767,56 @@ export function validateUINode(raw: unknown, depth = 0): UINode | null {
           elevation: asOptStr(m.elevation || m.height || m.altitude || m.value),
           description: asOptStr(m.description || m.summary || m.notes),
           imageUrl: sanitizeUrl(m.imageUrl || m.image),
-          imageQuery: asOptStr(m.imageQuery || m.query),
-          url: sanitizeUrl(m.url || m.link),
+          imageQuery: asOptStr(m.imageQuery),
+          url: sanitizeUrl(m.url || m.link || m.website),
+          category: asOptStr(m.category || m.kind || m.placeType),
+          address: asOptStr(m.address || m.location),
+          rating: asOptStr(m.rating),
+          price: asOptStr(m.price || m.priceLevel || m.cost),
+          hours: asOptStr(m.hours || m.openingHours || m.bestTime),
         });
       }
       if (!markers.length) return null;
+      const zoomRaw = asNum(raw.zoom, NaN);
       return {
         type: "map",
         title: asOptStr(raw.title || raw.heading),
         subtitle: asOptStr(raw.subtitle || raw.description),
         region: asOptStr(raw.region || raw.scope),
+        route: raw.route === true || raw.path === true || raw.itinerary === true || undefined,
+        zoom: Number.isFinite(zoomRaw) ? Math.max(2, Math.min(18, Math.round(zoomRaw))) : undefined,
         markers,
+        when,
+      };
+    }
+
+    case "figure":
+    case "text_image":
+    case "image_text":
+    case "figure_text":
+    case "article_section":
+    case "split": {
+      const content = asOptStr(raw.content || raw.text || raw.body || raw.markdown);
+      const imageUrl = sanitizeUrl(raw.imageUrl || raw.image || raw.src);
+      const imageQuery = normalizeImageQuery(raw.imageQuery || raw.query);
+      if (!content) return null;
+      // No picture to place: it is just a paragraph.
+      if (!imageUrl && !imageQuery) return { type: "text", content: raw.heading ? `### ${asStr(raw.heading)}
+
+${content}` : content, variant: "body", when };
+      const sideRaw = asStr(raw.side || raw.imageSide || raw.align, "right").toLowerCase();
+      const aspectRaw = asStr(raw.aspect, "auto");
+      return {
+        type: "figure",
+        heading: asOptStr(raw.heading || raw.title),
+        content,
+        imageUrl,
+        imageQuery,
+        caption: asOptStr(raw.caption || raw.alt),
+        side: sideRaw === "left" ? "left" : "right",
+        aspect: (["portrait", "video", "square", "auto"].includes(aspectRaw) ? aspectRaw : "auto") as "portrait" | "video" | "square" | "auto",
+        sourceUrl: sanitizeUrl(raw.sourceUrl || raw.link),
+        citations: parseCitations(raw.citations || raw.sources),
         when,
       };
     }
@@ -1834,7 +1978,7 @@ export function validateUINode(raw: unknown, depth = 0): UINode | null {
     case "image_card":
     case "image": {
       const imageUrl = sanitizeUrl(raw.imageUrl || raw.url || raw.src || raw.image);
-      const imageQuery = asOptStr(raw.imageQuery || raw.query || raw.search || raw.title);
+      const imageQuery = normalizeImageQuery(raw.imageQuery || raw.query || raw.search || raw.title);
       if (!imageUrl && !imageQuery) return null;
       const aspectRaw = asStr(raw.aspect || raw.aspectRatio, "auto");
       const aspect = (["portrait", "video", "square", "auto"].includes(aspectRaw) ? aspectRaw : "auto") as
@@ -1859,17 +2003,20 @@ export function validateUINode(raw: unknown, depth = 0): UINode | null {
     case "gallery":
     case "media_gallery":
     case "image_gallery": {
+      const galleryTitle = asOptStr(raw.title || raw.heading);
       const rawItems = asArr(raw.items || raw.images || raw.cards);
       const items = rawItems
         .slice(0, 30)
         .map((item) => {
           if (typeof item === "string") {
-            return item.startsWith("http") ? { imageUrl: item } : { title: item, imageQuery: item };
+            if (/^\/api\/uploads\//.test(item)) return { imageUrl: item };
+            return { title: item.startsWith("http") ? galleryTitle : item, imageQuery: normalizeImageQuery(item, galleryTitle) };
           }
           if (!isObj(item)) return null;
-          const imageUrl = sanitizeUrl(item.imageUrl || item.url || item.src);
+          const rawImgUrl = sanitizeUrl(item.imageUrl || item.url || item.src);
           const title = asOptStr(item.title || item.name || item.alt);
-          const imageQuery = asOptStr(item.imageQuery || item.query) || (!imageUrl ? title : undefined);
+          const imageQuery = normalizeImageQuery(item.imageQuery || item.query, !rawImgUrl ? title || galleryTitle : undefined);
+          const imageUrl = rawImgUrl;
           if (!imageUrl && !imageQuery) return null;
           return {
             title,
@@ -1896,6 +2043,8 @@ export function validateUINode(raw: unknown, depth = 0): UINode | null {
         subtitle: asOptStr(raw.subtitle),
         cols,
         layout: raw.layout === "mosaic" || raw.layout === "masonry" ? raw.layout : undefined,
+        imageFit: raw.imageFit === "contain" || raw.imageFit === "cover" ? raw.imageFit : undefined,
+        aspect: ["video", "square", "natural"].includes(String(raw.aspect)) ? raw.aspect as "video" | "square" | "natural" : undefined,
         curated: raw.curated === true || undefined,
         filterable: typeof raw.filterable === "boolean" ? raw.filterable : items.some((i) => Boolean(i.category)),
         items,
@@ -2087,15 +2236,21 @@ export function validateUINode(raw: unknown, depth = 0): UINode | null {
           if (!isObj(t)) return null;
           const label = asOptStr(t.label || t.title || t.name);
           if (!label) return null;
+          // Models often put a component (or a list of them) in "content"/"panel" instead of "children".
+          const nodeLike = (v: unknown) => (isObj(v) ? [v] : Array.isArray(v) ? v : []);
           const children = asArr(t.children || t.blocks || t.components)
+            .concat(nodeLike(t.content), nodeLike(t.panel), nodeLike(t.node), nodeLike(t.body))
             .slice(0, MAX_CHILDREN)
             .map((c) => validateUINode(c, depth + 1))
             .filter((x): x is UINode => x !== null);
+          const content = typeof t.content === "string" ? t.content : typeof t.body === "string" ? t.body : asOptStr(t.markdown || t.text);
+          // A tab with nothing in it is just a dead button.
+          if (!children.length && !content?.trim()) return null;
           return {
             id: asOptStr(t.id || t.key) || `tab_${idx}`,
             label,
             badge: asOptStr(t.badge),
-            content: asOptStr(t.content || t.body || t.markdown),
+            content,
             children: children.length ? children : undefined,
           };
         })
@@ -2491,6 +2646,181 @@ export function salvageUIBlock(parsed: unknown, body: string): string | null {
 
 const FENCED_BLOCK_RE = /^ {0,3}((`|~)\2{2,})[ \t]*([^\r\n]*)\r?\n([\s\S]*?)(?:(^ {0,3}\1\2*[ \t]*)(?=\r?$)|(?![\s\S]))/gm;
 const UI_LANG_RE = /^(ui|senko-ui|json-ui)$/i;
+const PSEUDO_TAG_HEAD_RE = /^\[\s*(Profile|Stack|Card|Gallery|Send\s*Message(?:\s*Button)?|Button)\s*\]\s*(.*)$/i;
+
+/**
+ * Converts plain-text pseudo-UI markup emitted by smaller models (e.g. `[Profile] Name: Eevee ImageQuery: ...`,
+ * `[Stack] Attributes:`, `[Card] Evolution Lines:`, `[Gallery] ...`, `[ImageQuery: ...]`, `[Send Message Button] ...`)
+ * into a validated UINode tree so the built-in UI renderer displays real interactive components and verified images.
+ */
+export function parsePseudoUIMarkup(text: string): { before: string; node: UINode; after: string } | null {
+  if (!/\[\s*(?:Profile|Stack|Card|Gallery)\s*\]/i.test(text)) return null;
+  const lines = text.split(/\r?\n/);
+  const firstIdx = lines.findIndex((l) => PSEUDO_TAG_HEAD_RE.test(l.trim()));
+  if (firstIdx < 0) return null;
+
+  const before = lines.slice(0, firstIdx).join("\n").trim();
+  const blocks: { tag: string; header: string; lines: string[] }[] = [];
+  let trailingIdx = lines.length;
+
+  for (let i = firstIdx; i < lines.length; i++) {
+    const rawLine = lines[i].trim();
+    if (!rawLine) continue;
+    const m = PSEUDO_TAG_HEAD_RE.exec(rawLine);
+    if (m) {
+      blocks.push({ tag: m[1].toLowerCase().replace(/\s+/g, "_"), header: m[2].trim(), lines: [] });
+      continue;
+    }
+    if (blocks.length === 0) continue;
+    const current = blocks[blocks.length - 1];
+    // After a terminal button tag, non-bracket conversational sign-off belongs in `after`
+    if (current.tag.startsWith("send_message") || current.tag === "button") {
+      trailingIdx = i;
+      break;
+    }
+    current.lines.push(rawLine);
+  }
+
+  if (blocks.length === 0) return null;
+
+  let profileDraft: Record<string, unknown> | null = null;
+  const extraNodes: Record<string, unknown>[] = [];
+  const actions: Record<string, unknown>[] = [];
+
+  for (const b of blocks) {
+    if (b.tag === "profile") {
+      let header = b.header;
+      let rawImgQ: string | undefined;
+      const iqMatch = /\bImageQuery\s*:\s*(.+)$/i.exec(header);
+      if (iqMatch) {
+        rawImgQ = iqMatch[1].trim();
+        header = header.slice(0, iqMatch.index).trim();
+      }
+      const nameMatch = /^(?:Name\s*:\s*)?(.+)$/i.exec(header);
+      const name = (nameMatch?.[1] || "Profile").trim();
+      profileDraft = {
+        type: "profile",
+        name,
+        imageQuery: normalizeImageQuery(rawImgQ, name),
+        attributes: [] as { label: string; value: string }[],
+        relationships: [] as Record<string, unknown>[],
+        gallery: [] as Record<string, unknown>[],
+      };
+      for (const line of b.lines) {
+        const kv = /^([A-Za-z][A-Za-z0-9 _-]{1,28})\s*:\s*(.+)$/.exec(line);
+        if (kv) {
+          const k = kv[1].trim();
+          const v = kv[2].trim();
+          if (/^(description|bio|summary|overview)$/i.test(k)) profileDraft.bio = v;
+          else if (/^(subtitle|category|species|role)$/i.test(k)) profileDraft.subtitle = v;
+          else if (/^(series|universe|franchise)$/i.test(k)) profileDraft.series = v;
+          else (profileDraft.attributes as { label: string; value: string }[]).push({ label: k, value: v });
+        }
+      }
+    } else if (b.tag === "stack") {
+      const attrs: { label: string; value: string }[] = [];
+      let bio: string | undefined;
+      for (const line of b.lines) {
+        const kv = /^([A-Za-z][A-Za-z0-9 _-]{1,28})\s*:\s*(.+)$/.exec(line);
+        if (kv) {
+          const k = kv[1].trim();
+          const v = kv[2].trim();
+          if (/^(description|bio|summary|overview)$/i.test(k)) bio = v;
+          else attrs.push({ label: k, value: v });
+        }
+      }
+      if (profileDraft) {
+        if (bio && !profileDraft.bio) profileDraft.bio = bio;
+        (profileDraft.attributes as { label: string; value: string }[]).push(...attrs);
+      } else if (attrs.length) {
+        extraNodes.push({ type: "key_value", title: b.header.replace(/:$/, "").trim() || undefined, items: attrs });
+      }
+    } else if (b.tag === "card") {
+      const title = b.header.replace(/:$/, "").trim() || "Details";
+      const items: { name: string; role?: string; description?: string; imageQuery?: string }[] = [];
+      for (let i = 0; i < b.lines.length; i++) {
+        const line = b.lines[i];
+        const kv = /^([A-Za-z][A-Za-z0-9 _-]{1,28})\s*:\s*(.+)$/.exec(line);
+        if (kv) {
+          items.push({ name: kv[1].trim(), description: kv[2].trim() });
+          continue;
+        }
+        // Match glued `VaporeonWater-type` or `Vaporeon - Water-type` or `Vaporeon (Water-type)`
+        const glued = /^([A-Z][a-z0-9]+?)([A-Z][A-Za-z -]*type)\b(.*)$/.exec(line) || /^([A-Z][A-Za-z0-9 ]+?)\s*[-–—(]\s*([^)]+?)\)?$/.exec(line);
+        if (glued) {
+          const itemName = glued[1].trim();
+          const role = glued[2].trim();
+          const nextLine = b.lines[i + 1];
+          const nextIsDesc = nextLine && !/^([A-Z][a-z0-9]+?)([A-Z][A-Za-z -]*type)\b/.test(nextLine) && !/^\[/.test(nextLine);
+          const desc = nextIsDesc ? b.lines[++i] : undefined;
+          items.push({
+            name: itemName,
+            role,
+            description: desc,
+            imageQuery: normalizeImageQuery(itemName, profileDraft ? String(profileDraft.name) : undefined),
+          });
+        } else if (items.length > 0 && !items[items.length - 1].description) {
+          items[items.length - 1].description = line;
+        } else {
+          items.push({ name: line });
+        }
+      }
+      if (profileDraft && /evolution|related|family|forms|variations|connections/i.test(title) && items.length > 0) {
+        (profileDraft.relationships as Record<string, unknown>[]).push(...items);
+      } else if (items.length > 0) {
+        extraNodes.push({
+          type: "gallery",
+          title,
+          cols: 3,
+          items: items.map((it) => ({
+            title: it.name,
+            badge: it.role,
+            description: it.description,
+            imageQuery: it.imageQuery || normalizeImageQuery(it.name),
+          })),
+        });
+      }
+    } else if (b.tag === "gallery") {
+      const title = b.header.replace(/:$/, "").trim() || "Gallery";
+      const subjectName = profileDraft ? String(profileDraft.name) : title.replace(/\bimages?\b/i, "").trim() || "Artwork";
+      const variantHints = ["official artwork", "anime scene", "illustration", "concept art", "card art", "portrait"];
+      const gItems: { title: string; imageQuery: string }[] = [];
+      for (const [idx, line] of b.lines.entries()) {
+        const inner = line.replace(/^\[\s*(?:image_?query\s*:\s*)?/i, "").replace(/\]$/, "").trim();
+        const hint = variantHints[idx % variantHints.length];
+        const q = normalizeImageQuery(inner, `${subjectName} ${hint}`);
+        if (q) gItems.push({ title: `${subjectName} — ${hint}`, imageQuery: q });
+      }
+      if (gItems.length > 0) {
+        if (profileDraft) {
+          (profileDraft.gallery as Record<string, unknown>[]).push(...gItems);
+        }
+        extraNodes.push({ type: "gallery", title, cols: Math.min(3, gItems.length), items: gItems });
+      }
+    } else if (b.tag.startsWith("send_message") || b.tag === "button") {
+      const label = b.header || b.lines[0] || "Explore Further";
+      const subject = profileDraft ? String(profileDraft.name) : label;
+      actions.push({ type: "send_message", label, prompt: `Tell me more about ${subject}!` });
+    }
+  }
+
+  const children: Record<string, unknown>[] = [];
+  if (profileDraft) children.push(profileDraft);
+  children.push(...extraNodes);
+  if (actions.length > 0) {
+    children.push({
+      type: "controls",
+      stateKey: "action_bar",
+      controlType: "buttons",
+      actions,
+    });
+  }
+
+  const validated = validateUINode(children.length === 1 ? children[0] : { type: "stack", gap: "md", children });
+  if (!validated) return null;
+  const after = lines.slice(trailingIdx).join("\n").trim();
+  return { before, node: validated, after };
+}
 
 /**
  * Splits a message string into ordered segments of markdown, validated UI blocks,
@@ -2545,7 +2875,22 @@ export function parseMessageSegments(content: string, streaming = false): Messag
     if (tail) segments.push({ kind: "markdown", text: tail });
   }
 
-  return segments;
+  // Upgrade any markdown segment that contains un-fenced `[Profile]` / `[Stack]` / `[Card]` / `[Gallery]` pseudo-UI markup.
+  const upgraded: MessageSegment[] = [];
+  for (const seg of segments) {
+    if (seg.kind === "markdown" && !streaming) {
+      const pseudo = parsePseudoUIMarkup(seg.text);
+      if (pseudo) {
+        if (pseudo.before) upgraded.push({ kind: "markdown", text: pseudo.before });
+        upgraded.push({ kind: "ui", node: pseudo.node, raw: JSON.stringify(pseudo.node) });
+        if (pseudo.after) upgraded.push({ kind: "markdown", text: pseudo.after });
+        continue;
+      }
+    }
+    upgraded.push(seg);
+  }
+
+  return upgraded;
 }
 
 /**
@@ -2564,6 +2909,7 @@ export function extractUIImageQueries(content: string): string[] {
         }
         break;
       case "media_card":
+      case "figure":
         if (!node.imageUrl && node.imageQuery) queries.add(node.imageQuery);
         break;
       case "gallery":

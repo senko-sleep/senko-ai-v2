@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { CodingWorkspaceRuntime } from "@/lib/agent/coding-runtime";
+import { CodingWorkspaceRuntime, resetVerificationLedger } from "@/lib/agent/coding-runtime";
 import { codingRequirements } from "@/lib/agent/coding-playbooks";
 import { completionBlockers } from "@/lib/code-job";
 
@@ -57,5 +57,13 @@ describe("primary playback acceptance", () => {
     expect(inspection.mediaPlayback?.[0].verified).toBe(true);
     expect(inspection.mediaPlayback?.[0].advancedSeconds).toBeGreaterThan(0.2);
     expect(inspection.mediaPlayback?.[0].muted).toBe(false);
+    resetVerificationLedger(runtime.chatId, path.dirname(runtime.workspaceDir));
+    const reader = new CodingWorkspaceRuntime(runtime.chatId, path.dirname(runtime.workspaceDir));
+    await reader.listFiles(); await reader.refreshPersistedEvidence();
+    expect(reader.ledger.browserInspections.at(-1)?.mediaPlayback?.[0].verified).toBe(true);
+    await reader.writeFile("index.html", "<!doctype html><title>Changed source</title>");
+    await reader.listFiles(); await reader.refreshPersistedEvidence();
+    expect(reader.ledger.browserInspections.at(-1)?.passed).toBe(false);
+    expect(reader.ledger.browserInspections.at(-1)?.mediaPlayback?.[0].verified).toBe(false);
   }, 30_000);
 });
