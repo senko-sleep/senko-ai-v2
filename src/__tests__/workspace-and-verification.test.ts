@@ -74,6 +74,16 @@ describe("universal bot-verification classifier (classifyBotChallenge)", () => {
     });
     expect(res).toBeNull();
   });
+
+  it("leaves a normal form with an embedded Turnstile widget alone", () => {
+    expect(classifyBotChallenge({
+      url: "https://example.com/contact",
+      title: "Contact us",
+      bodyText: "Your email\nMessage\nSend",
+      hasChallengeWidget: true,
+      challengeProviderHint: "cloudflare",
+    })).toBeNull();
+  });
 });
 
 describe("extractTrustCookies", () => {

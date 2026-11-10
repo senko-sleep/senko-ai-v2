@@ -41,6 +41,7 @@ export type BrowserAction =
   | { action: "screenshot"; label?: string }
   | { action: "fetch_image"; url: string; alt?: string }
   | { action: "send_images"; ids?: string[] }
+  | { action: "send_video"; index?: number }
   | { action: "make_collage"; ids?: string[]; label?: string }
   | { action: "examine_images"; description: string; click?: boolean }
   | { action: "done"; answer: string; url?: string };
@@ -95,6 +96,7 @@ export function parseBrowserDecision(text: string): BrowserDecision | null {
     case "desmos": valid = ["set", "add", "clear"].includes(String(raw.op)) && optional("expressions", () => strings("expressions")); break;
     case "screenshot": valid = optional("label", () => str("label")); break;
     case "send_images": case "make_collage": valid = optional("ids", () => strings("ids")); break;
+    case "send_video": valid = optional("index", () => id("index")); break;
     case "examine_images": valid = str("description") && optional("click", () => typeof raw!.click === "boolean"); break;
     case "done": valid = str("answer"); break;
     case "back": case "dismiss": case "clear_stash": valid = true; break;

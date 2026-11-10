@@ -1,8 +1,10 @@
 // Wasmer's Next bundle does not run src/proxy.ts, so browser endpoints also
 // forward here at the route level. The upstream keeps the real Playwright
-// session, its SSE frames, cursor events, and user input on one agent host:
+// session, frames, cursor events, and user input on one agent host:
 //   AGENT_HOST=sandbox   -> the Vercel Sandbox "agent computer" (needs VERCEL_TOKEN/TEAM/PROJECT off Vercel)
 //   AGENT_BACKEND_URL    -> another deploy that runs Chromium (e.g. the Docker image)
+import { LIVE_BINARY_TYPE } from "@/lib/live-wire";
+
 const BROWSER_PATH = /^\/api\/(chats\/[^/]+\/agent(?:\/.*)?|sessions\/.*)$/;
 
 async function upstreamBase(pathname: string): Promise<string | Response | null> {
@@ -46,10 +48,10 @@ export async function forwardAgentRequest(req: Request): Promise<Response | null
     responseHeaders.append(k, v);
   }
   const type = upstream.headers.get("content-type") || "";
-  if (!/event-stream/i.test(type) || !upstream.body) {
+  if ((!/event-stream/i.test(type) && !type.startsWith(LIVE_BINARY_TYPE)) || !upstream.body) {
     return new Response(await upstream.arrayBuffer(), { status: upstream.status, headers: responseHeaders });
   }
-  // SSE (agent events, live-view frames): re-stream chunk by chunk so it stays live.
+  // Re-stream events and binary live frames chunk by chunk.
   const reader = upstream.body.getReader();
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
@@ -65,7 +67,7 @@ export async function forwardAgentRequest(req: Request): Promise<Response | null
       return reader.cancel(reason);
     },
   });
-  responseHeaders.set("cache-control", "no-cache, no-store");
+  responseHeaders.set("cache-control", "no-cache, no-store, no-transform");
   responseHeaders.set("x-accel-buffering", "no");
   return new Response(body, { status: upstream.status, headers: responseHeaders });
 }

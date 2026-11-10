@@ -5,7 +5,7 @@ import { appendInput, pagePoint, type BrowserInput } from "@/lib/live-input";
 // High-rate live events (frames, cursor) skip React state entirely: the stream pushes them
 // onto this tiny bus and the LiveView draws them straight to a canvas / moves the cursor.
 export type LiveEvent =
-  | { type: "frame"; data: string; width: number; height: number; epoch?: number }
+  | { type: "frame"; data: string | Blob; width: number; height: number; epoch?: number }
   | { type: "cursor"; x: number; y: number; kind: "move" | "click"; box?: { x: number; y: number; w: number; h: number } | null; width: number; height: number }
   | { type: "pointer"; cursor: string }
   | { type: "audio"; id: string; seq?: number; data?: string; end?: boolean }
@@ -139,7 +139,7 @@ export const LiveView = memo(function LiveView({
       // JPEGs are opaque; clear letterboxing only when geometry changes.
       ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.imageSmoothingQuality = "high";
+      ctx.imageSmoothingQuality = "low";
     };
 
     const draw = () => {
@@ -149,7 +149,7 @@ export const LiveView = memo(function LiveView({
     };
 
     const decoder = createFrameDecoder<Extract<LiveEvent, { type: "frame" }>, ImageBitmap>(
-      frame => createImageBitmap(b64ToBlob(frame.data)),
+      frame => createImageBitmap(typeof frame.data === "string" ? b64ToBlob(frame.data) : frame.data),
       (next, frame) => {
         bitmap?.close();
         bitmap = next;
@@ -278,7 +278,7 @@ export const LiveView = memo(function LiveView({
       reportTimer = setTimeout(() => {
         const r = wrap.getBoundingClientRect();
         const w = Math.round(r.width), h = Math.round(r.height);
-        if (w < 200 || h < 150 || `${w}x${h}` === reported) return;
+        if (w < 200 || h < 120 || `${w}x${h}` === reported) return;
         reported = `${w}x${h}`;
         // Pages get a desktop-width viewport (~1280 CSS px) shown scaled down to the panel,
         // like a normal browser window zoomed out, instead of a cramped tablet layout.
@@ -331,6 +331,7 @@ export const LiveView = memo(function LiveView({
     let inputRaf = 0;
     let hoverTimer: ReturnType<typeof setTimeout> | undefined;
     let pressed: { button: "left" | "right" | "middle"; x: number; y: number; clickCount: number } | null = null;
+    let touch: { id: number; x: number; y: number; scrolling: boolean } | null = null;
     const flush = () => {
       cancelAnimationFrame(inputRaf); inputRaf = 0;
       clearTimeout(hoverTimer); hoverTimer = undefined;
@@ -338,6 +339,19 @@ export const LiveView = memo(function LiveView({
     };
     const queue = () => { if (!inputRaf) inputRaf = requestAnimationFrame(flush); };
     const onPointerMove = (e: PointerEvent) => {
+      if (e.pointerType === "touch") {
+        if (!touch || touch.id !== e.pointerId) return;
+        const dx = touch.x - e.clientX;
+        const dy = touch.y - e.clientY;
+        if (!touch.scrolling && Math.hypot(dx, dy) < 8) return;
+        const p = toPage(e.clientX, e.clientY, true);
+        if (!p) return;
+        const { fit, vp } = geomRef.current;
+        touch = { id: e.pointerId, x: e.clientX, y: e.clientY, scrolling: true };
+        appendInput(continuous, { type: "wheel", dx: dx * vp.w / fit.w, dy: dy * vp.h / fit.h, ...p });
+        queue();
+        return;
+      }
       const p = toPage(e.clientX, e.clientY, !!pressed);
       if (p) {
         appendInput(continuous, { type: "move", ...p });
@@ -353,6 +367,12 @@ export const LiveView = memo(function LiveView({
       const p = toPage(e.clientX, e.clientY);
       if (!p) return;
       e.preventDefault();
+      if (e.pointerType === "touch") {
+        if (touch) return;
+        touch = { id: e.pointerId, x: e.clientX, y: e.clientY, scrolling: false };
+        wrap.setPointerCapture(e.pointerId);
+        return;
+      }
       (keyboardRef.current || wrap).focus({ preventScroll: true });
       flush();
       pressed = { ...p, button: e.button === 2 ? "right" : e.button === 1 ? "middle" : "left", clickCount: Math.min(3, e.detail || 1) };
@@ -360,7 +380,24 @@ export const LiveView = memo(function LiveView({
       onInput({ type: "down", ...pressed });
     };
     const release = () => { if (pressed) { flush(); onInput({ type: "up", ...pressed }); pressed = null; } };
+    const cancelPointer = (e: PointerEvent) => {
+      if (e.pointerType !== "touch") release();
+      else if (touch?.id === e.pointerId) {
+        touch = null;
+        flush();
+      }
+    };
     const onPointerUp = (e: PointerEvent) => {
+      if (e.pointerType === "touch") {
+        if (!touch || touch.id !== e.pointerId) return;
+        const p = !touch.scrolling && toPage(e.clientX, e.clientY);
+        cancelPointer(e);
+        if (p) {
+          (keyboardRef.current || wrap).focus({ preventScroll: true });
+          onInput({ type: "click", ...p });
+        }
+        return;
+      }
       const p = toPage(e.clientX, e.clientY, true);
       if (pressed && p) pressed = { ...pressed, ...p };
       release();
@@ -413,6 +450,7 @@ export const LiveView = memo(function LiveView({
     };
     const discard = () => {
       pressed = null;
+      touch = null;
       continuous.length = 0;
       cancelAnimationFrame(inputRaf); inputRaf = 0;
       clearTimeout(hoverTimer); hoverTimer = undefined;
@@ -421,8 +459,8 @@ export const LiveView = memo(function LiveView({
     wrap.addEventListener("pointermove", onPointerMove);
     wrap.addEventListener("pointerdown", onPointerDown);
     wrap.addEventListener("pointerup", onPointerUp);
-    wrap.addEventListener("pointercancel", release);
-    wrap.addEventListener("lostpointercapture", release);
+    wrap.addEventListener("pointercancel", cancelPointer);
+    wrap.addEventListener("lostpointercapture", cancelPointer);
     wrap.addEventListener("focusout", release);
     wrap.addEventListener("click", onClick);
     wrap.addEventListener("contextmenu", onContext);
@@ -431,7 +469,9 @@ export const LiveView = memo(function LiveView({
     wrap.addEventListener("paste", onPaste);
     wrap.addEventListener("compositionend", onCompositionEnd);
     wrap.addEventListener("input", onTextInput);
-    if (document.activeElement?.hasAttribute("data-browser-control")) keyboardRef.current?.focus({ preventScroll: true });
+    if (document.activeElement?.hasAttribute("data-browser-control") && !matchMedia("(pointer: coarse)").matches) {
+      keyboardRef.current?.focus({ preventScroll: true });
+    }
     return () => {
       // The server releases held buttons on takeover/stream close. Emitting here
       // could send old-view input into the chat that just replaced this component.
@@ -440,8 +480,8 @@ export const LiveView = memo(function LiveView({
       wrap.removeEventListener("pointermove", onPointerMove);
       wrap.removeEventListener("pointerdown", onPointerDown);
       wrap.removeEventListener("pointerup", onPointerUp);
-      wrap.removeEventListener("pointercancel", release);
-      wrap.removeEventListener("lostpointercapture", release);
+      wrap.removeEventListener("pointercancel", cancelPointer);
+      wrap.removeEventListener("lostpointercapture", cancelPointer);
       wrap.removeEventListener("focusout", release);
       wrap.removeEventListener("click", onClick);
       wrap.removeEventListener("contextmenu", onContext);

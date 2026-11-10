@@ -1,4 +1,7 @@
 import type { BrowserCommand } from "@/lib/browser-commands";
+import type { ChatVideo } from "@/lib/chat-video";
+import type { ComicCard } from "@/lib/comics/types";
+import type { SearchCard } from "@/lib/search/types";
 
 export type Mode = "chat" | "agent";
 
@@ -20,6 +23,12 @@ export interface Msg {
   provider?: string;
   /** Attached images (ids served by /api/uploads/:id). */
   imageIds?: string[];
+  /** Videos the agent sent into the chat. */
+  videos?: ChatVideo[];
+  /** In-chat comic reader card. */
+  comic?: ComicCard;
+  /** Real web search results. */
+  search?: SearchCard;
   /** Senko's mood line for this reply. */
   mood?: string;
   /** Images scraped from many engines for an image request (first batch). */
@@ -73,6 +82,9 @@ export interface StoredMessage {
     scrapedImages?: ScrapedImage[];
     imageQuery?: string;
     uiImages?: Record<string, string[]>;
+    videos?: ChatVideo[];
+    comic?: ComicCard;
+    search?: SearchCard;
     thinking?: { steps: AgentStep[]; thoughts?: string; ms?: number };
   };
 }
@@ -88,6 +100,9 @@ export function fromStored(m: StoredMessage): Msg {
     role: m.role,
     content,
     imageIds: m.imageIds,
+    videos: meta.videos?.length ? meta.videos : undefined,
+    comic: meta.comic,
+    search: meta.search,
     error: meta.error && !m.content ? meta.error : undefined,
     actions: meta.actions,
     suggestAgent: meta.suggestAgent,

@@ -28,6 +28,7 @@ import { consumeApproval, requestApproval, type ApprovalRequest } from "./approv
 import { withTimeout } from "./timeouts";
 import { BrowserFormatRecovery, parseAgentObject, parseBrowserDecision, type BrowserAction as Action } from "./action-protocol";
 import { InferenceBudgetExceeded, InferenceRequestBudget } from "@/lib/llm/request-budget";
+import { findPageVideos, type ChatVideo } from "./page-videos";
 import { confidentTarget, imageSelectionState, resolveVisualTarget } from "./visual-target";
 
 export type RunEvent =
@@ -36,6 +37,8 @@ export type RunEvent =
   | { type: "step"; id: number; label: string; status: "running" | "done" | "error"; detail?: string; url?: string }
   | { type: "page"; page: PageSnap }
   | { type: "images"; imageIds: string[] }
+  /** Videos the agent sent to the chat (all of them so far). */
+  | { type: "videos"; videos: ChatVideo[] }
   | { type: "done"; answer: string; url?: string; imageIds: string[]; provider?: string; model?: string }
   /** takeover = you took control; quota = AI limits used up; stuck = no progress. Resume continues from the last step. */
   | { type: "paused"; reason: string; kind?: "takeover" | "quota" | "stuck" | "approval"; approval?: ApprovalRequest }
@@ -96,6 +99,16 @@ const g = globalThis as unknown as { __agentRuns2?: Map<string, ActiveRun>; __pa
 const runs = (g.__agentRuns2 ??= new Map());
 const pausedGoals = (g.__pausedGoals ??= new Map());
 
+/** The user asked to skip (not solve) sites that put up a captcha or human-verification check. */
+export function wantsVerificationSkipped(goal: string): boolean {
+  const check = String.raw`(?:captchas?|re-?captchas?|cloudflare|turnstile|human (?:verification|check)|verif(?:y|ication)(?: checks?)?|bot checks?|robot checks?)`;
+  return (
+    new RegExp(String.raw`\b(?:skip|avoid|ignore|leave|move on from|go past|bypass|don'?t (?:do|solve|fill|bother))\b[^.?!\n]{0,40}\b${check}`, "i").test(goal) ||
+    new RegExp(String.raw`\b${check}\b[^.?!\n]{0,60}\b(?:skip|avoid|move on|try (?:another|a different|the next)|go (?:to )?(?:another|elsewhere))\b`, "i").test(goal) ||
+    new RegExp(String.raw`\b(?:no|without)\s+${check}`, "i").test(goal)
+  );
+}
+
 export function registerRun(chatId: string, goal: string): AbortController {
   runs.get(chatId)?.ctl.abort("replaced");
   const ctl = new AbortController();
@@ -147,7 +160,7 @@ interface Observation {
   url: string;
   title: string;
   elements: ObservedElement[];
-  images: { url: string; alt: string; col: number; row: number }[];
+  images: { url: string; alt: string; col: number; row: number; animated?: boolean }[];
   text: string;
   /** Page text outside the viewport (start of the page), when it adds something. */
   pageText?: string;
@@ -316,7 +329,7 @@ function formatObservation(o: Observation): string {
     o.app ? `Desmos expressions on this page (this is the truth about what is graphed):\n${o.app}` : "",
     `Interactive elements (@x,y = center in the viewport; off-screen ones can be clicked directly, they scroll into view):\n${els || "(none visible)"}`,
     o.a11y ? `ARIA Accessibility Tree (semantic landmarks, roles, states, and [id] references):\n${o.a11y}` : "",
-    `Visible images (use exact URLs; col/row = approx grid position 0-3 from top-left):\n${o.images.map((img, i) => `  [img${i}] col=${img.col} row=${img.row} alt="${img.alt}" url=${img.url}`).join("\n") || "(none)"}`,
+    `Visible images (use exact URLs; col/row = approx grid position 0-3 from top-left):\n${o.images.map((img, i) => `  [img${i}] col=${img.col} row=${img.row} alt="${img.alt}"${img.animated ? " GIF (animated)" : ""} url=${img.url}`).join("\n") || "(none)"}`,
     `Visible text (on screen now):\n${o.text.slice(0, 1400)}${o.atBottom ? "\n(end of page)" : ""}`,
     o.pageText ? `Other page text (top of the page, off screen):\n${o.pageText.slice(0, 900)}` : "",
   ]
@@ -356,8 +369,9 @@ Actions:
 {"action":"desmos","op":"set","expressions":["x^2+y^2+z^2=4"]}  on a Desmos page, write expressions directly as LaTeX: "set" replaces everything, "add" appends, "clear" empties the graph. Much more reliable than typing; the result lists each expression and any Desmos ERROR so you can fix it.
 {"action":"dismiss"}                                  close cookie banners / overlays / modals blocking the page
 {"action":"screenshot","label":"..."}                 save a screenshot to show the user
-{"action":"fetch_image","url":"https://...","alt":"description"} download an image into the session stash. Use direct media URLs (.jpg/.png/.webp) from the images list.
+{"action":"fetch_image","url":"https://...","alt":"description"} download an image into the session stash. Use direct media URLs (.jpg/.png/.webp/.gif) from the images list. For GIFs, fetch the .gif itself (marked GIF in the list), not a still preview, so it stays animated in the chat.
 {"action":"send_images","ids":["img_..."]} attach selected stashed images to this chat as separate images (omit ids for all stashed images). fetch_image alone does not send images. Use this for "send both images"; a collage is a different deliverable.
+{"action":"send_video"}                               put the video on the current page into the chat so the user can watch it there (works on any site: player, embed or stream). Open the video's own page first; "index":2 picks the second video on the page. Use this whenever the user wants a video "in chat" / "sent" / "here" — a link alone is not sending it.
 {"action":"make_collage","ids":["img_..."],"label":"label"} combine stashed images into a single collage (omit ids to use all stashed images).
 {"action":"clear_stash"}                             delete all stashed images for this session
 {"action":"examine_images","description":"anya forger drinking"} look at every image on screen with vision AI and CLICK the one that best matches the description (add "click":false to only identify it). Pass the user's own words (e.g. "the green one"). Use this when the user names a specific image by visual content (e.g. "the one where Anya is drinking", "the sad one", "click the gif of her cooking").
@@ -370,7 +384,8 @@ Rules:
 - Quality check every step: if the previous step didn't work (wrong page, error, pop-up, video not actually playing), set check.ok=false and try again or another approach. Don't repeat an action that failed twice.
 - For "play" goals: the job isn't done until Video says PLAYING. If it isn't, try the play button, dismiss overlays, or click the video.
 - Unexpected pop-ups/new tabs are closed automatically; use dismiss for in-page overlays and ads.
-- If a login, paywall or captcha blocks you, don't invent credentials: finish with done, say exactly what's needed, and give the URL.
+- If a login, paywall or captcha blocks you, don't invent credentials: finish with done, say exactly what's needed, and give the URL. When the user said to skip captcha sites, or other sites can serve the goal, go to another site instead.
+- Take the shortest route: when you know a site that serves the goal, goto its search or listing URL directly instead of searching Google and clicking through.
 - DESMOS: use the desmos action (LaTeX) instead of clicking and typing. Desmos 3D (https://www.desmos.com/3d) handles 3D: implicit surfaces like x^2+y^2+z^2=4, parametric surfaces (x(u,v),y(u,v),z(u,v)) with u,v in 0..1, restrictions in braces, sliders, lists and recursive functions (e.g. M(p,c,n)=\left\{n=0:p,B(M(p,c,n-1))+c\right\} on points). Fractals work as point clouds: build a grid with [(a,b,c) for a=G,b=G,c=G] (lists max 10,000 items, so ~21 values per axis) and keep the points that stay bounded. Function names must be 2+ letters or a capital letter (r, t, x, y, z are reserved). Ambitious requests (fractals, animations) are worth a real attempt: build the best version you can (a simpler or approximate one beats none), check the reported errors, fix them, and explain any limitation in your answer.
 - NEVER claim something is on the page, graphed, deleted or done unless the current page state or screenshot shows it. Never say a task is impossible without having tried it.
 - EDITORS & MATH TOOLS (GeoGebra, code editors, docs): click the box, then type the way a person types on a keyboard, not LaTeX. In Desmos/MathQuill: "^" starts an exponent and "/" starts a fraction (press ArrowRight to leave them), type "<=" for ≤, "sqrt" for √, "pi" for π, and limit a shape with braces (a square face in 3D: z=0{-1<=x<=1}{-1<=y<=1}); type several expressions in one go separated by "\\n" (each Enter makes a new line) with submit:false. Desmos has a real 3D calculator at https://www.desmos.com/3d (use it for anything 3D). Check the screenshot after typing and fix mistakes.
@@ -460,6 +475,8 @@ function describe(a: Action, obs: Observation | null): string {
       return "Building image collage";
     case "send_images":
       return "Attaching selected images to chat";
+    case "send_video":
+      return "Sending the video to chat";
     case "clear_stash":
       return "Clearing image stash";
     case "examine_images":
@@ -485,6 +502,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
   let session: BrowserSession | null = null;
   const imageIds: string[] = [...(ck?.imageIds || [])];
   const deliveredStash = new Map<string, string>(ck?.deliveredImages || []);
+  const sentVideos: ChatVideo[] = [];
   const requestBudget = new InferenceRequestBudget(Math.min(100, Math.max(1, Number(process.env.AGENT_MAX_INFERENCE_REQUESTS) || 32)));
   const formatRecovery = new BrowserFormatRecovery();
   const aborted = () => signal.aborted;
@@ -663,6 +681,10 @@ export async function runAgent(opts: RunOptions): Promise<void> {
 
   // Site memory: what worked before on the sites this task touches (validated per page).
   const goalHosts = hostsInGoal(goal);
+  // "If there's a captcha, skip that site": a verification page sends the agent elsewhere
+  // instead of pausing for the user.
+  const skipVerification = wantsVerificationSkipped(goal);
+  const skippedHosts = new Set<string>();
   let memRows: MemoryRow[] = [];
   const siteMemory = async (obs: Observation | null): Promise<string> => {
     const hosts = obs ? [hostOf(obs.url)] : goalHosts;
@@ -1059,6 +1081,11 @@ export async function runAgent(opts: RunOptions): Promise<void> {
               result = "Blocked: private/internal network addresses can't be opened from the server's browser.";
               break;
             }
+            if (skippedHosts.has(hostOf(url))) {
+              ok = false;
+              result = `Skipped: ${hostOf(url)} asked for human verification earlier and the user said to skip such sites. Use a different site.`;
+              break;
+            }
             const resp = await p.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
             const code = resp?.status() || 0;
             result = code >= 400 ? `Loaded ${host(p.url())} but the server answered HTTP ${code}` : `Opened ${host(p.url())}`;
@@ -1394,6 +1421,21 @@ export async function runAgent(opts: RunOptions): Promise<void> {
             result = `Attached ${ids.length} selected image${ids.length === 1 ? "" : "s"} to this chat as separate saved images.`;
             break;
           }
+          case "send_video": {
+            const found = await findPageVideos(p).catch(() => [] as ChatVideo[]);
+            const pick = found[(Number(d.index) || 1) - 1];
+            if (!pick) {
+              ok = false;
+              result = found.length
+                ? `Only ${found.length} video${found.length === 1 ? "" : "s"} on this page; use a lower index.`
+                : "No playable video on this page. Open the video's own page (click the thumbnail), press play if needed, then send_video again.";
+              break;
+            }
+            if (!sentVideos.some((v) => v.src === pick.src)) sentVideos.push(pick);
+            emit({ type: "videos", videos: [...sentVideos] });
+            result = `Sent the video to the chat (${pick.kind === "embed" ? "embedded player" : pick.kind === "hls" ? "stream" : "video file"} from ${hostOf(pick.pageUrl || pick.src)}). The user can watch it there now.`;
+            break;
+          }
           case "clear_stash":
             clearStash(chatId);
             result = "Stash cleared.";
@@ -1517,7 +1559,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
             ok = false;
             result = `Unknown action "${(d as { action: string }).action}"`;
         }
-        if (!["wait", "screenshot", "switch_tab", "close_tab", "fetch_image", "send_images", "make_collage", "clear_stash"].includes(d.action) && !(d.action === "examine_images" && (d.click === false || !ok))) {
+        if (!["wait", "screenshot", "switch_tab", "close_tab", "fetch_image", "send_images", "send_video", "make_collage", "clear_stash"].includes(d.action) && !(d.action === "examine_images" && (d.click === false || !ok))) {
           const active = s.active();
           let navigated = nav.started || active !== p || active.url() !== urlBefore || ["goto", "search", "image_search", "back", "new_tab"].includes(d.action);
           await settle(active, navigated);
@@ -1531,8 +1573,20 @@ export async function runAgent(opts: RunOptions): Promise<void> {
               : " — Google showed a robot check that wasn't solved. Use the search action (it falls back to Bing) or go to the site directly.";
             if (!solved) ok = false;
           } else {
-            const challenge = await detectPageBotChallenge(s.active());
-            if (challenge) {
+            let challenge = await detectPageBotChallenge(s.active());
+            // A check that clears itself (a plain Cloudflare "just a moment") gets a few seconds first.
+            for (let i = 0; challenge?.autoResolvable && skipVerification && i < 3; i++) {
+              await new Promise((r) => setTimeout(r, 1500));
+              challenge = await detectPageBotChallenge(s.active()).catch(() => challenge);
+            }
+            if (challenge && skipVerification) {
+              skippedHosts.add(challenge.host);
+              recordUrlOutcome(ownerId, memRows, s.active().url(), false, "human verification required");
+              await s.active().goBack({ waitUntil: "domcontentloaded", timeout: 10_000 }).catch(() => {});
+              ok = false;
+              result += ` — ${challenge.host} asked for human verification, so it was skipped as the user asked. Went back; pick a different site (not ${[...skippedHosts].join(", ")}).`;
+              emit({ type: "status", text: `Skipped ${challenge.host} (verification required)` });
+            } else if (challenge) {
               stopGuard();
               stopGuard = () => {};
               const solved = await handOffBotChallenge(s, challenge, signal, (text) => emit({ type: "status", text }));

@@ -141,13 +141,14 @@ async function shrink(file: File, max = 1600): Promise<string> {
 }
 
 let hostReadyUntil = 0;
-let hostWaking: Promise<void> | null = null;
+let hostVersion = 0;
+let hostWaking: Promise<number> | null = null;
 /**
  * On Vercel the agent's browser runs on a separate on-demand computer. Wake it (or confirm
  * it's up) before agent work. Instant when it's already running or not needed.
  */
-export function ensureAgentHost(): Promise<void> {
-  if (Date.now() < hostReadyUntil) return Promise.resolve();
+export function ensureAgentHost(): Promise<number> {
+  if (Date.now() < hostReadyUntil) return Promise.resolve(hostVersion);
   if (!hostWaking) {
     hostWaking = (async () => {
       // A cold boot can outlast the host's gateway timeout (an HTML 502/504) while the server
@@ -160,6 +161,8 @@ export function ensureAgentHost(): Promise<void> {
       if (!res.ok) throw new Error(await errorFromResponse(res));
       const j = (await res.json()) as { mode: string; expiresAt?: number };
       hostReadyUntil = j.mode === "direct" ? Date.now() + 3600_000 : Math.min(Date.now() + 60_000, (j.expiresAt || 0) - 5 * 60_000);
+      hostVersion = j.expiresAt ?? 0;
+      return hostVersion;
     })().finally(() => {
       hostWaking = null;
     });

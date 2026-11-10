@@ -71,14 +71,33 @@ async function download(raw: string, signal: AbortSignal, hops = 0): Promise<Buf
   return Buffer.concat(chunks);
 }
 
+/**
+ * Shrink to at most 1080px as WebP. GIFs and animated WebPs keep every frame (WebP animates),
+ * so they still move in the chat; a huge animation falls back to its first frame.
+ */
+export async function toWebp(input: Buffer) {
+  const still = () =>
+    sharp(input, { limitInputPixels: 24_000_000 })
+      .timeout({ seconds: 3 }).rotate().resize(1080, 1080, { fit: "inside", withoutEnlargement: true })
+      .webp({ quality: 83 }).toBuffer({ resolveWithObject: true });
+  const pages = await sharp(input).metadata().then((m) => m.pages || 1, () => 1);
+  if (pages <= 1) return still();
+  try {
+    return await sharp(input, { animated: true, limitInputPixels: 120_000_000 })
+      .timeout({ seconds: 8 }).resize(720, 720, { fit: "inside", withoutEnlargement: true })
+      .webp({ quality: 75, effort: 2 }).toBuffer({ resolveWithObject: true });
+  } catch {
+    return still();
+  }
+}
+
 async function verify(candidate: ScrapedImage, signal: AbortSignal): Promise<VerifiedImage | undefined> {
   try {
     const input = await download(candidate.url, AbortSignal.any([signal, AbortSignal.timeout(4_500)]));
     signal.throwIfAborted();
-    const decoded = sharp(input, { limitInputPixels: 24_000_000 })
-      .timeout({ seconds: 3 }).rotate().resize(1080, 1080, { fit: "inside", withoutEnlargement: true });
-    const { data, info } = await decoded.webp({ quality: 83 }).toBuffer({ resolveWithObject: true });
-    if (info.width < 120 || info.height < 120) return;
+    const { data, info } = await toWebp(input);
+    const height = info.pageHeight || info.height;
+    if (info.width < 120 || height < 120) return;
     const pixels = await sharp(data).resize(9, 8, { fit: "fill" }).flatten().greyscale().raw().toBuffer();
     let fingerprint = BigInt(0);
     for (let row = 0; row < 8; row++) {
@@ -86,7 +105,7 @@ async function verify(candidate: ScrapedImage, signal: AbortSignal): Promise<Ver
         fingerprint = (fingerprint << BigInt(1)) | BigInt(pixels[row * 9 + col] > pixels[row * 9 + col + 1]);
       }
     }
-    return { candidate, data, width: info.width, height: info.height, fingerprint };
+    return { candidate, data, width: info.width, height, fingerprint };
   } catch {
     return undefined;
   }

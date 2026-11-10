@@ -22,6 +22,12 @@ export interface MessageMeta {
   imageQuery?: string;
   /** Pre-resolved image URLs keyed by imageQuery for dynamic UI components. */
   uiImages?: Record<string, string[]>;
+  /** Videos the agent sent into the chat. */
+  videos?: import("@/lib/chat-video").ChatVideo[];
+  /** The in-chat comic reader card (site picker, top results, or the reader). */
+  comic?: import("@/lib/comics/types").ComicCard;
+  /** Real web search results shown as a results card. */
+  search?: import("@/lib/search/types").SearchCard;
   /** What Senko did and thought before answering (the "Thought for Ns" dropdown). */
   thinking?: {
     steps: { id: number; label: string; status: "running" | "done" | "error"; detail?: string; url?: string }[];

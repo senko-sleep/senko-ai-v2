@@ -66,7 +66,7 @@ try {
   const link = await call(`/api/sessions/${id}/live`);
   if (link.body.url) {
     const direct = new URL(link.body.url); direct.pathname = direct.pathname.replace(/\/stream$/, "/input");
-    const r = await fetch(direct, { method: "POST", headers: { "content-type": "text/plain" }, body: JSON.stringify({ events: [{ type: "wheel", dy: 10 }], epoch: latest.epoch, control: latest.control, sessionId: latest.sessionId, protocol: 2 }), signal: ctl.signal });
+    const r = await fetch(direct, { method: "POST", headers: { "content-type": "text/plain", authorization: `SenkoLive ${direct.searchParams.get("t")}` }, body: JSON.stringify({ events: [{ type: "wheel", dy: 10 }], epoch: latest.epoch, control: latest.control, sessionId: latest.sessionId, protocol: 2 }), signal: ctl.signal });
     assert.equal(r.status, 200, "Signed direct input must also work"); report.directInput = true;
   }
   assert(frames > 0 && cursors > 0);

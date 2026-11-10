@@ -19,9 +19,11 @@ export function Composer({
   onStop,
   busy,
   mode,
+  followUp = false,
   attachments,
   onAddFiles,
   onRemoveAttachment,
+  onFocusChange,
   inputRef,
   footer,
 }: {
@@ -31,9 +33,11 @@ export function Composer({
   onStop: () => void;
   busy: boolean;
   mode: Mode;
+  followUp?: boolean;
   attachments: Attachment[];
   onAddFiles: (files: File[]) => void;
   onRemoveAttachment: (key: string) => void;
+  onFocusChange?: (focused: boolean) => void;
   inputRef: RefObject<HTMLTextAreaElement | null>;
   footer?: React.ReactNode;
 }) {
@@ -144,7 +148,7 @@ export function Composer({
         <button
           type="button"
           onClick={() => fileRef.current?.click()}
-          className="sk-btn h-7 w-7 shrink-0 rounded-lg text-[var(--sk-muted)] hover:text-[var(--sk-text)]"
+          className="sk-btn sk-composer-action h-7 w-7 shrink-0 rounded-lg text-[var(--sk-muted)] hover:text-[var(--sk-text)]"
           aria-label="Attach images, documents, or 3D models"
           title="Attach images, PDFs, documents, or 3D models (.obj)"
         >
@@ -155,6 +159,8 @@ export function Composer({
           ref={inputRef}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          onFocus={() => onFocusChange?.(true)}
+          onBlur={() => onFocusChange?.(false)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
@@ -169,7 +175,7 @@ export function Composer({
             }
           }}
           rows={1}
-          placeholder={mode === "agent" ? "Describe a browser task for Senko…" : "Message Senko…"}
+          placeholder={mode === "agent" ? (followUp ? (busy ? "Draft your next message…" : "Ask Senko what to do next…") : "Describe a browser task for Senko…") : "Message Senko…"}
           aria-label="Message"
           className="sk-scroll block max-h-[160px] min-h-[28px] flex-1 resize-none bg-transparent py-1 text-[13.5px] leading-snug text-[var(--sk-text)] outline-none placeholder:text-[var(--sk-faint)] focus-visible:shadow-none"
         />
@@ -180,7 +186,7 @@ export function Composer({
             <button
               type="button"
               onClick={onStop}
-              className="sk-btn h-7 w-7 rounded-lg bg-[var(--sk-text)] text-[var(--sk-bg)] hover:bg-[var(--sk-text)] hover:opacity-90"
+              className="sk-btn sk-composer-action h-7 w-7 rounded-lg bg-[var(--sk-text)] text-[var(--sk-bg)] hover:bg-[var(--sk-text)] hover:opacity-90"
               aria-label="Stop"
               title="Stop"
             >
@@ -190,7 +196,7 @@ export function Composer({
             <button
               type="submit"
               disabled={!canSend}
-              className="sk-btn sk-primary h-7 w-7 rounded-lg"
+              className="sk-btn sk-composer-action sk-primary h-7 w-7 rounded-lg"
               aria-label="Send"
               title="Send (Enter)"
             >

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFrameDecoder } from "@/lib/live-frame";
 import { appendInput, createInputChannel, deliverInputBatch, isBrowserInput, pagePoint, type BrowserInput } from "@/lib/live-input";
 import { createLiveStream } from "@/lib/server/live-stream";
+import { encodeLivePacket, readLivePackets } from "@/lib/live-wire";
 import { createFramePublisher } from "@/lib/agent/frame-publisher";
 import { BrowserSession, type BusEvent } from "@/lib/agent/sessions";
 
@@ -62,6 +63,40 @@ describe("display-paced frame delivery", () => {
 });
 
 describe("live stream backpressure", () => {
+  it("delivers binary JPEG and metadata even when the network splits a packet", async () => {
+    const jpeg = new Uint8Array([255, 216, 10, 255, 217]);
+    const abort = new AbortController();
+    const stream = createLiveStream<{ type: string; data?: string; width?: number }>(send => {
+      send({ type: "reset" });
+      send({ type: "frame", data: Buffer.from(jpeg).toString("base64"), width: 1280 });
+      return () => {};
+    }, abort.signal, true);
+    const split = stream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        for (let i = 0; i < chunk.length; i += 3) controller.enqueue(chunk.subarray(i, i + 3));
+      },
+    }));
+    const events: Parameters<Parameters<typeof readLivePackets>[1]>[0][] = [];
+    await readLivePackets(split, event => {
+      events.push(event);
+      if (event.type === "frame") abort.abort();
+    });
+    expect(events.map(e => e.type)).toEqual(["reset", "frame"]);
+    expect(events[1].width).toBe(1280);
+    expect(new Uint8Array(await (events[1].data as Blob).arrayBuffer())).toEqual(jpeg);
+  });
+
+  it("rejects a truncated binary packet", async () => {
+    const packet = encodeLivePacket({ type: "status" });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(packet.subarray(0, packet.length - 1));
+        controller.close();
+      },
+    });
+    await expect(readLivePackets(stream, vi.fn())).rejects.toThrow("Truncated");
+  });
+
   it("replaces stale frames instead of replaying a growing backlog", async () => {
     let emit!: (e: { type: string; id: number }) => void;
     const unsubscribe = vi.fn();
@@ -259,6 +294,24 @@ describe("browser session performance and concurrency", () => {
     expect(cdp.send).toHaveBeenCalledWith("Page.screencastFrameAck", { sessionId: 7 });
     expect(events.some(e => e.type === "frame")).toBe(true);
     session.running = true; unsubscribe(); await session.stopCast();
+    expect(cdp.detach).toHaveBeenCalledOnce();
+  });
+
+  it("reuses a running screencast when a viewer briefly reconnects", async () => {
+    const { session, context, cdp } = fakeSession();
+    const unsubscribe = session.subscribe(vi.fn());
+    await session.startCast();
+    const epoch = session.viewEpoch;
+    unsubscribe();
+
+    const reconnect = session.subscribe(vi.fn());
+    await session.startCast();
+    expect(session.viewEpoch).toBe(epoch);
+    expect(context.newCDPSession).toHaveBeenCalledOnce();
+    expect(cdp.detach).not.toHaveBeenCalled();
+
+    reconnect();
+    await session.stopCast();
     expect(cdp.detach).toHaveBeenCalledOnce();
   });
 });

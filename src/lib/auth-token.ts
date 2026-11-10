@@ -49,11 +49,39 @@ export async function verifyDeviceToken(token: string | undefined | null): Promi
 // ---- Live-view links ---------------------------------------------------------------
 // The agent computer hands the viewer a short-lived link so the browser can read live
 // frames straight from it (no extra hop through the main host, which caused lag).
-// Minted and checked on the same machine, so DATABASE_URL works as a fallback secret.
+// Minted and checked on the agent host, so its database credential can key the link.
+
+function liveSecret(): string {
+  return (process.env.SESSION_SECRET || process.env.SENKO_DATABASE_URL || process.env.DATABASE_URL || accessKey()).trim();
+}
+
+export function signedLiveEnabled(): boolean {
+  return process.env.AGENT_COMPUTER === "1" && Boolean(liveSecret());
+}
+
+export function liveToken(req: Request): string | null {
+  const auth = req.headers.get("authorization");
+  if (auth?.startsWith("SenkoLive ")) return auth.slice(10);
+  return new URL(req.url).searchParams.get("t");
+}
+
+export const LIVE_CORS = { "Access-Control-Allow-Origin": "*" };
+
+export function livePreflight(): Response {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      ...LIVE_CORS,
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type",
+      "Access-Control-Max-Age": "600",
+    },
+  });
+}
 
 async function liveMac(data: string): Promise<string> {
   const enc = new TextEncoder();
-  const raw = (process.env.SESSION_SECRET || "").trim() || `live:${process.env.DATABASE_URL || ""}:${accessKey()}`;
+  const raw = liveSecret();
   const key = await crypto.subtle.importKey("raw", enc.encode(raw), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return b64url(await crypto.subtle.sign("HMAC", key, enc.encode(`live:${data}`)));
 }
@@ -66,7 +94,7 @@ export async function signLive(chatId: string, ownerId: string, expiresAt: numbe
 
 /** Returns the owner id if the token is valid for this chat and not expired, else null. */
 export async function verifyLive(token: string | null, chatId: string): Promise<string | null> {
-  if (!token) return null;
+  if (!token || !liveSecret()) return null;
   const parts = token.split(".");
   if (parts.length !== 4) return null;
   const [chat, owner, exp, mac] = parts;

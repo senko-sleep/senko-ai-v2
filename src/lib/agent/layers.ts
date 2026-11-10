@@ -18,10 +18,10 @@ const SOFT = /\b(click|log ?in|sign ?in|sign ?up|fill|type (in|into)|scroll|add 
 
 let browserDown: { at: number; why: string } | null = null;
 
-export async function browserProblem(): Promise<string | null> {
+async function browserProblem(chatId: string, ownerId: string): Promise<string | null> {
   if (browserDown && Date.now() - browserDown.at < 60_000) return browserDown.why;
   try {
-    await getBrowser();
+    await getBrowser(process.env.BROWSERBASE_API_KEY ? () => sessions.savedBrowserbaseSession(chatId, ownerId).catch(() => undefined) : undefined);
     browserDown = null;
     return null;
   } catch (e) {
@@ -32,10 +32,10 @@ export async function browserProblem(): Promise<string | null> {
 }
 
 export async function runLayered(opts: RunOptions): Promise<void> {
-  const { goal, chatId, emit, signal } = opts;
+  const { goal, chatId, ownerId, emit, signal } = opts;
   // Default: the real browser (live view, cursor, clicks) whenever one is reachable.
   // AGENT_LAYERS=fast answers reading questions over HTTP first instead.
-  if (process.env.AGENT_LAYERS !== "fast" && !(await browserProblem())) return runAgent(opts);
+  if (process.env.AGENT_LAYERS !== "fast" && !(await browserProblem(chatId, ownerId))) return runAgent(opts);
   const forced = process.env.AGENT_LAYERS === "browser";
   // A chat that already has a browser open keeps using it ("pause it", "the second one").
   const hasBrowser = !!sessions.get(chatId);
@@ -44,7 +44,7 @@ export async function runLayered(opts: RunOptions): Promise<void> {
 
   // Real browser first when the goal needs one, or when it's interactive and one exists.
   if (hard || soft) {
-    const problem = await browserProblem();
+    const problem = await browserProblem(chatId, ownerId);
     if (!problem) return runAgent(opts);
     // No browser on this server: the HTTP session does what it can and says what it couldn't.
     const r = await runLight(opts, { noBrowser: problem });
@@ -55,7 +55,7 @@ export async function runLayered(opts: RunOptions): Promise<void> {
 
   if ((await runLight(opts)) === "done" || signal.aborted) return;
   emit({ type: "status", text: "That needs a real browser, switching…" });
-  const problem = await browserProblem();
+  const problem = await browserProblem(chatId, ownerId);
   if (problem) {
     emit({ type: "error", message: `That page needs a real browser, which isn't available on this server (${problem}).` });
     return;

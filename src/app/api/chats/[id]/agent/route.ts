@@ -109,6 +109,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         }
         if (e.type === "step" && e.label.trim()) trail[e.id - 1] = { label: e.label, url: e.url };
         if (e.type === "images" || e.type === "done") for (const id of e.imageIds) if (!imageIds.includes(id)) imageIds.push(id);
+        if (e.type === "videos") meta.videos = e.videos.slice(0, 10);
         if (e.type === "done") {
           content = e.answer;
           meta.agent = { goal, status: "done", trail, url: e.url };

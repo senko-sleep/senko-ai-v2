@@ -20,6 +20,8 @@ import { safeSearchFor } from "./persona";
 import { geocode, PLACES_NOTE, singlePlaceQuery, wantsPlaces } from "./geocode";
 import { discussionSubject, subjectSearchQuery, visualAnswerNote } from "./visual-intent";
 import { wantsDeepThinking } from "./reply-depth";
+import { comicTurn } from "./comic-reply";
+import { searchTurn } from "./search-reply";
 import { extractCodeArtifacts } from "@/components/assistant/workspace-artifacts";
 import { stripCodeBlocks, wantsCodeJob } from "@/lib/code-intent";
 import { CodingWorkspaceRuntime, verifyAndSanitizeCodingClaims } from "@/lib/agent/coding-runtime";
@@ -115,6 +117,26 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
   // Earlier turns tell us who "her" / "him" / "them" refers to in follow-ups.
   const storedHistory = await getMessages(o.chatId);
   const subject = lastSubject(storedHistory.slice(0, -1));
+
+  // "search X" / "top 20 sites for X" / "fnf hentai": a real web search, shown as a results card.
+  // "send me a manga of X": the in-chat reader (pick a site, pick from its top 20, read every page).
+  if (!o.imageIds?.length && !o.simulateFail?.length) {
+    const safe = await safeSearchFor(o.ownerId).catch(() => "off" as const);
+    const fail = (what: string) => (e: unknown) => ({
+      content: `I couldn't ${what} (${e instanceof Error ? e.message : String(e)}). Try again?`,
+      meta: {} as MessageMeta,
+    });
+    let turn: { content: string; meta: MessageMeta } | null = await comicTurn(o.content, storedHistory.slice(0, -1), safe, o.onMiniAgentStep!, o.signal).catch(fail("load that from the site"));
+    if (!turn) turn = await searchTurn(o.content, safe, o.onMiniAgentStep!, { chatId: o.chatId, signal: o.signal }).catch(fail("finish the search"));
+    if (turn) {
+      o.onStart?.({ userMessageId, assistantMessageId });
+      trace.answered();
+      const meta: MessageMeta = { ...turn.meta, thinking: trace.meta() };
+      if (o.signal?.aborted) meta.interrupted = true;
+      await addMessage(o.chatId, "assistant", turn.content, [], meta, assistantMessageId, userMessageId);
+      return { id: assistantMessageId, role: "assistant", content: turn.content, imageIds: [], meta, createdAt: new Date().toISOString() };
+    }
+  }
   const detected = o.imageIds?.length ? undefined : detectCollageRequest(o.content);
   const resolved = detected ? resolveSubject(detected.query, subject) : undefined;
   const collage = detected && resolved

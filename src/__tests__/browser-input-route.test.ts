@@ -5,7 +5,10 @@ const mock = vi.hoisted(() => ({ get: vi.fn(), open: vi.fn(), status: vi.fn(), p
 vi.mock("@/lib/agent/sessions", () => ({ sessions: mock, BrowserInputConflict: class extends Error {} }));
 vi.mock("@/lib/agent/runner", () => ({ pauseAgentForTakeover: mock.pause }));
 vi.mock("@/lib/server/chats", () => ({ requireChat: vi.fn().mockResolvedValue({}) }));
-vi.mock("@/lib/auth-token", () => ({ verifyLive: vi.fn().mockResolvedValue(true) }));
+vi.mock("@/lib/auth-token", async importOriginal => ({
+  ...await importOriginal<typeof import("@/lib/auth-token")>(),
+  verifyLive: vi.fn().mockResolvedValue("owner"),
+}));
 vi.mock("@/lib/server/identity", () => ({
   route: (fn: (...args: unknown[]) => unknown) => (req: unknown, ctx: unknown) => fn(req, { ownerId: "owner" }, ctx),
   HttpError: class extends Error { constructor(public status: number, message: string) { super(message); } },
@@ -17,7 +20,7 @@ import { POST as control } from "@/app/api/sessions/[chatId]/takeover/route";
 const ctx = { params: Promise.resolve({ chatId: "chat" }) };
 const req = (body: unknown, direct = false) => new NextRequest(`https://fixture.test/api/sessions/chat/input${direct ? "?t=signed" : ""}`, { method: "POST", headers: { "content-type": direct ? "text/plain" : "application/json" }, body: JSON.stringify(body) });
 const session = () => {
-  const s = { takeover: false, running: false, viewEpoch: 3, controlVersion: 7, inputBatch: vi.fn().mockResolvedValue(undefined), setTakeover: vi.fn((on: boolean) => { s.takeover = on; }) };
+  const s = { ownerId: "owner", takeover: false, running: false, viewEpoch: 3, controlVersion: 7, inputBatch: vi.fn().mockResolvedValue(undefined), setTakeover: vi.fn((on: boolean) => { s.takeover = on; }) };
   return s;
 };
 beforeEach(() => vi.clearAllMocks());
@@ -33,6 +36,20 @@ describe("browser input endpoint", () => {
   it("uses the same batch format for signed direct input without a preflight", async () => {
     const s = session(); s.takeover = true; mock.get.mockReturnValue(s);
     expect((await input(req({ events: [{ type: "key", key: "Control+Shift+ArrowLeft" }], epoch: 3 }, true), ctx)).status).toBe(200);
+  });
+  it("accepts signed input through Authorization when the gateway removes the query string", async () => {
+    const s = session(); s.takeover = true; mock.get.mockReturnValue(s);
+    const request = new NextRequest("https://fixture.test/api/sessions/chat/input", {
+      method: "POST",
+      headers: { authorization: "SenkoLive signed" },
+      body: JSON.stringify({ type: "key", key: "Enter" }),
+    });
+    expect((await input(request, ctx)).status).toBe(200);
+  });
+  it("rejects signed input when the browser is owned by another device owner", async () => {
+    const s = session(); s.ownerId = "different-owner"; mock.get.mockReturnValue(s);
+    expect((await input(req({ type: "key", key: "Enter" }, true), ctx)).status).toBe(404);
+    expect(s.inputBatch).not.toHaveBeenCalled();
   });
   it("rejects invalid input before changing ownership or touching Playwright", async () => {
     const s = session(); mock.get.mockReturnValue(s);

@@ -1,8 +1,18 @@
+import { Buffer } from "node:buffer";
+import { encodeLivePacket } from "@/lib/live-wire";
+
 /** A slow subscriber holds at most one queued frame, always the newest one.
  * Reliable events retain ordering, with a hard limit so a stalled viewer disconnects
  * instead of retaining an unbounded session history in memory. */
-export function createLiveStream<T extends { type: string }>(subscribe: (send: (event: T) => void) => () => void, signal: AbortSignal) {
+export function createLiveStream<T extends { type: string; data?: string }>(subscribe: (send: (event: T) => void) => () => void, signal: AbortSignal, binary = false) {
   const encoder = new TextEncoder();
+  const encode = (event: T) => {
+    if (!binary) return encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
+    if (event.type !== "frame" || event.data === undefined) return encodeLivePacket(event);
+    const { data, ...metadata } = event;
+    return encodeLivePacket(metadata, Buffer.from(data, "base64"));
+  };
+  const heartbeat = binary ? encodeLivePacket({ type: "ping" }) : encoder.encode(": ping\n\n");
   let unsubscribe = () => {};
   let ping: ReturnType<typeof setInterval> | undefined;
   let controller: ReadableStreamDefaultController<Uint8Array>;
@@ -25,7 +35,7 @@ export function createLiveStream<T extends { type: string }>(subscribe: (send: (
       let next = reliable.shift();
       if (!next && frame) { next = frame; frame = undefined; }
       if (!next) break;
-      controller.enqueue(encoder.encode(`data: ${JSON.stringify(next)}\n\n`));
+      controller.enqueue(encode(next));
     }
   };
   const stream = new ReadableStream<Uint8Array>({
@@ -54,7 +64,7 @@ export function createLiveStream<T extends { type: string }>(subscribe: (send: (
       // subscribe may replay synchronously and overflow before it returns its cleanup.
       if (!open) { unsubscribe(); return; }
       ping = setInterval(() => {
-        if (open && (controller.desiredSize ?? 0) > 0) controller.enqueue(encoder.encode(": ping\n\n"));
+        if (open && (controller.desiredSize ?? 0) > 0) controller.enqueue(heartbeat);
       }, 20_000);
     },
     pull() { flush(); },

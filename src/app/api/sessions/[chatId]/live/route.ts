@@ -1,6 +1,6 @@
 import { requireChat } from "@/lib/server/chats";
 import { route } from "@/lib/server/identity";
-import { signLive } from "@/lib/auth-token";
+import { signedLiveEnabled, signLive } from "@/lib/auth-token";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,10 +13,11 @@ type Ctx = { params: Promise<{ chatId: string }> };
 export const GET = route<Ctx>(async (req, who, { params }) => {
   const { chatId } = await params;
   await requireChat(who.ownerId, chatId);
-  if (process.env.AGENT_COMPUTER !== "1") return Response.json({ url: null });
+  if (!signedLiveEnabled()) return Response.json({ url: null });
   const host = req.headers.get("x-forwarded-host") || req.headers.get("host");
   if (!host) return Response.json({ url: null });
   const proto = req.headers.get("x-forwarded-proto") || "https";
+  const origin = process.env.AGENT_PUBLIC_URL?.trim().replace(/\/+$/, "") || `${proto}://${host}`;
   const token = await signLive(chatId, who.ownerId, Date.now() + 10 * 60_000);
-  return Response.json({ url: `${proto}://${host}/api/sessions/${chatId}/stream?t=${encodeURIComponent(token)}` });
+  return Response.json({ url: `${origin}/api/sessions/${chatId}/stream?t=${encodeURIComponent(token)}` });
 });

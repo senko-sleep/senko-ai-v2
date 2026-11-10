@@ -1,6 +1,6 @@
 // Offline benchmark of the real screencast producer and LiveView, without an LLM,
 // database, external websites, or changes to the running application's sessions.
-// Usage: node scripts/profile-browser.mjs [report.json]
+// Usage: node scripts/profile-browser.mjs [report.json] [--binary] [--uhd]
 import { build } from "esbuild";
 import { chromium } from "playwright";
 import { createServer } from "node:http";
@@ -13,7 +13,14 @@ const out = path.resolve(process.argv[2] || "test-results/browser-performance/cu
 const temp = path.resolve("node_modules/.cache/browser-profile");
 if (path.dirname(temp) !== path.resolve("node_modules/.cache")) throw new Error("Invalid benchmark cache directory");
 const ref = process.argv.find(a => a.startsWith("--ref="))?.slice(6);
-const originalFiles = ["src/lib/agent/sessions.ts", "src/components/assistant/live-view.tsx"];
+const binary = !ref && process.argv.includes("--binary");
+const uhd = !ref && process.argv.includes("--uhd");
+if (uhd) {
+  process.env.LIVE_MAX_WIDTH = "3840";
+  process.env.LIVE_MAX_HEIGHT = "2160";
+  process.env.LOW_MEMORY_MODE = "0";
+}
+const originalFiles = ["src/lib/agent/sessions.ts", "src/lib/agent/browser.ts", "src/components/assistant/live-view.tsx"];
 const originalSource = ref ? Object.fromEntries(originalFiles.map(file => [path.resolve(file), execFileSync("git", ["show", `${ref}:${file}`], { encoding: "utf8" })])) : {};
 const historicalSource = { name: "historical-source", setup(builder) {
   builder.onLoad({filter:/\.(ts|tsx)$/}, args => originalSource[args.path] === undefined ? undefined : { contents:originalSource[args.path], loader:args.path.endsWith("tsx")?"tsx":"ts" });
@@ -27,6 +34,7 @@ const bundle = await build({
     import {createRoot} from 'react-dom/client';
     import {LiveView, createLiveBus} from './src/components/assistant/live-view';
     import {createInputChannel} from './src/lib/live-input';
+    import {connectLiveStream} from './src/lib/live-wire';
     const bus = createLiveBus();
     window.bus = bus;
     window.hasFrame = false;
@@ -45,14 +53,20 @@ const bundle = await build({
       onHasFrame: v => window.hasFrame = v,
       onInput: e => {window.inputs.push({...e, at: performance.now()});inputChannel.push(e)}
     }));
-    const events = new EventSource('/events');
-    window.events=events;
-    events.onmessage = e => {const frame=JSON.parse(e.data);if(frame.type==='frame'){window.lastFrameReceived=performance.now();window.lastFrameSent=frame.sentAt;}bus.emit(frame)};
+    const receive = frame => {if(frame.type==='frame'){window.lastFrameReceived=performance.now();window.lastFrameSent=frame.sentAt;}bus.emit(frame)};
+    if (${binary}) {
+      window.events = connectLiveStream(new URL('/events',location.href),receive,()=>{window.streamError=true});
+    } else {
+      const events = new EventSource('/events');
+      window.events=events;
+      events.onmessage = e => receive(JSON.parse(e.data));
+    }
   `, resolveDir: process.cwd(), loader: "tsx" },
   bundle: true, write: false, minify: true, define: { "process.env.NODE_ENV": '"production"' }, logLevel: "silent", plugins:[historicalSource],
 });
 let session;
 let captures = 0;
+let streamedBytes = 0;
 let inputRequests = 0;
 const source = `<!doctype html><style>body{margin:0;height:20000px;background:linear-gradient(#123,#a45);font:24px sans-serif}#motion{position:fixed;width:80px;height:80px;background:coral;top:100px}input{position:fixed;top:20px}</style><input aria-label="Text"><div id="motion"></div><script>
 window.wheels=[];addEventListener('wheel',e=>wheels.push({at:performance.now(),dy:e.deltaY}));
@@ -61,17 +75,29 @@ window.animate=true;function tick(t){if(animate)document.querySelector('#motion'
 const server = createServer(async (req, res) => {
   if (req.url === "/bundle.js") { res.setHeader("Content-Type", "text/javascript"); res.end(bundle.outputFiles[0].text); }
   else if (req.url === "/source") res.end(source);
-  else if (req.url === "/events") {
-    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+  else if (req.url === "/events" || req.url === "/events?format=binary") {
+    res.writeHead(200, { "Content-Type": binary ? "application/x-senko-live" : "text/event-stream", "Cache-Control": "no-cache" });
     const annotate = e => { if(e.type === "frame") { captures++; return {...e,sentAt:Date.now()}; } return e; };
     if (ref) {
       const unsub = session.subscribe(e => res.write(`data: ${JSON.stringify(annotate(e))}\n\n`));
       req.on("close", unsub);
     } else {
       const abort=new AbortController();req.on('close',()=>abort.abort());
-      const stream=createLiveStream(send=>session.subscribe(e=>send(annotate(e))),abort.signal);
+      const stream=createLiveStream(send=>session.subscribe(e=>send(annotate(e))),abort.signal,binary);
       const reader=stream.getReader();
-      try { for(;;) {const {done,value}=await reader.read();if(done)break;if(!res.write(value))await new Promise(resolve=>res.once('drain',resolve));} } catch {} finally {await reader.cancel();res.end();}
+      try {
+        for (;;) {
+          const {done,value}=await reader.read();
+          if (done) break;
+          streamedBytes += value.byteLength;
+          if (!res.write(value)) {
+            await new Promise(resolve => {
+              const done = () => { res.off("drain",done);res.off("close",done);resolve(); };
+              res.once("drain",done);res.once("close",done);
+            });
+          }
+        }
+      } catch {} finally {await reader.cancel();res.end();}
     }
   } else if(req.url === '/input') {
     inputRequests++;
@@ -88,7 +114,7 @@ const server = createServer(async (req, res) => {
     window.stats={raf:0,draws:[],longTasks:[],decodeMs:[],receiveToPaintMs:[],transportToPaintMs:[]};
     const decoded=new WeakMap();
     const decode=window.createImageBitmap;
-    window.createImageBitmap=async(...args)=>{const start=performance.now(),received=window.lastFrameReceived,sent=window.lastFrameSent;const image=await decode(...args);stats.decodeMs.push(performance.now()-start);decoded.set(image,{received,sent});return image;};
+    window.createImageBitmap=async(...args)=>{const start=performance.now(),received=window.lastFrameReceived,sent=window.lastFrameSent;const image=await decode(...args);stats.decodeMs.push(performance.now()-start);stats.encodedSize=[image.width,image.height];decoded.set(image,{received,sent});return image;};
     const raf=window.requestAnimationFrame;window.requestAnimationFrame=fn=>raf(t=>{stats.raf++;fn(t)});
     const draw=CanvasRenderingContext2D.prototype.drawImage;
     CanvasRenderingContext2D.prototype.drawImage=function(...args){const now=performance.now();stats.draws.push(now);const t=decoded.get(args[0]);if(t){stats.receiveToPaintMs.push(now-t.received);stats.transportToPaintMs.push(Date.now()-t.sent);}return draw.apply(this,args)};
@@ -105,23 +131,29 @@ try {
     try {browser=await chromium.launch({headless:true,channel});break;}catch(error){launchError=error;}
   }
   if(!browser)throw launchError;
-  const remote = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const sourceViewport = uhd ? { width: 3840, height: 2160 } : { width: 1280, height: 800 };
+  const viewerViewport = uhd ? { width: 960, height: 540 } : { width: 960, height: 600 };
+  const remote = await browser.newContext({ viewport: sourceViewport });
   const page = await remote.newPage();
   page.setDefaultTimeout(10_000);
   await page.goto(`${base}/source`);
   session = new BrowserSession("profile", "profile");
   session.context = remote; session.pages = [page]; session.status = "active"; session.takeover = true;
-  const viewer = await browser.newPage({ viewport: { width: 960, height: 600 } });
+  const viewer = await browser.newPage({ viewport: viewerViewport });
   viewer.setDefaultTimeout(10_000);
   await viewer.goto(base);
   await viewer.waitForFunction(() => window.hasFrame);
   await viewer.waitForTimeout(400);
   captures = 0;
+  streamedBytes = 0;
   await viewer.evaluate(() => { stats.raf=0; stats.draws=[]; stats.longTasks=[];stats.decodeMs=[];stats.receiveToPaintMs=[];stats.transportToPaintMs=[]; });
   const started = performance.now();
   await viewer.waitForTimeout(3000);
   const elapsed = performance.now() - started;
   const motion = await viewer.evaluate(() => structuredClone(stats));
+  if (uhd && (motion.encodedSize?.[0] !== 3840 || motion.encodedSize?.[1] !== 2160)) {
+    throw new Error(`Expected a 3840×2160 encoded frame, got ${motion.encodedSize?.join("×")}`);
+  }
   const captureFps = captures * 1000 / elapsed;
   await page.evaluate(() => window.animate = false);
   await viewer.waitForTimeout(300);
@@ -130,7 +162,10 @@ try {
   const idle = await viewer.evaluate(() => ({ raf:stats.raf,draws:stats.draws.length }));
   // Type through the actual LiveView key handlers while the source is animating.
   await page.evaluate(() => window.animate=true);
-  await viewer.mouse.click(75,25);
+  const field = await page.locator("input").boundingBox();
+  const inputX = (field.x + field.width / 2) * viewerViewport.width / sourceViewport.width;
+  const inputY = (field.y + field.height / 2) * viewerViewport.height / sourceViewport.height;
+  await viewer.mouse.click(inputX,inputY);
   await page.waitForFunction(()=>document.activeElement?.tagName==='INPUT');
   await viewer.waitForTimeout(100);
   inputRequests=0;
@@ -153,14 +188,14 @@ try {
     await page.waitForFunction(()=>window.drag.some(e=>e.type==='up'));
     const drag=await page.evaluate(()=>window.drag);
     if(drag[0]?.type!=='down'||drag.at(-1)?.type!=='up'||!drag.some(e=>e.type==='move'))throw new Error('Drag input did not reach the browser');
-    await viewer.mouse.click(75,25);
+    await viewer.mouse.click(inputX,inputY);
     await viewer.evaluate(()=>document.querySelector('[role=application]').dispatchEvent(new CompositionEvent('compositionend',{data:'日本語',bubbles:true})));
     await page.waitForFunction(()=>document.querySelector('input').value.includes('日本語'));
     const dimsBefore=await viewer.evaluate(()=>({w:document.querySelector('canvas').width,h:document.querySelector('canvas').height}));
     await viewer.setViewportSize({width:720,height:450});
     await viewer.waitForFunction(()=>document.querySelector('canvas').width===720);
     const dimsAfter=await viewer.evaluate(()=>({w:document.querySelector('canvas').width,h:document.querySelector('canvas').height}));
-    await viewer.setViewportSize({width:960,height:600});
+    await viewer.setViewportSize(viewerViewport);
     await viewer.waitForFunction(()=>document.querySelector('canvas').width===960);
     interactions={dragCommands:drag.length,ime:true,resize:{before:dimsBefore,after:dimsAfter}};
   }
@@ -168,7 +203,7 @@ try {
   await page.evaluate(() => window.wheels = []);
   const scrollStart = performance.now();
   await session.input({type:"wheel",dx:0,dy:800,x:500,y:400});
-  await page.waitForFunction(() => window.wheels.reduce((n,e)=>n+e.dy,0)>=799);
+  await page.waitForFunction(() => window.wheels.some(e => e.dy > 0));
   const scrollCompleteMs = performance.now() - scrollStart;
   const wheels = await page.evaluate(() => window.wheels);
   // Stop the live source so a genuinely new frame cannot invalidate the reset test.
@@ -194,13 +229,14 @@ try {
   const report={
     at:new Date().toISOString(),revision:ref||'working-tree',browser:browser.version(),durationMs:elapsed,
     captureFps,paintFps:motion.draws.length*1000/elapsed,
+    transport:binary?"binary":"SSE",encodedSize:motion.encodedSize,bytesPerSecond:ref?undefined:streamedBytes*1000/elapsed,
     paintGapP50Ms:gaps[Math.floor(gaps.length*.5)],paintGapP95Ms:gaps[Math.floor(gaps.length*.95)],
     longTasks:motion.longTasks, idleRafCallbacksPerSecond:idle.raf,idleDrawsPerSecond:idle.draws,
     decodeP95Ms:percentile(motion.decodeMs,.95),receiveToPaintP95Ms:percentile(motion.receiveToPaintMs,.95),transportToPaintP95Ms:percentile(motion.transportToPaintMs,.95),
     typingBurstMs,typingRequests,simulatedInputRttMs:60,
     interactions,
     scrollCompleteMs,scrollCommands:wheels.length,...resetRace,
-    note:"Local headless Chromium, 1280x800 source, 960x600 viewer; excludes WAN/LLM latency. Refresh rate and screencast encoder limit actual FPS."
+    note:"Local headless Chromium; excludes WAN and LLM latency. Refresh rate and screencast encoding limit actual FPS."
   };
   await mkdir(path.dirname(out),{recursive:true});await writeFile(out,JSON.stringify(report,null,2)+"\n");
   console.log(JSON.stringify(report,null,2));

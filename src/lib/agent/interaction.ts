@@ -52,7 +52,7 @@ export interface PageState {
 
 export interface DomObservation {
   elements: ObservedElement[];
-  images: { url: string; alt: string; col: number; row: number }[];
+  images: { url: string; alt: string; col: number; row: number; animated?: boolean }[];
   text: string;
   pageText?: string;
   atBottom: boolean;
@@ -340,16 +340,26 @@ export const PAGE_SCRIPT = async (arg: ScriptArg): Promise<unknown> => {
       }
     }
     const atBottom = window.scrollY + vh >= document.documentElement.scrollHeight - 20;
-    const images = Array.from(document.images).filter((img) => {
+    // Search results show small previews (often stills of GIFs); the link around one usually
+    // carries the original file (Google: /imgres?imgurl=..., others link the file itself).
+    const originalOf = (img: HTMLImageElement) => {
+      const href = (img.closest("a") as HTMLAnchorElement | null)?.href || "";
+      const q = /[?&](?:imgurl|mediaurl|img_url)=([^&]+)/i.exec(href)?.[1];
+      if (q) { try { return decodeURIComponent(q); } catch { /* keep looking */ } }
+      return /^https?:\/\/[^?#]+\.(?:gif|webp|png|jpe?g)(?:[?#]|$)/i.test(href) ? href : "";
+    };
+    const images = Array.from(document.images).map((img) => ({ img, original: originalOf(img) })).filter(({ img, original }) => {
       const rect = img.getBoundingClientRect();
       return img.complete && img.naturalWidth >= 80 && img.naturalHeight >= 60 && rect.width >= 60 && rect.height >= 40
         && rect.bottom > 0 && rect.top < vh * 1.5 && rect.right > 0 && rect.left < vw
-        && getComputedStyle(img).visibility !== "hidden" && /^https?:\/\//.test(img.currentSrc || img.src);
-    }).slice(0, 24).map((img) => {
+        && getComputedStyle(img).visibility !== "hidden" && (/^https?:\/\//.test(img.currentSrc || img.src) || /^https?:\/\//.test(original));
+    }).slice(0, 24).map(({ img, original }) => {
       const rect = img.getBoundingClientRect();
       const col = Math.min(3, Math.max(0, Math.floor(rect.left / (vw / 4))));
       const row = Math.min(3, Math.max(0, Math.floor(rect.top / (vh / 4))));
-      return { url: img.currentSrc || img.src, alt: (img.alt || img.title || "").slice(0, 160), col, row };
+      const url = original || img.currentSrc || img.src;
+      const animated = /\.gif(?:[?#]|$)|giphy\.com|tenor\.com|redgifs|gfycat/i.test(url) || /\bgif\b/i.test(img.alt || "");
+      return { url, alt: (img.alt || img.title || "").slice(0, 160), col, row, ...(animated ? { animated: true } : {}) };
     });
     return {
       elements: out, images, text: text.slice(0, 1400), pageText, atBottom, more,

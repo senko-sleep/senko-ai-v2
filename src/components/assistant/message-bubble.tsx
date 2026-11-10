@@ -7,6 +7,9 @@ import { AgentTrail } from "./activity-trail";
 import { ImageGallery } from "../chat/image-gallery";
 import { RichMessageContent } from "../ui-renderer/dynamic-ui-renderer";
 import { ThinkingPanel } from "./thinking-panel";
+import { ChatVideos } from "./chat-videos";
+import { ComicCardView } from "./comic-card";
+import { SearchResults } from "./search-results";
 import type { Msg } from "./lib";
 import { downloadTextFile, type FollowUpAction } from "./workspace-artifacts";
 
@@ -417,6 +420,12 @@ export const MessageBubble = memo(function MessageBubble({
         )}
 
         {msg.imageIds?.length ? <Images ids={msg.imageIds} align="start" /> : null}
+
+        {msg.videos?.length ? <ChatVideos videos={msg.videos} /> : null}
+
+        {msg.search?.results.length ? <SearchResults card={msg.search} /> : null}
+
+        {msg.comic ? <ComicCardView card={msg.comic} onSendMessage={streaming ? undefined : onSendMessage} /> : null}
 
         {/* Scraped image strip + "View all images" button — shown for chat-mode image searches */}
         {msg.scrapedImages?.length ? (

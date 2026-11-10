@@ -8,7 +8,7 @@
 //   evicted sessions are saved first and restore when you come back, and the UI is told why.
 import type { Browser, BrowserContext, CDPSession, Cookie, Frame, Page } from "playwright";
 import { randomUUID } from "node:crypto";
-import { SCREEN, browserMode, browserProxy, desktopUserAgent, freeMemoryMB, getBrowser, isHeaded, isLowMemoryHost, releaseManagedBrowserSession, restartBrowser, selectBrowserbaseLivePage } from "./browser";
+import { SCREEN, browserMode, browserProxy, freeMemoryMB, getBrowser, isHeaded, isLowMemoryHost, restartBrowser } from "./browser";
 import { isGoogleHost } from "./google-gate";
 import { TimeoutError, orTimeout, withTimeout } from "./timeouts";
 import { isAdHost, isPrivateUrl } from "./safety";
@@ -34,8 +34,8 @@ export interface VerificationState {
 
 export type BusEvent =
   | { type: "reset"; epoch?: number }
-  | { type: "status"; status: SessionStatus; tabs: TabInfo[]; takeover: boolean; live: LiveInfo; running: boolean; control: number; epoch: number; sessionId: string; verification?: VerificationState | null }
-  | { type: "frame"; data: string; width: number; height: number; epoch?: number }
+  | { type: "status"; status: SessionStatus; tabs: TabInfo[]; takeover: boolean; live: LiveInfo; running: boolean; control: number; epoch: number; sessionId: string; verification?: VerificationState | null; browserDisconnected?: boolean }
+  | { type: "frame"; data: string; width: number; height: number; epoch?: number; capturedAt?: number }
   | { type: "cursor"; x: number; y: number; kind: "move" | "click"; box?: { x: number; y: number; w: number; h: number } | null; width: number; height: number }
   | { type: "log"; text: string; level: "info" | "warn" | "error"; at: number }
   | { type: "plan"; steps: string[] }
@@ -69,6 +69,18 @@ interface SavedSession {
   tabs?: SavedTab[];
   activeIndex?: number;
   browserbaseSessionId?: string;
+  browserContextId?: string;
+}
+
+async function browserContextId(context: BrowserContext): Promise<string | undefined> {
+  const page = context.pages().find(p => !p.isClosed());
+  if (!page) return;
+  const cdp = await context.newCDPSession(page);
+  try {
+    return (await cdp.send("Target.getTargetInfo")).targetInfo.browserContextId;
+  } finally {
+    await cdp.detach().catch(() => {});
+  }
 }
 
 // Managed browser plans often cap concurrent sessions. Keep one live chat session
@@ -83,10 +95,11 @@ const LOW_MEMORY_MB = Number(process.env.LOW_MEMORY_MB || (isLowMemoryHost() ? 8
 const LOCAL_CHANNELS = new Set(["custom", "chrome", "msedge", "chromium", "chromium-headless-shell"]);
 const encodesHere = () => { const c = browserMode()?.channel; return !c || LOCAL_CHANNELS.has(c); };
 const smallHost = () => isLowMemoryHost() && encodesHere();
-const FPS_CAP = () => Math.min(240, Math.max(1, Number(process.env.LIVE_FPS) || (smallHost() ? 30 : 120)));
+const FPS_CAP = () => Math.min(240, Math.max(1, Number(process.env.LIVE_FPS) || (smallHost() ? 30 : 60)));
 const QUALITY = () => Math.min(95, Math.max(20, Number(process.env.LIVE_QUALITY || (smallHost() ? 50 : 60))));
 // Live view size relative to the real screen. Smaller frames encode much faster on weak CPUs.
 const SCALE = () => Math.min(1, Math.max(0.3, Number(process.env.LIVE_SCALE || (smallHost() ? 0.75 : 1))));
+const CAST_IDLE_GRACE_MS = 5000;
 // Each tab is a renderer process. Past this many, the least recently used background tab closes.
 const MAX_TABS = () => Math.max(2, Number(process.env.MAX_TABS_PER_SESSION || (isLowMemoryHost() ? 4 : 8)));
 // The active tab is probed this often; this many failed probes in a row means it is frozen.
@@ -131,23 +144,8 @@ export function liveInfo(): LiveInfo {
   };
 }
 
-// Runs in every page: keep navigation in the same tab, remember that the agent's own clicks
-// shouldn't spawn pop-ups, and normalize standard desktop browser properties in headless mode.
+// Keep links in the current tab so agent clicks don't spawn unintended pop-ups.
 const INIT_SCRIPT = () => {
-  try {
-    if (navigator.webdriver) {
-      Object.defineProperty(navigator, "webdriver", { get: () => false, configurable: true });
-    }
-    const win = window as unknown as { chrome?: Record<string, unknown> };
-    if (!win.chrome) {
-      win.chrome = { runtime: {} };
-    }
-    if (!navigator.languages || navigator.languages.length === 0) {
-      Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"], configurable: true });
-    }
-  } catch {
-    /* ignore property descriptor restrictions */
-  }
   document.addEventListener(
     "click",
     (e) => {
@@ -257,6 +255,7 @@ export class BrowserSession {
   // An idle browser belongs to the user, including restored sessions.
   takeover = true;
   running = false;
+  browserDisconnected = false;
   verification: VerificationState | null = null;
   private agentLease: AbortSignal | null = null;
   viewEpoch = 0;
@@ -268,6 +267,7 @@ export class BrowserSession {
   private publisher: ReturnType<typeof createFramePublisher<Extract<BusEvent, { type: "frame" }>>> | null = null;
   private castGeneration = 0;
   private castTask: Promise<void> = Promise.resolve();
+  private castIdleTimer: ReturnType<typeof setTimeout> | undefined;
   private lastFrame: { data: string; width: number; height: number; epoch?: number } | null = null;
   private lastCursor: Extract<BusEvent, { type: "cursor" }> | null = null;
   private expectingTab = false;
@@ -277,6 +277,7 @@ export class BrowserSession {
   private queuedInputs = 0;
   private controlGeneration = 0;
   private browserbaseSessionId?: string;
+  private savedContextId?: string;
   get controlVersion() { return this.controlGeneration; }
   private heldButtons = new Map<"left" | "right" | "middle", Page>();
   private browser: Browser | null = null;
@@ -315,43 +316,31 @@ export class BrowserSession {
     this.browser = browser;
     this.onBrowserGone = () => this.browserLost();
     browser.on("disconnected", this.onBrowserGone);
-    const reconnecting = !!saved?.browserbaseSessionId && browserMode()?.sessionId === saved.browserbaseSessionId;
-    const existingContexts = reconnecting ? browser.contexts() : [];
-    const matchingSavedUrls = new Set((saved?.tabs || []).map((tab) => tab.url));
-    const existingContext = reconnecting
-      ? existingContexts.find((context) => context.pages().some((page) => matchingSavedUrls.has(page.url()))) || existingContexts.find((context) => context.pages().length > 0)
-      : undefined;
+    let existingContext: BrowserContext | undefined;
+    if (saved?.browserContextId && this.browserbaseSessionId && this.browserbaseSessionId === saved.browserbaseSessionId) {
+      const contexts = browser.contexts();
+      const ids = await Promise.all(contexts.map(context => withTimeout(browserContextId(context), 2000, undefined)));
+      existingContext = contexts[ids.indexOf(saved.browserContextId)];
+    }
     const headed = isHeaded();
     this.context = existingContext || await browser.newContext({
       viewport: headed ? null : SCREEN,
-      userAgent: desktopUserAgent(browser),
       locale: "en-US",
-      extraHTTPHeaders: { "Accept-Language": "en-US,en;q=0.9" },
       colorScheme: "dark",
       acceptDownloads: false, // never download files
       proxy: browserProxy(),
       storageState: saved?.storage ? (saved.storage as never) : undefined,
     });
     if (!existingContext && !saved?.storage) await this.seedGoogleCookies();
-    const remoteSessionId = this.browserbaseSessionId;
-    if (remoteSessionId) {
-      await q(
-        `INSERT INTO browser_sessions (chat_id, owner_id, status, storage, tabs, updated_at)
-         VALUES ($1, $2, 'restoring', $3, $4, now())
-         ON CONFLICT (chat_id) DO UPDATE SET status = 'restoring', tabs = EXCLUDED.tabs, updated_at = now()`,
-        [this.chatId, this.ownerId, saved?.storage ? JSON.stringify(saved.storage) : null, JSON.stringify({ tabs: saved?.tabs || [], activeIndex: saved?.activeIndex || 0, browserbaseSessionId: remoteSessionId })]
-      );
-    }
-    if (reconnecting) {
+    if (existingContext) {
       // Reattach to the existing cloud Chrome after a Wasmer worker restart.
       // Keep its live tabs instead of replaying stale URLs into a second context.
-      this.pages = this.context.pages();
-      for (const page of this.pages) this.adopt(page);
+      for (const page of existingContext.pages()) this.adopt(page);
     }
     // Playwright waits 30s by default; a stuck click/press should fail fast so the agent moves on.
     // Page loads pass their own longer timeouts.
     this.context.setDefaultTimeout(10_000);
-    if (reconnecting) await this.context.unrouteAll({ behavior: "wait" }).catch(() => {});
+    if (existingContext) await this.context.unrouteAll({ behavior: "wait" }).catch(() => {});
     await this.context.addInitScript(INIT_SCRIPT);
     await this.context
       .exposeBinding("__senkoAudio", (source, m: AudioMessage) => this.onAudio(source.page, source.frame, m))
@@ -381,7 +370,7 @@ export class BrowserSession {
     this.context.on("page", (p) => void this.onNewPage(p));
 
     const tabs = saved?.tabs?.filter((t) => t.url && t.url !== "about:blank") || [];
-    if (reconnecting && this.pages.length) {
+    if (existingContext && this.pages.length) {
       this.activeIndex = Math.min(saved?.activeIndex ?? 0, this.pages.length - 1);
       await this.front(this.pages[this.activeIndex]);
     } else if (tabs.length) {
@@ -405,8 +394,10 @@ export class BrowserSession {
     } else {
       await this.newTabInternal();
     }
+    if (this.browserbaseSessionId) {
+      this.savedContextId = await withTimeout(browserContextId(this.context), 2000, undefined);
+    }
     this.status = "active";
-    await selectBrowserbaseLivePage(this.active().url());
     await this.persist();
     this.saveTimer = setInterval(() => void this.persist().catch(() => {}), 60_000);
     this.saveTimer.unref?.();
@@ -433,6 +424,7 @@ export class BrowserSession {
   private browserLost() {
     if (this.status === "closed" || this.status === "suspended") return;
     this.status = "suspended";
+    this.browserDisconnected = true;
     this.stopTimers();
     this.detachBrowser();
     this.publisher?.dispose();
@@ -682,12 +674,12 @@ export class BrowserSession {
     this.controlGeneration++;
     if (reason === "suspended") await this.persist().catch(() => {});
     this.status = reason;
+    this.browserDisconnected = false;
     this.emitStatus();
     await withTimeout(this.stopCast(), 5000, undefined);
     // A context with a hung tab can take a long time to close; don't hold the caller.
     if (this.context) await withTimeout(this.context.close(), 15_000, undefined);
     if (reason === "closed") {
-      await releaseManagedBrowserSession(this.browserbaseSessionId);
       await q("UPDATE browser_sessions SET status = 'closed', storage = NULL, tabs = '[]', updated_at = now() WHERE chat_id = $1", [this.chatId]);
     } else {
       await q("UPDATE browser_sessions SET status = 'suspended', updated_at = now() WHERE chat_id = $1", [this.chatId]);
@@ -726,7 +718,6 @@ export class BrowserSession {
     const p = await this.newTabInternal();
     if (url) await p.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
     await this.front(p);
-    await selectBrowserbaseLivePage(p.url());
     await this.startCast();
     this.emitStatus();
     return p;
@@ -737,7 +728,6 @@ export class BrowserSession {
     this.activeIndex = index;
     this.lastFront.set(this.pages[index], Date.now());
     await this.front(this.active());
-    await selectBrowserbaseLivePage(this.active().url());
     await this.startCast();
     this.emitStatus();
   }
@@ -782,7 +772,7 @@ export class BrowserSession {
   private async persistOnce() {
     if (!this.context || this.status === "closed") return;
     // Every browser call is bounded: a frozen tab must not stall saving the others.
-    const storage = await withTimeout(this.context.storageState(), 8000, null);
+    const storage = await withTimeout(this.context.storageState({ indexedDB: true }), 8000, null);
     const trust = googleTrustCookies(storage);
     if (trust.length) googleJar.set(this.ownerId, trust);
     const tabs: SavedTab[] = await Promise.all(
@@ -806,16 +796,18 @@ export class BrowserSession {
       `INSERT INTO browser_sessions (chat_id, owner_id, status, storage, tabs, updated_at)
        VALUES ($1, $2, $3, $4, $5, now())
        ON CONFLICT (chat_id) DO UPDATE SET status = EXCLUDED.status, storage = COALESCE(EXCLUDED.storage, browser_sessions.storage), tabs = EXCLUDED.tabs, updated_at = now()`,
-      [this.chatId, this.ownerId, this.status === "restoring" ? "active" : this.status, storage ? JSON.stringify(storage) : null, JSON.stringify({ tabs, activeIndex: this.activeIndex, browserbaseSessionId: this.browserbaseSessionId })]
+      [this.chatId, this.ownerId, this.status === "restoring" ? "active" : this.status, storage ? JSON.stringify(storage) : null, JSON.stringify({ tabs, activeIndex: this.activeIndex, browserbaseSessionId: this.browserbaseSessionId, browserContextId: this.savedContextId })]
     );
   }
 
   // ---- events / live view ----------------------------------------------------------
 
   subscribe(fn: (e: BusEvent) => void, refreshRate = FPS_CAP()): () => void {
+    clearTimeout(this.castIdleTimer);
+    this.castIdleTimer = undefined;
     this.subs.add(fn);
     this.viewerRates.set(fn, Math.min(FPS_CAP(), Math.max(1, Number.isFinite(refreshRate) ? refreshRate : FPS_CAP())));
-    void this.tabs().then((tabs) => { if (this.subs.has(fn)) fn({ type: "status", status: this.status, tabs, takeover: this.takeover, live: liveInfo(), running: this.running, control: this.controlVersion, epoch: this.viewEpoch, sessionId: this.sessionId, verification: this.verification }); });
+    void this.tabs().then(tabs => { if (this.subs.has(fn)) fn(this.statusEvent(tabs)); });
     for (const l of this.logs.slice(-20)) fn(l);
     for (const e of this.replay) fn(e);
     if (this.lastFrame) fn({ type: "frame", ...this.lastFrame });
@@ -827,7 +819,11 @@ export class BrowserSession {
     return () => {
       this.subs.delete(fn);
       this.viewerRates.delete(fn);
-      if (!this.subs.size) { void this.stopCast(); void this.releaseButtons(); }
+      if (!this.subs.size) {
+        void this.releaseButtons();
+        this.castIdleTimer = setTimeout(() => void this.stopCast(), CAST_IDLE_GRACE_MS);
+        this.castIdleTimer.unref?.();
+      }
     };
   }
 
@@ -860,9 +856,11 @@ export class BrowserSession {
 
   emitStatus() {
     if (!this.subs.size) return;
-    void this.tabs().then((tabs) =>
-      this.emit({ type: "status", status: this.status, tabs, takeover: this.takeover, live: liveInfo(), running: this.running, control: this.controlVersion, epoch: this.viewEpoch, sessionId: this.sessionId, verification: this.verification })
-    );
+    void this.tabs().then(tabs => this.emit(this.statusEvent(tabs)));
+  }
+
+  private statusEvent(tabs: TabInfo[]): Extract<BusEvent, { type: "status" }> {
+    return { type: "status", status: this.status, tabs, takeover: this.takeover, live: liveInfo(), running: this.running, control: this.controlVersion, epoch: this.viewEpoch, sessionId: this.sessionId, verification: this.verification, browserDisconnected: this.browserDisconnected || undefined };
   }
 
   setVerification(info: Omit<VerificationState, "active"> | null) {
@@ -918,7 +916,8 @@ export class BrowserSession {
 
   /** Size the real page to the viewer's panel, so sites lay out for the space you see. */
   async setViewport(width: number, height: number) {
-    if (isHeaded()) return; // a headed browser is sized by its window
+    // A headed window or an explicitly configured UHD desktop keeps its own size.
+    if (isHeaded() || (SCREEN.width === 3840 && SCREEN.height === 2160)) return;
     const size = { width: Math.round(Math.min(2560, Math.max(320, width))), height: Math.round(Math.min(1600, Math.max(240, height))) };
     const cur = this.viewportOverride;
     if (cur && cur.width === size.width && cur.height === size.height) return;
@@ -967,23 +966,23 @@ export class BrowserSession {
       this.restartAudio(p);
       const cast = cdp;
       const publisher = createFramePublisher<Extract<BusEvent, { type: "frame" }>>(frame => {
-        if (this.cdp !== cast || frame.epoch !== this.viewEpoch) return;
+        if (this.cdp !== cast || !this.subs.size || frame.epoch !== this.viewEpoch) return;
         this.lastFrame = { data: frame.data, width: frame.width, height: frame.height, epoch: frame.epoch };
         this.emit(frame);
       }, () => Math.max(1, ...this.viewerRates.values()));
       this.publisher = publisher;
-      cdp.on("Page.screencastFrame", (f: { data: string; sessionId: number; metadata: { deviceWidth: number; deviceHeight: number } }) => {
+      cdp.on("Page.screencastFrame", (f: { data: string; sessionId: number; metadata: { deviceWidth: number; deviceHeight: number; timestamp?: number } }) => {
         // Acknowledge immediately: delaying an ACK stalls Chrome's capture pipeline.
         void cast.send("Page.screencastFrameAck", { sessionId: f.sessionId }).catch(() => {});
-        if (this.cdp !== cast) return;
-        publisher.push({ type: "frame", data: f.data, width: f.metadata.deviceWidth, height: f.metadata.deviceHeight, epoch: this.viewEpoch });
+        if (this.cdp !== cast || !this.subs.size) return;
+        publisher.push({ type: "frame", data: f.data, width: f.metadata.deviceWidth, height: f.metadata.deviceHeight, epoch: this.viewEpoch, capturedAt: f.metadata.timestamp === undefined ? undefined : Math.round(f.metadata.timestamp * 1000) });
       });
       await orTimeout(cdp.send("Page.startScreencast", {
         format: "jpeg",
         quality: QUALITY(),
-        // A ceiling, not a fixed size: frames match the page, which follows the panel.
-        maxWidth: Math.round(Math.max(SCREEN.width, 2560) * SCALE()),
-        maxHeight: Math.round(Math.max(SCREEN.height, 1600) * SCALE()),
+        // Scale only the encoded picture. CDP metadata still gives the full input viewport.
+        maxWidth: Math.round(Math.min(3840, Math.max(320, Number(process.env.LIVE_MAX_WIDTH) || 1280)) * SCALE()),
+        maxHeight: Math.round(Math.min(2160, Math.max(240, Number(process.env.LIVE_MAX_HEIGHT) || 800)) * SCALE()),
         everyNthFrame: 1,
       }), 10_000, "starting the live view");
     } catch {
@@ -993,6 +992,8 @@ export class BrowserSession {
   }
 
   async stopCast() {
+    clearTimeout(this.castIdleTimer);
+    this.castIdleTimer = undefined;
     const generation = ++this.castGeneration;
     await this.castTask.catch(() => {});
     if (generation === this.castGeneration) await this.detachCast();
@@ -1210,6 +1211,14 @@ class SessionManager {
   private live = new Map<string, BrowserSession>();
   private starting = new Map<string, Promise<BrowserSession>>();
 
+  async savedBrowserbaseSession(chatId: string, ownerId: string): Promise<string | undefined> {
+    const row = await q1<{ tabs: unknown }>(
+      "SELECT tabs FROM browser_sessions WHERE chat_id = $1 AND owner_id = $2 AND status <> 'closed'",
+      [chatId, ownerId],
+    );
+    return json<SavedSession>(row?.tabs, {}).browserbaseSessionId;
+  }
+
   get(chatId: string): BrowserSession | undefined {
     const s = this.live.get(chatId);
     if (s) s.lastUsed = Date.now();
@@ -1234,15 +1243,18 @@ class SessionManager {
   /** Get the live session, restoring it from the database (or creating it) if needed. */
   async open(chatId: string, ownerId: string, opts: { fresh?: boolean } = {}): Promise<BrowserSession> {
     if (opts.fresh) await this.close(chatId);
+    const pending = this.starting.get(chatId);
+    if (pending) return pending;
     const existing = this.live.get(chatId);
     if (existing && existing.status !== "closed" && existing.status !== "suspended") {
       existing.lastUsed = Date.now();
       return existing;
     }
-    const pending = this.starting.get(chatId);
-    if (pending) return pending;
-
     const p = (async () => {
+      if (existing?.status === "suspended") {
+        this.live.delete(chatId);
+        await existing.persist().catch(() => {});
+      }
       await this.makeRoom(chatId);
       const row = opts.fresh
         ? null

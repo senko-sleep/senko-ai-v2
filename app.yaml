@@ -3,6 +3,9 @@ owner: senko-sleep
 name: senko-ai
 app_id: da_RpXImtBU1AxL
 package: .
+env:
+  AGENT_COMPUTER: "1"
+  BROWSER_PROVIDERS: steel,browserbase,browserless
 capabilities:
   database:
     engine: postgres

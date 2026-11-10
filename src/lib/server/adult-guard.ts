@@ -4,7 +4,7 @@
 import { ADULT_IMAGE_QUERY } from "./images";
 import type { EntityDossier } from "./entity-dossier";
 
-const MINOR_WORDS = /\b(?:loli|lolis|lolicon|shota|shotacon|child|children|kid|kids|minor|minors|underage|toddler|preteen|pre-teen|teen|teens|teenage|schoolgirl|schoolboy|little girl|little boy|young girl|young boy|baby|babies|elementary|middle school|1[0-7]\s*(?:yo|y\/o|years? old)|[1-9]\s*(?:yo|y\/o|years? old))\b/i;
+export const MINOR_WORDS = /\b(?:loli|lolis|lolicon|shota|shotacon|child|children|kid|kids|minor|minors|underage|toddler|preteen|pre-teen|teen|teens|teenage|schoolgirl|schoolboy|little girl|little boy|young girl|young boy|baby|babies|elementary|middle school|1[0-7]\s*(?:yo|y\/o|years? old)|[1-9]\s*(?:yo|y\/o|years? old))\b/i;
 const FICTIONAL = /\b(?:fictional|character|mascot|virtual|vtuber|anime|manga|video game|cartoon|comic)\b/i;
 
 export interface AdultCheck { allowed: boolean; reason?: string; subject?: string }
@@ -26,9 +26,14 @@ function statedAges(d: EntityDossier): number[] {
   return ages;
 }
 
-export async function checkAdultImageRequest(query: string, research: (name: string) => Promise<EntityDossier | null>): Promise<AdultCheck> {
+export async function checkAdultImageRequest(
+  query: string,
+  research: (name: string) => Promise<EntityDossier | null>,
+  /** What is refused, for the reason line ("make sexual or explicit images", "search for sexual content"). */
+  what = "make sexual or explicit images",
+): Promise<AdultCheck> {
   if (!ADULT_IMAGE_QUERY.test(query)) return { allowed: true };
-  if (MINOR_WORDS.test(query)) return { allowed: false, reason: "I can't make sexual or explicit images involving minors." };
+  if (MINOR_WORDS.test(query)) return { allowed: false, reason: `I can't ${what} involving minors.` };
   const subject = adultSubject(query);
   if (!subject) return { allowed: true };
   const d = await research(subject).catch(() => null);
@@ -39,12 +44,12 @@ export async function checkAdultImageRequest(query: string, research: (name: str
   if (!want.some((w) => title.includes(w))) return { allowed: true, subject };
   const ages = statedAges(d);
   if (ages.length && Math.min(...ages) < 18) {
-    return { allowed: false, subject: d.title, reason: `I can't make sexual or explicit images of ${d.title} — they're a minor (age ${Math.min(...ages)}).` };
+    return { allowed: false, subject: d.title, reason: `I can't ${what} of ${d.title} — they're a minor (age ${Math.min(...ages)}).` };
   }
   const realPerson = !d.fandom && !FICTIONAL.test(d.description || "") &&
     d.facts.some((f) => /^(?:born|birth ?date|birth ?place)$/i.test(f.label));
   if (realPerson) {
-    return { allowed: false, subject: d.title, reason: `I can't make sexual or explicit images of ${d.title} — they're a real person.` };
+    return { allowed: false, subject: d.title, reason: `I can't ${what} of ${d.title} — they're a real person.` };
   }
   return { allowed: true, subject: d.title };
 }

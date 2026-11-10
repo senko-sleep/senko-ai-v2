@@ -76,6 +76,30 @@ export async function cseImageSearch(query: string, opts: { start?: number; safe
   return [];
 }
 
+export interface CseWebItem {
+  link: string;
+  title?: string;
+  snippet?: string;
+}
+
+/** One page (up to 10) of web results. Same key rotation as images; [] when every key is used up. */
+export async function cseWebSearch(query: string, opts: { start?: number; safe?: "off" | "active"; signal?: AbortSignal } = {}): Promise<CseWebItem[]> {
+  const cx = cseEngineId();
+  if (!cx) return [];
+  for (const key of available()) {
+    const url = `https://customsearch.googleapis.com/customsearch/v1?key=${encodeURIComponent(key)}&cx=${encodeURIComponent(cx)}&num=10&start=${opts.start ?? 1}&safe=${opts.safe ?? "off"}&q=${encodeURIComponent(query)}`;
+    const res = await fetch(url, { signal: opts.signal ?? AbortSignal.timeout(8000) });
+    if (res.ok) return ((await res.json()) as { items?: CseWebItem[] }).items || [];
+    const body = await res.text();
+    if (isQuotaError(res.status, body)) {
+      usedUp.set(key, Date.now() + msUntilPacificMidnight());
+      continue;
+    }
+    throw new Error(`Google Programmable Search ${res.status}: ${body.slice(0, 200)}`);
+  }
+  return [];
+}
+
 /** Tests only. */
 export function resetCseQuota() {
   usedUp.clear();

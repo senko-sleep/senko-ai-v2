@@ -1,19 +1,20 @@
 import type { NextRequest } from "next/server";
 import { requireChat } from "@/lib/server/chats";
 import { errorResponse, route } from "@/lib/server/identity";
-import { verifyLive } from "@/lib/auth-token";
+import { LIVE_CORS, livePreflight, liveToken, verifyLive } from "@/lib/auth-token";
 import { BrowserInputConflict, sessions } from "@/lib/agent/sessions";
 import { INPUT_BATCH_SIZE, INPUT_PROTOCOL_VERSION, isBrowserInput } from "@/lib/live-input";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const OPTIONS = livePreflight;
 
 type Ctx = { params: Promise<{ chatId: string }> };
 
-async function apply(chatId: string, req: NextRequest, ownerId?: string) {
+async function apply(chatId: string, req: NextRequest, ownerId: string, restore: boolean) {
   let s = sessions.get(chatId);
-  if (!s && ownerId && (await sessions.status(chatId)).status !== "closed") s = await sessions.open(chatId, ownerId);
-  if (!s) return Response.json({ error: "The browser session isn't open.", code: "SESSION_MISSING" }, { status: 404 });
+  if (!s && restore && (await sessions.status(chatId)).status !== "closed") s = await sessions.open(chatId, ownerId);
+  if (!s || s.ownerId !== ownerId) return Response.json({ error: "The browser session isn't open.", code: "SESSION_MISSING" }, { status: 404 });
   // Parsed whatever the content type: direct links send text/plain to skip the CORS preflight.
   const body: unknown = await req.json().catch(() => null);
   const events = body && typeof body === "object" && "events" in body ? body.events : [body];
@@ -52,19 +53,19 @@ async function apply(chatId: string, req: NextRequest, ownerId?: string) {
 const viaHost = route<Ctx>(async (req, who, { params }) => {
   const { chatId } = await params;
   await requireChat(who.ownerId, chatId);
-  return apply(chatId, req, who.ownerId);
+  return apply(chatId, req, who.ownerId, true);
 });
 
 // POST InputEvent -> your own clicks/typing in the live view (takeover mode).
 // ?t= is the signed direct link from /live (cross-origin, straight to the agent computer).
 export async function POST(req: NextRequest, ctx: Ctx) {
-  const t = req.nextUrl.searchParams.get("t");
+  const t = liveToken(req);
   if (!t) return viaHost(req, ctx);
-  const cors = { "Access-Control-Allow-Origin": "*" };
   try {
     const { chatId } = await ctx.params;
-    if (!(await verifyLive(t, chatId))) return Response.json({ error: "This live link expired." }, { status: 401, headers: cors });
-    const res = await apply(chatId, req);
+    const ownerId = await verifyLive(t, chatId);
+    if (!ownerId) return Response.json({ error: "This live link expired." }, { status: 401, headers: LIVE_CORS });
+    const res = await apply(chatId, req, ownerId, false);
     res.headers.set("Access-Control-Allow-Origin", "*");
     return res;
   } catch (e) {

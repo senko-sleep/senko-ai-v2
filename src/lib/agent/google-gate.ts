@@ -176,7 +176,7 @@ export function classifyBotChallenge(input: ChallengeProbeInput): BotChallengeIn
     );
   if (
     (!input.challengeProviderHint || input.challengeProviderHint === "cloudflare") &&
-    ((cfTitle && isShortInterstitial) || (cfBody && isShortInterstitial) || (input.challengeProviderHint === "cloudflare" && isShortInterstitial))
+    isShortInterstitial && (cfTitle || cfBody)
   ) {
     const interactive =
       Boolean(input.hasChallengeWidget) || /verify you are human|complete the action below|attention required/i.test(body + " " + title);

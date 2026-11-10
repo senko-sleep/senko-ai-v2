@@ -43,10 +43,7 @@ const g = globalThis as unknown as {
   __agentBrowser?: Promise<Browser>;
   __agentBrowserMode?: BrowserMode;
   __remoteKeepalive?: ReturnType<typeof setInterval>;
-  __browserbaseLiveViewUrl?: string;
   __browserbaseSessionId?: string;
-  __browserbaseReconnectSessionId?: string;
-  __browserbaseLivePageId?: string;
   __wasiPlatform?: boolean;
 };
 let steelSessionIdFromBrowser: string | null = null;
@@ -54,7 +51,6 @@ let steelSessionIdFromBrowser: string | null = null;
 export interface BrowserMode {
   headed: boolean;
   channel: string;
-  liveViewUrl?: string;
   sessionId?: string;
 }
 
@@ -81,7 +77,6 @@ function markRemoteBrowser(b: Browser, provider: string, onDisconnect?: () => vo
   g.__agentBrowserMode = {
     headed: false,
     channel: provider,
-    liveViewUrl: provider === "Browserbase" ? g.__browserbaseLiveViewUrl : undefined,
     sessionId: provider === "Browserbase" ? g.__browserbaseSessionId : undefined,
   };
   console.log(`[browser] connected to ${provider} Chromium v${b.version()}`);
@@ -105,9 +100,7 @@ function markRemoteBrowser(b: Browser, provider: string, onDisconnect?: () => vo
     void onDisconnect?.();
     // A replacement may already be starting (restartBrowser): leave its state alone.
     if (!(await forgetBrowser(b))) return;
-    g.__browserbaseLiveViewUrl = undefined;
     g.__browserbaseSessionId = undefined;
-    g.__browserbaseLivePageId = undefined;
     g.__agentBrowserMode = undefined;
   });
 }
@@ -165,7 +158,7 @@ async function connectBrowserbase(chromium: (typeof import("playwright"))["chrom
     const created = await createWithRegion(
       "https://api.browserbase.com/v1/sessions",
       { "X-BB-API-Key": apiKey, "content-type": "application/json" },
-      { timeout, keepAlive: true, browserSettings: { viewport: SCREEN, recordSession: true, logSession: true }, userMetadata: { application: "senko-ai" } },
+      { timeout, keepAlive: true, browserSettings: { viewport: SCREEN, solveCaptchas: false, recordSession: true, logSession: true }, userMetadata: { application: "senko-ai" } },
       managedRegion("browserbase"),
     );
     if (!created.ok) throw new Error(`Browserbase session create returned HTTP ${created.status}`);
@@ -173,24 +166,8 @@ async function connectBrowserbase(chromium: (typeof import("playwright"))["chrom
   }
   if (!session.id || !session.connectUrl) throw new Error("Browserbase returned an incomplete session");
   try {
-    // Fetch the first-party interactive Live View alongside the CDP connection.
-    // It displays and controls the remote browser directly, without a screenshot loop.
-    const liveViewPromise = fetch(`https://api.browserbase.com/v1/sessions/${encodeURIComponent(session.id)}/debug`, {
-      headers: { "X-BB-API-Key": apiKey },
-      signal: AbortSignal.timeout(5_000),
-    }).then(async (response) => {
-      if (!response.ok) return null;
-      const data = (await response.json()) as { debuggerUrl?: string; debuggerFullscreenUrl?: string; pages?: Array<{ id?: string; debuggerUrl?: string; url?: string }> };
-      const raw = data.debuggerUrl || data.debuggerFullscreenUrl;
-      if (!raw) return null;
-      const url = new URL(raw);
-      const host = url.hostname.toLowerCase();
-      return url.protocol === "https:" && (host === "browserbase.com" || host.endsWith(".browserbase.com")) ? url.toString() : null;
-    }).catch(() => null);
     const browser = await chromium.connectOverCDP(session.connectUrl, { timeout: 30_000 });
-    g.__browserbaseLiveViewUrl = await liveViewPromise || undefined;
     g.__browserbaseSessionId = session.id;
-    g.__browserbaseLivePageId = undefined;
     return browser;
   } catch (error) {
     if (!reconnectSessionId) {
@@ -285,7 +262,7 @@ async function launch(browserbaseSessionId?: string): Promise<Browser> {
 
   const failures: string[] = [];
   const providers: Array<{ name: string; key?: string; connect: (key: string) => Promise<Browser>; released?: (key: string) => () => void }> = [];
-  if (apiKey) providers.push({ name: "Browserbase", key: apiKey, connect: (key) => connectBrowserbase(chromium, key, browserbaseSessionId) });
+  if (apiKey) providers.push({ name: "Browserbase", key: apiKey, connect: key => connectBrowserbase(chromium, key) });
   if (steelApiKey) {
     providers.push({
       name: "Steel",
@@ -308,6 +285,13 @@ async function launch(browserbaseSessionId?: string): Promise<Browser> {
   if (order.length) providers.sort((a, b) => (order.indexOf(a.name.toLowerCase()) + 1 || 99) - (order.indexOf(b.name.toLowerCase()) + 1 || 99));
 
   const connectManaged = async (): Promise<Browser | null> => {
+    if (apiKey && browserbaseSessionId) {
+      const existing = await connectBrowserbase(chromium, apiKey, browserbaseSessionId).catch(() => null);
+      if (existing) {
+        markRemoteBrowser(existing, "Browserbase");
+        return existing;
+      }
+    }
     for (const provider of providers) {
       try {
         const b = await provider.connect(provider.key!);
@@ -325,11 +309,12 @@ async function launch(browserbaseSessionId?: string): Promise<Browser> {
   // Docker, your PC): it streams our own live view with the agent's cursor and honours
   // AGENT_HOST_REGION / BROWSER_PROXY_URL. Managed providers are the fallback, or come
   // first with BROWSER_PROVIDER=managed and on hosts that can't launch Chromium.
-  const canLaunchLocally = !process.env.VERCEL && !wasiHost;
-  const preferLocal = process.env.BROWSER_PROVIDER === "local" || (process.env.BROWSER_PROVIDER !== "managed" && canLaunchLocally);
+  const canLaunchLocally = !process.env.VERCEL && !process.env.WASMER_APP_ID && !wasiHost;
+  const preferLocal = canLaunchLocally && process.env.BROWSER_PROVIDER !== "managed";
   if (!preferLocal) {
     const managed = await connectManaged();
     if (managed) return managed;
+    if (!canLaunchLocally) throw new Error("No managed Chromium connected. Configure a browser provider or an external Chromium agent host.");
   }
 
   const headed = isHeaded();
@@ -339,7 +324,6 @@ async function launch(browserbaseSessionId?: string): Promise<Browser> {
     "--disable-dev-shm-usage",
     "--no-first-run",
     "--no-default-browser-check",
-    "--disable-blink-features=AutomationControlled",
     // Keep normal autoplay restrictions: playback checks must use real user gestures.
     "--disable-features=Translate,MediaRouter",
     ...(isLowMemoryHost()
@@ -409,12 +393,16 @@ export function browserProxy(): { server: string; username?: string; password?: 
   }
 }
 
-export async function getBrowser(browserbaseSessionId?: string): Promise<Browser> {
+export async function getBrowser(reconnect?: string | (() => Promise<string | undefined>)): Promise<Browser> {
   if (!g.__agentBrowser) {
-    g.__agentBrowser = launch(browserbaseSessionId).catch((e) => {
-      g.__agentBrowser = undefined;
+    const pending = (async () => {
+      const id = typeof reconnect === "function" ? await reconnect() : reconnect;
+      return launch(id);
+    })().catch((e) => {
+      if (g.__agentBrowser === pending) g.__agentBrowser = undefined;
       throw e;
     });
+    g.__agentBrowser = pending;
   }
   const pending = g.__agentBrowser;
   const b = await pending;
@@ -441,53 +429,6 @@ export async function restartBrowser(reason: string): Promise<void> {
   console.warn(`[browser] restarting the browser: ${reason}`);
   // close() kills a local Chrome; on a remote provider it drops the CDP connection.
   await Promise.race([b.close().catch(() => {}), new Promise((r) => setTimeout(r, 10_000))]);
-}
-
-/** Release the current managed Browserbase session when a user explicitly closes the browser. */
-export async function releaseManagedBrowserSession(sessionId = g.__browserbaseSessionId) {
-  const apiKey = process.env.BROWSERBASE_API_KEY?.trim();
-  if (!sessionId || !apiKey) return;
-  await fetch(`https://api.browserbase.com/v1/sessions/${encodeURIComponent(sessionId)}`, {
-    method: "POST",
-    headers: { "X-BB-API-Key": apiKey, "content-type": "application/json" },
-    body: JSON.stringify({ status: "REQUEST_RELEASE" }),
-    signal: AbortSignal.timeout(10_000),
-  }).catch(() => {});
-  g.__browserbaseSessionId = undefined;
-  g.__browserbaseLivePageId = undefined;
-  g.__browserbaseLiveViewUrl = undefined;
-  g.__agentBrowserMode = undefined;
-}
-
-/** Point the embedded Live View at the active page, not an unused blank startup tab. */
-export async function selectBrowserbaseLivePage(pageUrl: string): Promise<boolean> {
-  const sessionId = g.__browserbaseSessionId;
-  const apiKey = process.env.BROWSERBASE_API_KEY?.trim();
-  if (!sessionId || !apiKey || browserMode()?.channel !== "Browserbase") return false;
-  try {
-    const response = await fetch(`https://api.browserbase.com/v1/sessions/${encodeURIComponent(sessionId)}/debug`, {
-      headers: { "X-BB-API-Key": apiKey },
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!response.ok) return false;
-    const data = (await response.json()) as {
-      debuggerUrl?: string;
-      pages?: Array<{ id?: string; debuggerUrl?: string; url?: string }>;
-    };
-    const active = [...(data.pages || [])].reverse().find((page) => page.url === pageUrl && page.debuggerUrl);
-    const raw = active?.debuggerUrl || data.debuggerUrl;
-    if (!raw) return false;
-    const url = new URL(raw);
-    const host = url.hostname.toLowerCase();
-    if (url.protocol !== "https:" || (host !== "browserbase.com" && !host.endsWith(".browserbase.com"))) return false;
-    if (active?.id && active.id === g.__browserbaseLivePageId && g.__browserbaseLiveViewUrl === url.toString()) return false;
-    g.__browserbaseLivePageId = active?.id;
-    g.__browserbaseLiveViewUrl = url.toString();
-    if (g.__agentBrowserMode?.channel === "Browserbase") g.__agentBrowserMode.liveViewUrl = g.__browserbaseLiveViewUrl;
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 export function browserMode(): BrowserMode | undefined {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Bot, Code2, Compass, Cpu, Download, Globe, KeyRound, Loader2, MessageSquare, PanelLeftOpen, SquarePen } from "lucide-react";
 import { extractOpenTags, parseBrowserCommand } from "@/lib/browser-commands";
 import { extractDocumentFromFile } from "@/lib/document-extractor";
@@ -24,6 +24,7 @@ import { Welcome } from "./welcome";
 import { FoxMark } from "./fox-mark";
 import { createLiveBus } from "./live-view";
 import { createInputChannel, deliverInputBatch, InputTransportError, INPUT_PROTOCOL_VERSION, type BrowserInput } from "@/lib/live-input";
+import { connectLiveStream } from "@/lib/live-wire";
 import * as API from "./api";
 import {
   errorFromResponse,
@@ -86,6 +87,21 @@ function setHash(id: string | null) {
   window.history.replaceState(null, "", url);
 }
 
+function subscribeToVisualViewport(onChange: () => void) {
+  window.visualViewport?.addEventListener("resize", onChange);
+  window.addEventListener("resize", onChange);
+  return () => {
+    window.visualViewport?.removeEventListener("resize", onChange);
+    window.removeEventListener("resize", onChange);
+  };
+}
+
+function mobileKeyboardViewportHeight() {
+  const viewport = window.visualViewport;
+  if (!viewport || window.innerWidth >= 1024 || viewport.scale !== 1 || window.innerHeight - viewport.height < 120) return 0;
+  return Math.round(viewport.height);
+}
+
 export default function AssistantApp() {
   // ---- connection + data ---------------------------------------------------
   const [conn, setConn] = useState<"connecting" | "ready" | "needs-key" | "error">("connecting");
@@ -110,6 +126,8 @@ export default function AssistantApp() {
   const [streamingId, setStreamingId] = useState<string | null>(null);
   const [browser, setBrowser] = useState<BrowserState>(EMPTY_BROWSER);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [composerFocused, setComposerFocused] = useState(false);
+  const keyboardViewportHeight = useSyncExternalStore(subscribeToVisualViewport, mobileKeyboardViewportHeight, () => 0);
   const [, setSessionAvailable] = useState(false);
   const [browserOpening, setBrowserOpening] = useState(false);
   /** You're driving the agent's browser (takeover). */
@@ -136,7 +154,7 @@ export default function AssistantApp() {
 
   const abortRef = useRef<AbortController | null>(null);
   const agentChatRef = useRef<string | null>(null);
-  const streamRef = useRef<EventSource | null>(null);
+  const streamRef = useRef<ReturnType<typeof connectLiveStream> | null>(null);
   const streamRetry = useRef<ReturnType<typeof setTimeout> | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -287,7 +305,8 @@ export default function AssistantApp() {
   const inputControl = useRef<number | undefined>(undefined);
   const inputSession = useRef<string | undefined>(undefined);
   const inputRecovery = useRef<Promise<void> | null>(null);
-  const displayRate = useRef(120);
+  const displayRate = useRef(60);
+  const agentHostVersion = useRef<number | undefined>(undefined);
   const sizedSession = useRef<string | null>(null);
   const panelOpenRef = useRef(false);
   useEffect(() => {
@@ -304,34 +323,28 @@ export default function AssistantApp() {
   // A link that fails once falls back to the normal path for that chat.
   const directLive = useRef<Map<string, { url: string | null; until: number }>>(new Map());
   const attachStream = useCallback(
-    (chatId: string, viaHost = false) => {
+    (chatId: string, replace = false, restore = false) => {
+      if (!replace && streamRef.current) return;
       closeStream();
       if (document.hidden) return;
       const cached = directLive.current.get(chatId);
-      if (!viaHost && (!cached || cached.until < Date.now())) {
+      if (!cached || cached.until < Date.now()) {
         // Ask once (cheap); reconnect with whatever we learn.
         directLive.current.set(chatId, { url: null, until: Date.now() + 9 * 60_000 });
         fetch(`/api/sessions/${chatId}/live`)
           .then((r) => (r.ok ? r.json() : { url: null }))
           .then((j: { url?: string | null }) => {
             directLive.current.set(chatId, { url: j.url || null, until: Date.now() + 9 * 60_000 });
-            if (j.url && activeRef.current === chatId && panelOpenRef.current) attachStream(chatId);
+            if (j.url && activeRef.current === chatId && panelOpenRef.current) attachStream(chatId, true, restore);
           })
           .catch(() => {});
       }
-      const direct = viaHost ? null : directLive.current.get(chatId)?.url;
+      const direct = directLive.current.get(chatId)?.url;
       const streamUrl = new URL(direct || `/api/sessions/${chatId}/stream`, window.location.href);
       streamUrl.searchParams.set("fps", String(displayRate.current));
-      const es = new EventSource(streamUrl.href);
-      streamRef.current = es;
-      es.onmessage = (ev) => {
-        if (streamRef.current !== es || activeRef.current !== chatId) return;
-        let e: { type: string } & Record<string, unknown>;
-        try {
-          e = JSON.parse(ev.data);
-        } catch {
-          return;
-        }
+      if (restore) streamUrl.searchParams.set("restore", "1");
+      const stream = connectLiveStream(streamUrl, e => {
+        if (streamRef.current !== stream || activeRef.current !== chatId) return;
         // Frames and cursor moves go straight to the live view (no React re-render per frame).
         if (e.type === "reset") {
           inputChannel.current?.channel.dispose();
@@ -346,6 +359,11 @@ export default function AssistantApp() {
         }
         if (e.type === "frame" || e.type === "cursor" || e.type === "reset" || e.type === "pointer" || e.type === "audio") liveBus.emit(e as never);
         if (e.type === "status") {
+          if (e.browserDisconnected && panelOpenRef.current) {
+            closeStream();
+            streamRetry.current = setTimeout(() => attachStream(chatId, false, true), 1000);
+            return;
+          }
           if (typeof e.sessionId === "string") {
             if (inputSession.current !== undefined && inputSession.current !== e.sessionId) {
               inputChannel.current?.channel.dispose(); inputChannel.current = null;
@@ -388,20 +406,20 @@ export default function AssistantApp() {
         if (e.type === "plan" && Array.isArray(e.steps)) {
           setBrowser((b) => ({ ...b, plan: e.steps as string[] }));
         }
-      };
-      es.onerror = () => {
+      }, () => {
         // The session may not exist yet (agent just starting) or the server restarted: retry while useful.
-        es.close();
-        if (streamRef.current !== es) return;
+        stream.close();
+        if (streamRef.current !== stream) return;
         streamRef.current = null;
         // A direct link that failed (expired, host replaced, blocked): use the normal path for a
         // minute, then ask for a fresh link.
         if (direct) directLive.current.set(chatId, { url: null, until: Date.now() + 60_000 });
         // Keep the view live whenever you're watching it, not only while a task runs.
         if ((runningRef.current || panelOpenRef.current) && activeRef.current === chatId) {
-          streamRetry.current = setTimeout(() => attachStream(chatId), runningRef.current ? 1500 : 4000);
+          streamRetry.current = setTimeout(() => attachStream(chatId, false, restore || panelOpenRef.current), runningRef.current ? 1500 : 4000);
         }
-      };
+      });
+      streamRef.current = stream;
     },
     [closeStream, liveBus]
   );
@@ -417,10 +435,7 @@ export default function AssistantApp() {
       else {
         gaps.sort((a, b) => a - b);
         const rate = Math.min(240, Math.max(1, Math.round(1000 / gaps[Math.floor(gaps.length / 2)])));
-        if (Math.abs(rate - displayRate.current) > 2) {
-          displayRate.current = rate;
-          if (panelOpenRef.current && activeRef.current) attachStream(activeRef.current);
-        }
+        displayRate.current = rate;
       }
     };
     const measure = () => {
@@ -436,7 +451,7 @@ export default function AssistantApp() {
       window.removeEventListener("resize", measure);
       document.removeEventListener("visibilitychange", measure);
     };
-  }, [attachStream]);
+  }, []);
   // Your own clicks in the reader view (the HTTP browser the agent uses when there's no Chromium).
   const [pageBusy, setPageBusy] = useState(false);
   const pageOp = useCallback(async (op: PageOp) => {
@@ -461,7 +476,12 @@ export default function AssistantApp() {
     if (!chatId || browserOpening) return;
     setBrowserOpening(true);
     try {
-      await API.ensureAgentHost();
+      const version = await API.ensureAgentHost();
+      if (agentHostVersion.current !== undefined && agentHostVersion.current !== version) {
+        directLive.current.delete(chatId);
+        closeStream();
+      }
+      agentHostVersion.current = version;
       // Opening is idempotent, so always ask: a quick task may have been answered without a browser.
       if (!browser.running) {
         const response = await fetch(`/api/sessions/${chatId}`, {
@@ -494,7 +514,7 @@ export default function AssistantApp() {
     } finally {
       setBrowserOpening(false);
     }
-  }, [attachStream, browser.running, browserOpening]);
+  }, [attachStream, browser.running, browserOpening, closeStream]);
 
   const toggleBrowserPanel = useCallback(async () => {
     if (panelOpen) {
@@ -853,7 +873,7 @@ export default function AssistantApp() {
       setControlling(j.takeover);
       if (previousSession && j.sessionId && previousSession !== j.sessionId) {
         directLive.current.delete(chatId);
-        attachStream(chatId);
+        attachStream(chatId, true);
       }
     } catch (error) {
       if (activeRef.current !== chatId || request !== controlRequest.current) return;
@@ -893,8 +913,13 @@ export default function AssistantApp() {
               const body = JSON.stringify({ events, epoch, control: inputControl.current, sessionId: inputSession.current, protocol: INPUT_PROTOCOL_VERSION });
             const cached = directLive.current.get(chatId);
             const direct = cached && cached.until > Date.now() ? cached.url?.replace("/stream?", "/input?") : null;
+            const token = direct ? new URL(direct).searchParams.get("t") : null;
             let response = direct
-              ? await fetch(direct, { method: "POST", headers: { "Content-Type": "text/plain" }, body, signal })
+              ? await fetch(direct, {
+                  method: "POST",
+                  headers: { "Content-Type": "text/plain", ...(token ? { Authorization: `SenkoLive ${token}` } : {}) },
+                  body, signal,
+                })
               : null;
             // These responses guarantee no input ran. Never retry a lost response.
             if (!response || response.status === 401 || response.status === 404) {
@@ -924,7 +949,7 @@ export default function AssistantApp() {
           if (error instanceof InputTransportError && error.code === "SESSION_CHANGED") {
             directLive.current.delete(chatId);
             inputSession.current = undefined; inputEpoch.current = undefined; inputControl.current = undefined;
-            attachStream(chatId);
+            attachStream(chatId, true);
             return;
           }
           if (error instanceof InputTransportError && ["STALE_VIEW", "STALE_CONTROL"].includes(error.code || "")) {
@@ -1007,12 +1032,16 @@ export default function AssistantApp() {
         // On Vercel the browser runs on an on-demand computer: wake it first (instant if up).
         const slow = setTimeout(() => setBrowser((b) => ({ ...b, status: "Starting the agent computer…" })), 800);
         try {
-          await API.ensureAgentHost();
+          const version = await API.ensureAgentHost();
           // The host may have renewed since the last task. Do not keep watching
           // or sending input to the old, still-running browser computer.
-          directLive.current.delete(chatId);
-          inputSession.current = undefined; inputEpoch.current = undefined; inputControl.current = undefined;
-          attachStream(chatId);
+          const renewed = agentHostVersion.current !== undefined && agentHostVersion.current !== version;
+          agentHostVersion.current = version;
+          if (renewed) {
+            directLive.current.delete(chatId);
+            inputSession.current = undefined; inputEpoch.current = undefined; inputControl.current = undefined;
+          }
+          attachStream(chatId, renewed);
         } finally {
           clearTimeout(slow);
         }
@@ -1055,6 +1084,9 @@ export default function AssistantApp() {
               patch(replyId, (m) => ({ ...m, agent: { ...m.agent!, trail: trail.filter(Boolean) } }));
               break;
             }
+            case "videos":
+              patch(replyId, (m) => ({ ...m, videos: (e.videos as Msg["videos"]) || m.videos }));
+              break;
             case "images":
               patch(replyId, (m) => ({ ...m, imageIds: [...new Set([...(m.imageIds || []), ...((e.imageIds as string[]) || [])])] }));
               break;
@@ -1635,15 +1667,20 @@ export default function AssistantApp() {
       onStop={stop}
       busy={busy}
       mode={mode}
+      followUp={panelOpen && !isEmpty}
       attachments={attachments}
       onAddFiles={addFiles}
       onRemoveAttachment={removeAttachment}
+      onFocusChange={setComposerFocused}
       inputRef={inputRef}
     />
   );
 
   return (
-    <div className="sk flex h-dvh overflow-hidden">
+    <div
+      className="sk sk-assistant flex h-dvh overflow-hidden"
+      style={keyboardViewportHeight ? { height: keyboardViewportHeight } : undefined}
+    >
       {/* Sidebar: docked flush on desktop, drawer on smaller screens */}
       {sidebarOpen && (
         <>
@@ -1668,7 +1705,7 @@ export default function AssistantApp() {
       )}
 
       {/* Center Conversation Column */}
-      <main className="flex min-w-0 flex-1 flex-col">
+      <main className={`sk-conversation flex min-h-0 min-w-0 flex-1 flex-col ${panelOpen ? "sk-conversation-with-browser" : ""}`}>
         {/* Precision Workspace Header */}
         <header className="@container flex h-11 shrink-0 items-center justify-between gap-2 border-b border-[var(--sk-line)] px-2.5 sm:gap-3 sm:px-4">
           <div className="flex min-w-0 flex-1 items-center gap-1">
@@ -1827,8 +1864,41 @@ export default function AssistantApp() {
           </div>
         </header>
 
+        {panelOpen && (
+          <div className="sk-browser-dock sk-in min-h-0 min-w-0">
+            <BrowserPanel
+              chatId={activeId}
+              state={browser}
+              bus={liveBus}
+              controlling={controlling}
+              paused={paused}
+              pauseReason={pauseReason}
+              verification={verification}
+              tabs={sessionTabs}
+              mobileDock
+              compactWhileTyping={composerFocused && !!keyboardViewportHeight}
+              requireExpanded={!!approval}
+              onSwitchTab={(idx) => void switchBrowserTab(idx)}
+              onCloseTab={(idx) => void closeBrowserTab(idx)}
+              onNewTab={() => void newBrowserTab()}
+              onStop={stop}
+              onClose={() => setPanelOpen(false)}
+              onOpenBrowser={openLiveBrowser}
+              onPageOp={pageOp}
+              pageBusy={pageBusy}
+              opening={browserOpening}
+              onToggleControl={() => activeId && void setControl(activeId, !controlling)}
+              onResume={resumeAgent}
+              onInput={sendInput}
+              onViewport={sendViewport}
+              agentName={activeProvider?.label && !/^senko/i.test(activeProvider.label) ? `Senko · ${activeProvider.label}` : "Senko"}
+              onNav={(n) => sendInput("url" in n ? { type: "goto", url: n.url } : { type: "nav", action: n.action })}
+            />
+          </div>
+        )}
+
         {/* Thread + Composer */}
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div className="sk-chat-thread flex min-h-0 min-w-0 flex-1 flex-col">
           {isEmpty ? (
             <div className="sk-scroll min-h-0 flex-1 overflow-y-auto">
               <Welcome
@@ -1841,11 +1911,10 @@ export default function AssistantApp() {
                 onPick={pickSuggestion}
                 onRefresh={() => void loadSuggestions(true)}
                 onOpenSettings={() => setSettingsOpen(true)}
-                composer={composer}
+                composer={panelOpen ? null : composer}
               />
             </div>
           ) : (
-            <>
               <div ref={listRef} className="sk-scroll min-h-0 flex-1 overflow-y-auto" aria-live="polite" aria-busy={busy}>
                 <div className="mx-auto w-full max-w-[700px] space-y-5 px-4 pb-6 pt-4 sm:px-6">
                   {chatLoading ? (
@@ -1872,14 +1941,15 @@ export default function AssistantApp() {
                   )}
                 </div>
               </div>
-              <div className="mx-auto w-full max-w-[700px] shrink-0 border-t border-[var(--sk-line)]/50 bg-[var(--sk-bg)]/85 px-4 pb-3 pt-2 backdrop-blur-md sm:px-6">
-                {approval && <ApprovalBar approval={approval} busy={approvalBusy || busy} onApprove={() => void approveAction()} onDeny={() => void denyAction()} />}
-                {composer}
-                <p className="px-2 pt-1.5 text-center text-[10.5px] text-[var(--sk-faint)]">
-                  {mode === "agent" ? "Agent mode drives a real browser. You can intervene or stop anytime." : "Senko adapts to code, research, and live browser tasks."}
-                </p>
-              </div>
-            </>
+          )}
+          {(!isEmpty || panelOpen) && (
+            <div className="sk-chat-footer mx-auto w-full max-w-[700px] shrink-0 border-t border-[var(--sk-line)]/50 bg-[var(--sk-bg)]/85 px-4 pb-3 pt-2 backdrop-blur-md sm:px-6">
+              {approval && <ApprovalBar approval={approval} busy={approvalBusy || busy} onApprove={() => void approveAction()} onDeny={() => void denyAction()} />}
+              {composer}
+              <p className="sk-chat-caption px-2 pt-1.5 text-center text-[10.5px] text-[var(--sk-faint)]">
+                {mode === "agent" ? "Agent mode drives a real browser. You can intervene or stop anytime." : "Senko adapts to code, research, and live browser tasks."}
+              </p>
+            </div>
           )}
         </div>
       </main>
@@ -1908,37 +1978,6 @@ export default function AssistantApp() {
               if (targetMode && targetMode !== mode) changeMode(targetMode);
               void send(prompt, targetMode || mode);
             }}
-          />
-        </div>
-      )}
-
-      {/* Live browser: full-height docked pane on desktop, sheet on smaller screens */}
-      {panelOpen && (
-        <div className="sk-in sk-overlay fixed inset-x-1.5 bottom-1.5 top-12 z-20 lg:static lg:inset-auto lg:z-auto lg:h-full lg:w-[52%] lg:max-w-[1200px] lg:shrink-0 2xl:w-[56%]">
-          <BrowserPanel
-            chatId={activeId}
-            state={browser}
-            bus={liveBus}
-            controlling={controlling}
-            paused={paused}
-            pauseReason={pauseReason}
-            verification={verification}
-            tabs={sessionTabs}
-            onSwitchTab={(idx) => void switchBrowserTab(idx)}
-            onCloseTab={(idx) => void closeBrowserTab(idx)}
-            onNewTab={() => void newBrowserTab()}
-            onStop={stop}
-            onClose={() => setPanelOpen(false)}
-            onOpenBrowser={openLiveBrowser}
-            onPageOp={pageOp}
-            pageBusy={pageBusy}
-            opening={browserOpening}
-            onToggleControl={() => activeId && void setControl(activeId, !controlling)}
-            onResume={resumeAgent}
-            onInput={sendInput}
-            onViewport={sendViewport}
-            agentName={activeProvider?.label && !/^senko/i.test(activeProvider.label) ? `Senko · ${activeProvider.label}` : "Senko"}
-            onNav={(n) => sendInput("url" in n ? { type: "goto", url: n.url } : { type: "nav", action: n.action })}
           />
         </div>
       )}

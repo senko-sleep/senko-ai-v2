@@ -35,7 +35,7 @@ With `LLM_PROVIDER=auto` (default) the app tries Ollama first, then each cloud k
 
 ## Host it online (works from any device)
 
-The app can run on Wasmer Edge with Browserbase providing the cloud Chromium used by Agent mode. The `Dockerfile` remains available for other Node hosts and local container use.
+The app can run on Wasmer Edge with managed Chromium or with [an installed Chromium on a native agent host](SETUP.md#use-installed-chromium-on-a-native-agent-host). The `Dockerfile` remains available for other Node hosts and local container use.
 
 1. Push this repo to GitHub.
 2. Deploy the app to Wasmer Edge using `app.yaml`.
@@ -43,7 +43,7 @@ The app can run on Wasmer Edge with Browserbase providing the cloud Chromium use
    - `APP_PASSWORD`: **always set this.** The site then asks for it (any username), so strangers can't use your keys or your agent.
    - `GROQ_API_KEY`: free at https://console.groq.com/keys. A hosted server can't run Ollama, so it needs a cloud key.
    - `BROWSERBASE_API_KEY`: runs Agent mode in Browserbase's cloud Chrome. The API key identifies the project; no project ID is needed.
-   - Optional browser failovers: `BROWSERLESS_TOKEN` then `STEEL_API_KEY`. Agent mode tries those in order if Browserbase cannot start a browser.
+   - Optional browser failovers: `STEEL_API_KEY` then `BROWSERLESS_TOKEN`. Agent mode tries those in order if Browserbase cannot start a browser.
    - Optional: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, or `OLLAMA_URL` pointing to an Ollama server that is reachable from the internet.
    - Optional: `LLM7_API_KEY` adds LLM7 to the AI provider options, using its `default` model unless `LLM7_MODEL` is set.
 4. For SambaNova, also set `SAMBANOVA_API_KEY`. For Cloudflare Workers AI, set both `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` with Workers AI access. Open the URL the host gives you on any device.
@@ -54,7 +54,7 @@ The app can run on Wasmer Edge with Browserbase providing the cloud Chromium use
 Browser UI ──/api/chat────► LLM layer (src/lib/llm) ──► Ollama | Groq | OpenRouter | ...
            ──/api/agent───► Agent loop (src/lib/agent) ──► Playwright Chromium
                               ▲  plan → observe page → choose 1 action → act → repeat
-                              └─ streams screenshots + steps back as server-sent events
+                              └─ streams the Chromium screencast and steps as server-sent events
            ──/api/agent/stop  aborts the run
 ```
 

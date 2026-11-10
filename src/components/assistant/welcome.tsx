@@ -51,9 +51,11 @@ export function Welcome({
         </p>
       </div>
 
-      <div className="sk-in mt-5" style={{ animationDelay: "40ms" }}>
-        {composer}
-      </div>
+      {composer && (
+        <div className="sk-in mt-5" style={{ animationDelay: "40ms" }}>
+          {composer}
+        </div>
+      )}
 
       <section aria-labelledby="sk-suggest-h" className="sk-in mt-5" style={{ animationDelay: "80ms" }}>
         <div className="mb-1.5 flex items-center gap-2 px-1">

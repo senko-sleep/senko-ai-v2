@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type PointerEvent } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -16,6 +16,7 @@ import {
   MonitorPlay,
   MousePointerClick,
   OctagonX,
+  PictureInPicture2,
   Play,
   Plus,
   RotateCw,
@@ -54,7 +55,14 @@ const OUTCOME: Record<BrowserState["outcome"], { text: string; cls: string }> = 
 
 export type NavAction = { action: "back" | "forward" | "reload" } | { url: string };
 
-const iconBtn = "sk-btn h-7 w-7 shrink-0 rounded-md text-[var(--sk-muted)] hover:bg-[var(--sk-hover)] hover:text-[var(--sk-text)]";
+const iconBtn = "sk-btn sk-browser-icon h-7 w-7 shrink-0 rounded-md text-[var(--sk-muted)] hover:bg-[var(--sk-hover)] hover:text-[var(--sk-text)]";
+
+const narrowBrowserQuery = "(width < 64rem)";
+function subscribeToBrowserWidth(onChange: () => void) {
+  const media = window.matchMedia(narrowBrowserQuery);
+  media.addEventListener("change", onChange);
+  return () => media.removeEventListener("change", onChange);
+}
 
 export function BrowserPanel({
   chatId,
@@ -64,6 +72,9 @@ export function BrowserPanel({
   paused,
   pauseReason,
   verification,
+  mobileDock = false,
+  compactWhileTyping = false,
+  requireExpanded = false,
   tabs = [],
   onSwitchTab,
   onCloseTab,
@@ -90,6 +101,9 @@ export function BrowserPanel({
   paused: boolean;
   pauseReason?: string | null;
   verification?: VerificationInfo | null;
+  mobileDock?: boolean;
+  compactWhileTyping?: boolean;
+  requireExpanded?: boolean;
   tabs?: BrowserTabInfo[];
   onSwitchTab?: (index: number) => void;
   onCloseTab?: (index: number) => void;
@@ -115,6 +129,9 @@ export function BrowserPanel({
   const [showLog, setShowLog] = useState(false);
   const [editingUrl, setEditingUrl] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  const [minimized, setMinimized] = useState(false);
+  const mobileToggleRef = useRef<HTMLButtonElement>(null);
+  const narrowViewport = useSyncExternalStore(subscribeToBrowserWidth, () => window.matchMedia(narrowBrowserQuery).matches, () => false);
   const [expandedShotId, setExpandedShotId] = useState<string | null>(null);
   const [sound, setSound] = useState<LiveAudioState>({ active: false, heard: false, blocked: false, muted: false });
   const audioRef = useRef<ReturnType<typeof createLiveAudio> | null>(null);
@@ -154,6 +171,26 @@ export function BrowserPanel({
   const isVerificationChallenge =
     Boolean(verification?.active) ||
     Boolean(paused && pauseReason && /robot|verify|verification|captcha|cloudflare|security check/i.test(pauseReason));
+  const mobile = mobileDock && narrowViewport;
+  const needsAttention = isVerificationChallenge || requireExpanded;
+  const mini = mobile && !needsAttention && (minimized || compactWhileTyping);
+  const holdComposerFocus = (event: PointerEvent<HTMLButtonElement>) => {
+    // Keep the auto-compact buttons present until the tap completes.
+    if (mini && compactWhileTyping) event.preventDefault();
+  };
+  const expandBrowser = () => {
+    setMinimized(false);
+    mobileToggleRef.current?.focus({ preventScroll: true });
+  };
+  const mobileStatus = isVerificationChallenge ? "Verification needed"
+    : requireExpanded ? "Waiting for your approval"
+    : paused ? "Paused · Ready to resume"
+    : state.running ? state.status || "Senko is working"
+    : opening ? "Connecting to Chromium"
+    : state.outcome === "error" ? "Browser task needs attention"
+    : hasFrame ? "Live preview"
+    : state.page ? "Reader view"
+    : "Ready to browse";
 
   const lastDoneOrErr = [...state.steps].reverse().find((s) => s.status !== "running");
   const activePhase: "observing" | "planning" | "acting" | "verifying" | "recovering" | "waiting" | null =
@@ -175,17 +212,52 @@ export function BrowserPanel({
     <section
       ref={rootRef}
       aria-label="Live browser"
-      className="flex h-full min-h-0 flex-col overflow-hidden border-l border-[var(--sk-line)] bg-black max-lg:rounded-xl max-lg:border"
+      className="sk-browser-panel flex h-full min-h-0 flex-col overflow-hidden border-l border-[var(--sk-line)] bg-black max-lg:rounded-xl max-lg:border"
+      data-mobile={mobile}
+      data-mini={mini}
     >
+      {mobileDock && (
+        <div className="sk-browser-mobile-header">
+          <div className="sk-browser-mobile-copy">
+            <span className="sk-browser-mobile-label">
+              <span className={`sk-browser-mobile-dot ${state.running ? "sk-pulse" : ""}`} aria-hidden />
+              Browser
+            </span>
+            <span role="status" className="sk-browser-mobile-status" title={mobileStatus}>{mobileStatus}</span>
+            {mini && displayUrl && state.url !== "about:blank" && (
+              <span className="sk-browser-mobile-location" title={state.url}>{displayUrl}</span>
+            )}
+          </div>
+          <div className="sk-browser-mobile-actions">
+            <button
+              ref={mobileToggleRef}
+              type="button"
+              className="sk-btn sk-browser-mini-toggle"
+              aria-label={mini ? "Expand browser" : "Mini player (picture in picture)"}
+              aria-expanded={!mini}
+              disabled={needsAttention}
+              onPointerDown={holdComposerFocus}
+              onClick={mini ? expandBrowser : () => setMinimized(true)}
+            >
+              {mini ? <Maximize2 size={14} aria-hidden /> : <PictureInPicture2 size={15} aria-hidden />}
+              {mini ? "Expand" : "Mini player"}
+            </button>
+            <button type="button" onClick={onClose} className="sk-btn sk-browser-mobile-close" aria-label="Hide browser">
+              <X size={16} aria-hidden />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Multi-Tab Strip when session tabs are present */}
       {tabs.length > 0 && (
-        <div className="sk-scroll flex h-8 shrink-0 items-center gap-1 overflow-x-auto border-b border-[var(--sk-line)] bg-[var(--sk-bg-2)] px-2">
+        <div className="sk-browser-chrome sk-browser-tabs sk-scroll flex h-8 shrink-0 items-center gap-1 overflow-x-auto border-b border-[var(--sk-line)] bg-[var(--sk-bg-2)] px-2">
           {tabs.map((tab) => {
             const tabLabel = tab.title || tab.url.replace(/^https?:\/\/(www\.)?/, "") || `Tab ${tab.index + 1}`;
             return (
               <div
                 key={tab.index}
-                className={`group flex h-6 max-w-[180px] shrink-0 items-center gap-1.5 rounded-md px-2 text-[11px] transition-colors ${
+                className={`sk-browser-tab group flex h-6 max-w-[180px] shrink-0 items-center gap-1.5 rounded-md px-2 text-[11px] transition-colors ${
                   tab.active
                     ? "bg-[var(--sk-surface-2)] text-[var(--sk-text)] border border-[var(--sk-line-strong)]"
                     : "text-[var(--sk-muted)] hover:bg-[var(--sk-hover)] hover:text-[var(--sk-text)]"
@@ -232,7 +304,7 @@ export function BrowserPanel({
       )}
 
       {/* Navigation, Address, Control, and Sound Toolbar */}
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-[var(--sk-line)] bg-[var(--sk-bg)] px-1.5">
+      <div className="sk-browser-chrome sk-browser-toolbar flex h-10 shrink-0 items-center gap-1 border-b border-[var(--sk-line)] bg-[var(--sk-bg)] px-1.5">
         <div className="flex shrink-0 items-center" role="group" aria-label="Navigation">
           <button type="button" onClick={() => onNav({ action: "back" })} disabled={!hasFrame} className={`${iconBtn} disabled:opacity-40`} aria-label="Back" title="Back">
             <ArrowLeft size={14} />
@@ -264,7 +336,7 @@ export function BrowserPanel({
               onKeyDown={(e) => e.key === "Escape" && setEditingUrl(null)}
               aria-label="Address or search"
               placeholder="Search or enter address"
-              className="h-7 w-full rounded-full border border-[var(--sk-accent-line)] bg-white/[0.05] px-3 text-[12px] text-[var(--sk-text)] outline-none focus-visible:shadow-none"
+              className="sk-browser-address h-7 w-full rounded-full border border-[var(--sk-accent-line)] bg-white/[0.05] px-3 text-[12px] text-[var(--sk-text)] outline-none focus-visible:shadow-none"
             />
           </form>
         ) : (
@@ -319,6 +391,7 @@ export function BrowserPanel({
               onClick={onToggleControl}
               data-browser-control
               aria-pressed={controlling}
+              aria-label={controlling ? "View only" : state.running ? "Take control" : "Interact"}
               className={`sk-btn h-7 shrink-0 rounded-md px-2 text-[11px] font-medium ${
                 controlling ? "bg-[var(--sk-accent-soft)] text-[var(--sk-accent-ink)]" : "text-[var(--sk-muted)] hover:bg-[var(--sk-hover)] hover:text-[var(--sk-text)]"
               }`}
@@ -346,13 +419,13 @@ export function BrowserPanel({
           <button
             type="button"
             onClick={() => (document.fullscreenElement ? void document.exitFullscreen() : void rootRef.current?.requestFullscreen?.().catch(() => {}))}
-            className={`${iconBtn} hidden sm:inline-flex`}
+            className={`${iconBtn} sk-browser-desktop-control hidden sm:inline-flex`}
             aria-label={fullscreen ? "Exit full screen" : "Full screen"}
             title={fullscreen ? "Exit full screen" : "Full screen"}
           >
             {fullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
           </button>
-          <button type="button" onClick={onClose} className={iconBtn} aria-label="Hide browser" title="Close browser panel">
+          <button type="button" onClick={onClose} className={`${iconBtn} sk-browser-desktop-control`} aria-label="Hide browser" title="Close browser panel">
             <X size={14} />
           </button>
         </div>
@@ -363,7 +436,7 @@ export function BrowserPanel({
         <div
           role="status"
           aria-label="Agent status"
-          className="flex h-6 shrink-0 items-center gap-1.5 border-b border-[var(--sk-line)] px-3 text-[11px] text-[var(--sk-muted)]"
+          className="sk-browser-phase flex h-6 shrink-0 items-center gap-1.5 border-b border-[var(--sk-line)] px-3 text-[11px] text-[var(--sk-muted)]"
         >
           <span
             className={`h-1.5 w-1.5 shrink-0 rounded-full ${activePhase === "recovering" || activePhase === "waiting" ? "bg-[var(--sk-accent)]" : "bg-[var(--sk-faint)] animate-pulse"}`}
@@ -438,14 +511,14 @@ export function BrowserPanel({
       )}
 
       {state.inputError && (
-        <div role="alert" className="shrink-0 bg-[var(--sk-bg)] px-3 py-1.5 text-[11px] text-[var(--sk-danger)]">
+        <div role="alert" className="sk-browser-chrome shrink-0 bg-[var(--sk-bg)] px-3 py-1.5 text-[11px] text-[var(--sk-danger)]">
           {state.inputError}
         </div>
       )}
 
       {/* The live page: fills all remaining space, edge to edge */}
-      <div className="relative min-h-0 flex-1">
-        <LiveView bus={bus} title={state.title} onHasFrame={onHasFrame} agentRunning={state.running} agentName={agentName} interactive={controlling} onInput={onInput} onViewport={onViewport} />
+      <div className="sk-browser-picture relative min-h-0 flex-1" inert={mini}>
+        <LiveView bus={bus} title={state.title} onHasFrame={onHasFrame} agentRunning={state.running} agentName={agentName} interactive={controlling && !mini} onInput={onInput} onViewport={mini ? undefined : onViewport} />
         {!hasFrame && state.page !== undefined && <ReaderView page={state.page} busy={pageBusy} onOp={onPageOp} />}
         {!hasFrame && state.page === undefined && (
           <div className={`absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-white/55 ${state.running ? "sk-scan" : ""}`}>
@@ -461,7 +534,7 @@ export function BrowserPanel({
 
         {/* What the agent is doing right now (small, out of the way) */}
         {/* Only for a real step (the status strip above already shows the general status). */}
-        {state.running && hasFrame && !showLog && current && current.label.replace(/…$/, "").trim().toLowerCase() !== (state.status || "").replace(/(…|...)$/, "").trim().toLowerCase() && (
+        {!mini && state.running && hasFrame && !showLog && current && current.label.replace(/…$/, "").trim().toLowerCase() !== (state.status || "").replace(/(…|...)$/, "").trim().toLowerCase() && (
           <button
             type="button"
             onClick={() => hasActivity && setShowLog(true)}
@@ -478,7 +551,7 @@ export function BrowserPanel({
         )}
 
         {/* Steps & Evidence Timeline Overlay */}
-        {hasActivity && showLog && (
+        {!mini && hasActivity && showLog && (
           <div className="sk-in absolute inset-x-2 bottom-2 z-[5] flex max-h-[62%] flex-col overflow-hidden rounded-xl border border-white/12 bg-black/85 shadow-2xl backdrop-blur-xl sm:left-auto sm:w-[370px]">
             <div className="flex shrink-0 items-center justify-between border-b border-white/[0.07] px-3 py-2">
               <div className="flex items-center gap-2">
@@ -570,6 +643,17 @@ export function BrowserPanel({
           </div>
         )}
       </div>
+      {mini && (
+        <button
+          type="button"
+          className="sk-browser-preview-hit"
+          aria-label="Expand live browser preview"
+          onPointerDown={holdComposerFocus}
+          onClick={expandBrowser}
+        >
+          <span><Maximize2 size={13} aria-hidden /></span>
+        </button>
+      )}
     </section>
   );
 }
