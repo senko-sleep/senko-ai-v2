@@ -108,3 +108,30 @@ export function safeEqual(a: string, b: string): boolean {
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
 }
+
+// ---- Embed proxy links ----------------------------------------------------------------
+// /api/proxy serves other sites' pages from our address. Pages are sandboxed (opaque origin),
+// so their requests carry no login cookie; a short-lived signed token in the URL lets them
+// load their images and video. Links without one (made outside the app) don't load pages,
+// so nobody can host their own page (e.g. a fake "verify you're human" scam) on our address.
+
+export const PROXY_TOKEN_PARAM = "pt";
+const PROXY_TTL_S = 12 * 3600;
+
+export async function signProxyToken(now = Date.now()): Promise<string> {
+  const exp = Math.floor(now / 1000) + PROXY_TTL_S;
+  return `${exp}.${await hmac(`proxy:${exp}`)}`;
+}
+
+export async function verifyProxyToken(token: string | null | undefined, now = Date.now()): Promise<boolean> {
+  if (!token) return false;
+  const dot = token.indexOf(".");
+  const exp = Number(token.slice(0, dot));
+  if (dot <= 0 || !Number.isFinite(exp) || exp * 1000 < now) return false;
+  const expected = await hmac(`proxy:${exp}`);
+  const given = token.slice(dot + 1);
+  if (given.length !== expected.length) return false;
+  let diff = 0;
+  for (let i = 0; i < given.length; i++) diff |= given.charCodeAt(i) ^ expected.charCodeAt(i);
+  return diff === 0;
+}

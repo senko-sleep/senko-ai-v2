@@ -1938,6 +1938,12 @@ export default function AssistantApp() {
                         onBranch={busy ? undefined : (id) => void branchChat(id)}
                         followUps={m.id === lastAssistantId ? lastAssistantFollowUps : undefined}
                         onFollowUp={m.id === lastAssistantId ? handleFollowUp : undefined}
+                        onOpenLive={(url) =>
+                          void openLiveBrowser().then(() => {
+                            // The server already opened it there; this brings it back if they browsed away.
+                            if (browser.url !== url) sendInput({ type: "goto", url });
+                          })
+                        }
                       />
                     ))
                   )}

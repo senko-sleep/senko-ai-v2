@@ -16,7 +16,7 @@ function hostOf(url?: string) {
 function NativeVideo({ video, onFail }: { video: ChatVideo; onFail: () => void }) {
   const ref = useRef<HTMLVideoElement>(null);
   const src = videoProxyUrl(video.src, video.pageUrl);
-  const poster = video.poster ? `/api/proxy?url=${encodeURIComponent(video.poster)}` : undefined;
+  const poster = video.poster ? `/api/proxy?asset=1&url=${encodeURIComponent(video.poster)}` : undefined;
 
   useEffect(() => {
     const el = ref.current;

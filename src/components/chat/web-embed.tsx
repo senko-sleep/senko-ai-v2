@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback } from "react";
 import { ExternalLink, Maximize2, Minimize2, RefreshCw, AlertTriangle, Play, Globe } from "lucide-react";
 import type { WebEmbed as WebEmbedType } from "@/types/chat";
+import { proxiedPageUrl, useProxyToken } from "@/lib/proxy-token-client";
 
 // Sites whose JS-driven video players / heavy dynamic content break through the HTML proxy.
 // For these, show a clean link card instead of a broken iframe.
@@ -39,6 +40,7 @@ export function WebEmbed({ embed }: WebEmbedProps) {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const token = useProxyToken();
   const loadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   let hostname = "";
@@ -64,9 +66,9 @@ export function WebEmbed({ embed }: WebEmbedProps) {
     setLoaded(false);
     setError(false);
     if (iframeRef.current) {
-      iframeRef.current.src = `/api/proxy?url=${encodeURIComponent(embed.url)}`;
+      iframeRef.current.src = proxiedPageUrl(embed.url, token ?? null);
     }
-  }, [embed.url]);
+  }, [embed.url, token]);
 
   // Set a timeout to detect if the iframe never loads
   const handleIframeRef = useCallback((el: HTMLIFrameElement | null) => {
@@ -198,16 +200,16 @@ export function WebEmbed({ embed }: WebEmbedProps) {
               </div>
             </div>
           )}
-          <iframe
+          {token !== undefined && <iframe
             ref={handleIframeRef}
-            src={`/api/proxy?url=${encodeURIComponent(embed.url)}`}
+            src={proxiedPageUrl(embed.url, token)}
             title={embed.title || embed.url}
             className="h-full w-full border-0"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+            sandbox="allow-scripts allow-forms allow-popups allow-presentation"
             referrerPolicy="no-referrer"
             onLoad={handleLoad}
             onError={() => { setLoaded(true); setError(true); }}
-          />
+          />}
         </div>
       </div>
     </div>

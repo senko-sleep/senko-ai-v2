@@ -22,6 +22,7 @@ import { discussionSubject, subjectSearchQuery, visualAnswerNote } from "./visua
 import { wantsDeepThinking } from "./reply-depth";
 import { comicTurn } from "./comic-reply";
 import { searchTurn } from "./search-reply";
+import { embedTurn } from "./embed-reply";
 import { extractCodeArtifacts } from "@/components/assistant/workspace-artifacts";
 import { stripCodeBlocks, wantsCodeJob } from "@/lib/code-intent";
 import { CodingWorkspaceRuntime, verifyAndSanitizeCodingClaims } from "@/lib/agent/coding-runtime";
@@ -128,7 +129,15 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
       content: `I couldn't ${what} (${e instanceof Error ? e.message : String(e)}). Try again?`,
       meta: {} as MessageMeta,
     });
-    let turn: { content: string; meta: MessageMeta } | null = await comicTurn(o.content, storedHistory.slice(0, -1), safe, o.onMiniAgentStep!, o.signal).catch(fail("load that from the site"));
+    // "send me an embed of example.com" / "embed the new sml video": find the page, embed it live.
+    let turn: { content: string; meta: MessageMeta } | null = await embedTurn(o.content, {
+      safe,
+      step: o.onMiniAgentStep!,
+      signal: o.signal,
+      chatId: o.chatId,
+      ownerId: o.ownerId,
+    }).catch(fail("embed that"));
+    if (!turn) turn = await comicTurn(o.content, storedHistory.slice(0, -1), safe, o.onMiniAgentStep!, o.signal).catch(fail("load that from the site"));
     if (!turn) turn = await searchTurn(o.content, safe, o.onMiniAgentStep!, { chatId: o.chatId, signal: o.signal }).catch(fail("finish the search"));
     if (turn) {
       o.onStart?.({ userMessageId, assistantMessageId });

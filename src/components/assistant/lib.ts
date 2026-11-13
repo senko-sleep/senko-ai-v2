@@ -2,6 +2,7 @@ import type { BrowserCommand } from "@/lib/browser-commands";
 import type { ChatVideo } from "@/lib/chat-video";
 import type { ComicCard } from "@/lib/comics/types";
 import type { SearchCard } from "@/lib/search/types";
+import type { SiteEmbedCard } from "@/lib/embed/types";
 
 export type Mode = "chat" | "agent";
 
@@ -29,6 +30,8 @@ export interface Msg {
   comic?: ComicCard;
   /** Real web search results. */
   search?: SearchCard;
+  /** A website embedded live in the reply. */
+  embed?: SiteEmbedCard;
   /** Senko's mood line for this reply. */
   mood?: string;
   /** Images scraped from many engines for an image request (first batch). */
@@ -85,6 +88,7 @@ export interface StoredMessage {
     videos?: ChatVideo[];
     comic?: ComicCard;
     search?: SearchCard;
+    embed?: SiteEmbedCard;
     thinking?: { steps: AgentStep[]; thoughts?: string; ms?: number };
   };
 }
@@ -103,6 +107,7 @@ export function fromStored(m: StoredMessage): Msg {
     videos: meta.videos?.length ? meta.videos : undefined,
     comic: meta.comic,
     search: meta.search,
+    embed: meta.embed,
     error: meta.error && !m.content ? meta.error : undefined,
     actions: meta.actions,
     suggestAgent: meta.suggestAgent,

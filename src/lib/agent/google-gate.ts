@@ -8,6 +8,8 @@
 //   by more requests while it's in force, and returns to Google when the cooldown ends,
 // - recognises Google's robot-check pages and result URLs.
 
+import { detectFakeVerification } from "@/lib/security/fake-verification";
+
 export type GoogleChannel = "browser" | "http";
 
 interface GateState {
@@ -112,7 +114,8 @@ export function looksLikeGoogleCaptcha(text: string): boolean {
 
 // ---- universal bot-verification / challenge detection ----------------------------------------
 
-export type BotChallengeProvider = "google" | "cloudflare" | "datadome" | "perimeterx" | "captcha";
+/** "fake": a malware page posing as a human check (Win+R, paste, Enter). Never complete it. */
+export type BotChallengeProvider = "google" | "cloudflare" | "datadome" | "perimeterx" | "captcha" | "fake";
 
 export interface BotChallengeInfo {
   provider: BotChallengeProvider;
@@ -151,6 +154,20 @@ export function classifyBotChallenge(input: ChallengeProbeInput): BotChallengeIn
   const title = (input.title || "").trim();
   const body = (input.bodyText || "").trim();
   const host = safeHostname(url);
+
+  // 0. A fake check that wants a command run (ClickFix). Checked first: it often copies a
+  //    real provider's look, and it must never be "completed".
+  const fake = detectFakeVerification({ text: `${title}\n${body}` });
+  if (fake) {
+    return {
+      provider: "fake",
+      host,
+      url,
+      title: title || "Fake verification",
+      autoResolvable: false,
+      summary: `${host} shows a FAKE human check that tries to get you to run a command (malware). Don't follow its steps; Senko left the site.`,
+    };
+  }
 
   // 1. Google /sorry robot check
   if (isGoogleSorryUrl(url) || (isGoogleHost(host) && looksLikeGoogleCaptcha(body))) {

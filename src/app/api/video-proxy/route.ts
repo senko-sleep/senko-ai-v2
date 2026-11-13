@@ -2,12 +2,18 @@ import { NextRequest } from "next/server";
 import { config } from "@/lib/config";
 import { validateOrReject } from "@/lib/url-validator";
 import { rewritePlaylist } from "@/lib/chat-video";
+import { withProxyToken } from "@/lib/server/proxy-rewrite";
+import { PROXY_TOKEN_PARAM } from "@/lib/auth-token";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36";
+// Media only: never let a response render as a page on our address.
 const CORS = {
+  "Content-Security-Policy": "sandbox",
+  "X-Content-Type-Options": "nosniff",
+  "X-Robots-Tag": "noindex, nofollow",
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
 };
@@ -34,7 +40,8 @@ async function direct(req: NextRequest, url: string, referer?: string): Promise<
 
   const type = upstream.headers.get("content-type");
   if (isPlaylist(url, type)) {
-    const body = rewritePlaylist(await upstream.text(), upstream.url || url, referer);
+    // Keep the embed's signed token on every piece, for streams inside sandboxed embeds.
+    const body = withProxyToken(rewritePlaylist(await upstream.text(), upstream.url || url, referer), req.nextUrl.searchParams.get(PROXY_TOKEN_PARAM) || undefined);
     return new Response(body, { status: 200, headers: { ...CORS, "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-store" } });
   }
   const out = new Headers(CORS);

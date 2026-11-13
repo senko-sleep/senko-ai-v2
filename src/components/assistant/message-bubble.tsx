@@ -9,6 +9,7 @@ import { RichMessageContent } from "../ui-renderer/dynamic-ui-renderer";
 import { ThinkingPanel } from "./thinking-panel";
 import { ChatVideos } from "./chat-videos";
 import { ComicCardView } from "./comic-card";
+import { SiteEmbedView } from "./site-embed";
 import { SearchResults } from "./search-results";
 import type { Msg } from "./lib";
 import { downloadTextFile, type FollowUpAction } from "./workspace-artifacts";
@@ -149,6 +150,7 @@ export const MessageBubble = memo(function MessageBubble({
   onBranch,
   followUps,
   onFollowUp,
+  onOpenLive,
 }: {
   msg: Msg;
   chatId?: string | null;
@@ -161,6 +163,8 @@ export const MessageBubble = memo(function MessageBubble({
   onBranch?: (id: string) => void;
   followUps?: FollowUpAction[];
   onFollowUp?: (action: FollowUpAction) => void;
+  /** Open this chat's live browser at a URL (embeds of sites that need a real browser). */
+  onOpenLive?: (url: string) => void;
 }) {
   const { copied, copy } = useCopy();
   const [editing, setEditing] = useState(false);
@@ -422,6 +426,8 @@ export const MessageBubble = memo(function MessageBubble({
         {msg.imageIds?.length ? <Images ids={msg.imageIds} align="start" /> : null}
 
         {msg.videos?.length ? <ChatVideos videos={msg.videos} /> : null}
+
+        {msg.embed ? <SiteEmbedView card={msg.embed} onOpenLive={onOpenLive} /> : null}
 
         {msg.search?.results.length ? <SearchResults card={msg.search} /> : null}
 

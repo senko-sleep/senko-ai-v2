@@ -28,6 +28,8 @@ export interface MessageMeta {
   comic?: import("@/lib/comics/types").ComicCard;
   /** Real web search results shown as a results card. */
   search?: import("@/lib/search/types").SearchCard;
+  /** A website embedded live in the reply ("send me an embed of example.com"). */
+  embed?: import("@/lib/embed/types").SiteEmbedCard;
   /** What Senko did and thought before answering (the "Thought for Ns" dropdown). */
   thinking?: {
     steps: { id: number; label: string; status: "running" | "done" | "error"; detail?: string; url?: string }[];
