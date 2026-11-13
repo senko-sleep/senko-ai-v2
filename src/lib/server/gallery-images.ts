@@ -26,7 +26,7 @@ export interface VerifiedImage {
   fingerprint: bigint;
 }
 
-async function download(raw: string, signal: AbortSignal, hops = 0): Promise<Buffer> {
+async function download(raw: string, signal: AbortSignal, hops = 0, headersOnly = false): Promise<Buffer> {
   if (hops > 3) throw new Error("Too many image redirects");
   signal.throwIfAborted();
   const url = await withAbort(assertPublicHttpUrl(raw), signal);
@@ -52,13 +52,17 @@ async function download(raw: string, signal: AbortSignal, hops = 0): Promise<Buf
   const status = response.statusCode ?? 0;
   if (status >= 300 && status < 400 && response.headers.location) {
     response.destroy();
-    return download(new URL(response.headers.location, url).href, signal, hops + 1);
+    return download(new URL(response.headers.location, url).href, signal, hops + 1, headersOnly);
   }
   const contentType = response.headers["content-type"] || "";
   if (status !== 200 || !/^image\/(?:jpeg|png|webp|gif|avif|apng|bmp|tiff|x-ms-bmp)\b/i.test(contentType) ||
-    Number(response.headers["content-length"]) > MAX_BYTES) {
+    (!headersOnly && Number(response.headers["content-length"]) > MAX_BYTES)) {
     response.destroy();
     throw new Error("Image response unavailable or unsupported");
+  }
+  if (headersOnly) {
+    response.destroy();
+    return Buffer.alloc(0);
   }
 
   const chunks: Buffer[] = [];
@@ -179,4 +183,44 @@ export function verifyImageUrl(url: string, signal: AbortSignal, alt = ""): Prom
 /** True when two verified images are near-duplicates (same picture, different size/crop). */
 export function sameImage(a: VerifiedImage, b: VerifiedImage): boolean {
   return similar(a, b);
+}
+
+const reachable = new Map<string, { ok: boolean; at: number }>();
+const REACHABLE_TTL_MS = 30 * 60_000;
+
+/** True when the URL answers 200 with an image (headers only, nothing is downloaded). Cached. */
+export async function imageReachable(url: string, signal: AbortSignal, timeoutMs = 3_000): Promise<boolean> {
+  const hit = reachable.get(url);
+  if (hit && Date.now() - hit.at < REACHABLE_TTL_MS) return hit.ok;
+  let ok = false;
+  try {
+    await download(url, AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]), 0, true);
+    ok = true;
+  } catch {
+    // An abort from the caller says nothing about the image: don't remember it.
+    if (signal.aborted) return false;
+  }
+  if (reachable.size > 5000) reachable.clear();
+  reachable.set(url, { ok, at: Date.now() });
+  return ok;
+}
+
+/**
+ * Keep only images whose URL really serves a picture (HTTP 200 + image content type), in their
+ * original order. Checks run in parallel; whatever isn't confirmed by the deadline is dropped,
+ * so the browser is never handed a broken link.
+ */
+export async function onlyReachableImages<T extends { url: string }>(images: T[], signal?: AbortSignal, opts: { max?: number; budgetMs?: number; concurrency?: number } = {}): Promise<T[]> {
+  const list = images.slice(0, opts.max ?? images.length);
+  const deadline = AbortSignal.timeout(opts.budgetMs ?? 6_000);
+  const sig = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  const ok = new Array<boolean>(list.length).fill(false);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(opts.concurrency ?? 24, list.length) }, async () => {
+    while (next < list.length && !sig.aborted) {
+      const i = next++;
+      ok[i] = await imageReachable(list[i].url, sig);
+    }
+  }));
+  return list.filter((_, i) => ok[i]);
 }

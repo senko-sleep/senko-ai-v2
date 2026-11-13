@@ -66,7 +66,9 @@ export interface SearchOutcome {
   reused: boolean;
 }
 
-const CAPTCHA_WAIT_MS = () => Math.max(0, Number(process.env.GOOGLE_CAPTCHA_WAIT_MS ?? 5 * 60_000));
+// Handing a robot check to the person watching is opt-in (set a wait in ms): by default the
+// agent never stops for one, it falls back to Bing or skips the site.
+const CAPTCHA_WAIT_MS = () => Math.max(0, Number(process.env.GOOGLE_CAPTCHA_WAIT_MS ?? 0));
 const fmtMin = (ms: number) => (ms < 90_000 ? `${Math.ceil(ms / 1000)}s` : `${Math.ceil(ms / 60_000)} min`);
 const label = (engine: SearchEngine, kind: SearchKind) => `${engine === "google" ? "Google" : "Bing"}${kind === "images" ? " Images" : ""}`;
 

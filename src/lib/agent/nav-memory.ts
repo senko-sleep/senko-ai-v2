@@ -7,10 +7,15 @@
 //   search_url  a site's search results URL with the query replaced by {query}, learned when
 //               typing into a search box led to a URL containing the query.
 //   route       the page a finished task ended on, by a short goal key (a direct shortcut).
+//               A trusted route is replayed before the first AI call, so a repeat request
+//               opens its page instantly; the fewest-actions run wins.
+//   lesson      a mistake made on the site (a dead link, a search that went nowhere, a run
+//               that got stuck) so later tasks avoid it instead of repeating it.
 //
 // Memory is only ever a hint. Remembered elements are shown to the model only when an
 // element with the same fingerprint is on the current page (validated against the live
-// DOM), mapped to its current id. Writes are fire-and-forget and never slow an action.
+// DOM), mapped to its current id. Writes are fire-and-forget and never slow an action, and
+// reads serve the cached rows at once while a fresh copy loads in the background.
 import { q } from "@/lib/server/db";
 
 export interface ElementFingerprint {
@@ -25,7 +30,7 @@ export interface ElementFingerprint {
 }
 
 export interface MemoryRow {
-  kind: "element" | "search_url" | "route";
+  kind: "element" | "search_url" | "route" | "lesson";
   key: string;
   data: Record<string, unknown>;
   successes: number;
@@ -68,9 +73,22 @@ export function hostsInGoal(goal: string): string[] {
 }
 
 const READ_TTL_MS = 30_000;
-const cache = new Map<string, { at: number; rows: Promise<MemoryRow[]> }>();
+const cache = new Map<string, { at: number; rows: Promise<MemoryRow[]>; value?: MemoryRow[] }>();
 
-/** Everything remembered for a site, most useful first. Cached briefly; never throws. */
+const toRow = (r: Record<string, unknown>): MemoryRow => ({
+  kind: r.kind as MemoryRow["kind"],
+  key: String(r.key),
+  data: (typeof r.data === "string" ? JSON.parse(r.data) : r.data) as Record<string, unknown>,
+  successes: Number(r.successes) || 0,
+  failures: Number(r.failures) || 0,
+  lastError: (r.last_error as string | null) ?? null,
+});
+
+/**
+ * Everything remembered for a site, most useful first. Never throws, and never makes a step
+ * wait on the database once the site has been loaded: stale rows are served immediately
+ * while a fresh copy loads in the background (stale-while-revalidate).
+ */
 export function loadHostMemory(ownerId: string, host: string): Promise<MemoryRow[]> {
   if (!host) return Promise.resolve([]);
   const k = `${ownerId}|${host}`;
@@ -82,24 +100,68 @@ export function loadHostMemory(ownerId: string, host: string): Promise<MemoryRow
      WHERE owner_id = $1 AND host = $2 ORDER BY (successes + failures) DESC, updated_at DESC LIMIT 80`,
     [ownerId, host]
   ))
-    .then((rs) =>
-      rs.map((r) => ({
-        kind: r.kind as MemoryRow["kind"],
-        key: String(r.key),
-        data: (typeof r.data === "string" ? JSON.parse(r.data) : r.data) as Record<string, unknown>,
-        successes: Number(r.successes) || 0,
-        failures: Number(r.failures) || 0,
-        lastError: (r.last_error as string | null) ?? null,
-      }))
-    )
-    .catch(() => [] as MemoryRow[]);
-  cache.set(k, { at: Date.now(), rows });
-  return rows;
+    .then((rs) => rs.map(toRow))
+    .catch(() => hit?.value ?? ([] as MemoryRow[]));
+  const entry: { at: number; rows: Promise<MemoryRow[]>; value?: MemoryRow[] } = { at: Date.now(), rows };
+  void rows.then((v) => { entry.value = v; entry.rows = Promise.resolve(v); });
+  cache.set(k, entry);
+  // Stale but known: answer now, refresh behind it.
+  return hit?.value ? Promise.resolve(hit.value) : rows;
+}
+
+/**
+ * The remembered finishing page for this request on any site (goals often don't name the
+ * site: "play lofi beats"). Only trusted routes: they worked at least once and haven't
+ * failed as often since. Resolves null on any database trouble, within `timeoutMs`.
+ */
+export function findRoute(ownerId: string, goal: string, timeoutMs = 600): Promise<{ host: string; url: string; actions: number; row: MemoryRow } | null> {
+  const key = goalKey(goal);
+  if (!ownerId || !key) return Promise.resolve(null);
+  const lookup = Promise.resolve()
+    .then(() => q(
+      `SELECT host, kind, key, data, successes, failures, last_error FROM nav_memory
+       WHERE owner_id = $1 AND kind = 'route' AND key = $2
+       ORDER BY (successes - failures * 2) DESC, updated_at DESC LIMIT 1`,
+      [ownerId, key]
+    ))
+    .then((rs) => {
+      const r = rs[0];
+      if (!r) return null;
+      const row = toRow(r);
+      const url = String(row.data.url || "");
+      if (!/^https?:\/\//.test(url) || row.successes < 1 || outdated(row)) return null;
+      return { host: String(r.host), url, actions: Number(row.data.actions) || 0, row };
+    })
+    .catch(() => null);
+  return Promise.race([lookup, new Promise<null>((r) => setTimeout(() => r(null), timeoutMs))]);
+}
+
+/** A remembered route was replayed: credit it, or blame it when the page didn't load. */
+export function recordRouteOutcome(ownerId: string, goal: string, url: string, ok: boolean, error?: string) {
+  upsert(ownerId, hostOf(url), "route", goalKey(goal), {}, ok, error);
+}
+
+/** Normalised so the same mistake on a different visit lands on the same row. */
+function lessonKey(text: string) {
+  return text.toLowerCase().replace(/\[\d+\]/g, "").replace(/\d+/g, "#").replace(/\s+/g, " ").trim().slice(0, 160);
+}
+
+/**
+ * Remember a mistake made on a site: a dead link, a search that found nothing, a run that got
+ * stuck. `ok: true` later (the same thing worked) outweighs it, so stale lessons fade.
+ */
+export function recordLesson(ownerId: string, pageUrl: string, what: string, ok: boolean, why?: string) {
+  const host = hostOf(pageUrl);
+  const key = lessonKey(what);
+  if (!host || key.length < 4) return;
+  upsert(ownerId, host, "lesson", key, ok ? {} : { text: what.slice(0, 160), path: pathOf(pageUrl) }, ok, why);
 }
 
 function upsert(ownerId: string, host: string, kind: MemoryRow["kind"], key: string, data: Record<string, unknown>, ok: boolean | null, error?: string) {
   if (!ownerId || !host || !key) return;
-  cache.delete(`${ownerId}|${host}`);
+  // Keep serving the cached rows; the next read refreshes them in the background.
+  const hit = cache.get(`${ownerId}|${host}`);
+  if (hit) hit.at = 0;
   void Promise.resolve()
     .then(() => q(
     `INSERT INTO nav_memory (owner_id, host, kind, key, data, successes, failures, last_error, updated_at)
@@ -228,6 +290,9 @@ export function memoryHints(rows: MemoryRow[], opts: { host: string; elements: L
     else if (r.failures > 0 && r.lastError) lines.push(`- ${label} sometimes fails: ${r.lastError}.`);
     if (lines.length >= 8) break;
   }
+  // Mistakes made on this site before, so the agent doesn't repeat them.
+  const lessons = rows.filter((r) => r.kind === "lesson" && r.failures > r.successes && r.data.text).sort((a, b) => b.failures - a.failures).slice(0, 4);
+  for (const r of lessons) lines.push(`- MISTAKE before (${r.failures}x): ${String(r.data.text)}${r.lastError ? ` -> ${r.lastError}` : ""}. Take a different way.`);
   // Shortcuts that stopped working are reported as outdated, never offered as the way to go.
   const score = (r: MemoryRow) => r.successes - r.failures * 2;
   const searches = rows.filter((r) => r.kind === "search_url").sort((a, b) => score(b) - score(a));

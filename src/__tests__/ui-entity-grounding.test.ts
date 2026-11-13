@@ -17,6 +17,9 @@ describe("extractEntityQuery", () => {
     expect(extractEntityQuery("who is Anya Forger look it up as well and make the ui")).toBe("Anya Forger");
     expect(extractEntityQuery("who is Loid Forger and show me a profile")).toBe("Loid Forger");
     expect(extractEntityQuery("what is Naruto and make the ui")).toBe("Naruto");
+    // Everyday questions are not a subject to research (no Wikipedia lookup of "What Time Is It?").
+    expect(extractEntityQuery("what time is it in ui")).toBeNull();
+    expect(extractEntityQuery("show the weather today in a ui")).toBeNull();
   });
 
   it("extracts entity from 'look up X' patterns", () => {

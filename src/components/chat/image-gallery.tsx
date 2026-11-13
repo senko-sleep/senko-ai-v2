@@ -83,7 +83,7 @@ export function ImageGallery({
     setIsLoadingMore(true);
     const nextPage = page + 1;
     try {
-      const res = await fetch(`/api/images?q=${encodeURIComponent(query)}&page=${nextPage}`);
+      const res = await fetch(`/api/images?q=${encodeURIComponent(query)}&page=${nextPage}&verified=1`);
       const data = await res.json();
       if (data.images && data.images.length > 0) {
         setAllImages((prev) => {

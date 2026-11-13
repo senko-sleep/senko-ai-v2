@@ -6,7 +6,7 @@ import { appendInput, pagePoint, type BrowserInput } from "@/lib/live-input";
 // onto this tiny bus and the LiveView draws them straight to a canvas / moves the cursor.
 export type LiveEvent =
   | { type: "frame"; data: string | Blob; width: number; height: number; epoch?: number }
-  | { type: "cursor"; x: number; y: number; kind: "move" | "click"; box?: { x: number; y: number; w: number; h: number } | null; width: number; height: number }
+  | { type: "cursor"; x: number; y: number; kind: "move" | "click"; box?: { x: number; y: number; w: number; h: number } | null; width: number; height: number; ms?: number }
   | { type: "pointer"; cursor: string }
   | { type: "audio"; id: string; seq?: number; data?: string; end?: boolean }
   | { type: "reset"; epoch?: number };
@@ -70,6 +70,7 @@ export const LiveView = memo(function LiveView({
   title,
   onHasFrame,
   agentRunning = false,
+  agentThinking = false,
   agentName = "Senko",
   interactive = false,
   onInput,
@@ -80,6 +81,8 @@ export const LiveView = memo(function LiveView({
   onHasFrame: (v: boolean) => void;
   /** Show Senko's pointer only while it is actively working. */
   agentRunning?: boolean;
+  /** The agent is deciding its next move: the cursor breathes so the view never looks frozen. */
+  agentThinking?: boolean;
   /** Shown next to the AI's pointer (the bot / model driving the browser). */
   agentName?: string;
   /** When true, your clicks, scrolling and typing go to the page. */
@@ -99,11 +102,18 @@ export const LiveView = memo(function LiveView({
   const onViewportRef = useRef(onViewport);
   useEffect(() => { onViewportRef.current = onViewport; }, [onViewport]);
 
+  // The AI's pointer is on screen only while it works: when the task is done it fades out.
+  const runningRef = useRef(agentRunning);
   useEffect(() => {
-    // The AI's pointer stays on screen between tasks, just quieter.
-    cursorRef.current?.classList.toggle("sk-agent-cursor-idle", !agentRunning);
+    runningRef.current = agentRunning;
+    const c = cursorRef.current;
+    c?.classList.toggle("sk-agent-cursor-idle", !agentRunning);
+    if (c) c.style.opacity = agentRunning && c.style.transform ? "1" : "0";
     if (!agentRunning && boxRef.current) boxRef.current.style.opacity = "0";
   }, [agentRunning]);
+  useEffect(() => {
+    cursorRef.current?.classList.toggle("sk-agent-cursor-thinking", agentRunning && agentThinking);
+  }, [agentRunning, agentThinking]);
 
   useEffect(() => {
     const wrap = wrapRef.current!;
@@ -185,7 +195,9 @@ export const LiveView = memo(function LiveView({
     // The AI's pointer glides toward each real mouse position it reports (the agent's
     // moves arrive in bursts over the network); clicks ripple once it gets there.
     const pos = { x: NaN, y: NaN };
-    let lastTick = 0;
+    // The current glide: an eased, slightly curved path from where the pointer was to the
+    // target, over the time the server waits before clicking (so the click lands on arrival).
+    let glide: { fx: number; fy: number; tx: number; ty: number; t0: number; dur: number; bend: number } | null = null;
     let pendingClick = false;
     const ripple = (x: number, y: number) => {
       const layer = rippleLayerRef.current;
@@ -219,20 +231,25 @@ export const LiveView = memo(function LiveView({
       const el = cursorRef.current;
       if (el && cursor && (cursorDirty || pos.x !== cursor.x || pos.y !== cursor.y)) {
         cursorDirty = false;
-        const dt = Math.min(64, lastTick ? now - lastTick : 16);
-        const k = Number.isNaN(pos.x) || reduceMotion ? 1 : 1 - Math.exp(-dt / 40); // ~120ms glide; animation only, it never delays the real click
-        pos.x = Number.isNaN(pos.x) ? cursor.x : pos.x + (cursor.x - pos.x) * k;
-        pos.y = Number.isNaN(pos.y) ? cursor.y : pos.y + (cursor.y - pos.y) * k;
-        if (Math.abs(cursor.x - pos.x) < 0.5 && Math.abs(cursor.y - pos.y) < 0.5) { pos.x = cursor.x; pos.y = cursor.y; }
+        // No glide (first frame, reduced motion, a resize): be there.
+        if (Number.isNaN(pos.x) || reduceMotion || !glide) { pos.x = cursor.x; pos.y = cursor.y; glide = null; }
+        if (glide) {
+          const t = Math.min(1, Math.max(0, (now - glide.t0) / glide.dur));
+          const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; // ease in-out
+          const dx = glide.tx - glide.fx, dy = glide.ty - glide.fy;
+          const len = Math.hypot(dx, dy) || 1;
+          const off = Math.sin(Math.PI * e) * glide.bend; // a gentle arc, like a hand moving
+          pos.x = glide.fx + dx * e + (-dy / len) * off;
+          pos.y = glide.fy + dy * e + (dx / len) * off;
+          if (t >= 1) { pos.x = glide.tx; pos.y = glide.ty; glide = null; }
+        }
         const at = toScreen(pos.x, pos.y);
         el.style.transform = `translate3d(${at.x}px, ${at.y}px, 0)`;
-        el.style.opacity = "1";
+        el.style.opacity = runningRef.current ? "1" : "0";
         if (pos.x === cursor.x && pos.y === cursor.y) {
           if (pendingClick) { pendingClick = false; ripple(at.x, at.y); }
           if (cursor.box) { showBox(cursor.box); cursor = { ...cursor, box: null }; }
-          lastTick = 0;
         } else {
-          lastTick = now;
           schedule();
         }
       }
@@ -264,7 +281,13 @@ export const LiveView = memo(function LiveView({
       if (e.type === "cursor") {
         if (e.kind === "click") pendingClick = true;
         // Frames own the page geometry; a pointer reported for an older page size is scaled into it.
-        cursor = e.width && e.height && (e.width !== vp.w || e.height !== vp.h) ? { ...e, x: (e.x / e.width) * vp.w, y: (e.y / e.height) * vp.h, box: null } : e;
+        const next = e.width && e.height && (e.width !== vp.w || e.height !== vp.h) ? { ...e, x: (e.x / e.width) * vp.w, y: (e.y / e.height) * vp.h, box: null } : e;
+        if (!Number.isNaN(pos.x) && (!cursor || next.x !== cursor.x || next.y !== cursor.y)) {
+          const dist = Math.hypot(next.x - pos.x, next.y - pos.y);
+          const dur = Math.min(900, Math.max(120, next.ms ?? 160 + dist * 0.35));
+          glide = { fx: pos.x, fy: pos.y, tx: next.x, ty: next.y, t0: performance.now(), dur, bend: Math.min(36, dist * 0.08) * (next.x >= pos.x ? 1 : -1) };
+        }
+        cursor = next;
         cursorDirty = true;
         schedule();
       }

@@ -26,7 +26,7 @@ describe("real UI generation contract", () => {
   it("repairs a pseudo-UI response exactly once without publishing the invalid draft", async () => {
     let calls = 0;
     const result = await generateComposedUI([{ role: "system", content: "UI test fixture" }, { role: "user", content: "Create an interactive UI" }], { modelCall: async (_messages, options) => {
-      calls++; expect(options.hedge).toBe(false); expect(options.json).toBe(true);
+      calls++; expect(options.eager).toBe(true); expect(options.json).toBe(true);
       return { text: calls === 1 ? "[Card] A fake layout" : '{"type":"text","content":"A real renderer node"}', provider: "fixture", providerLabel: "Labelled test adapter", model: "deterministic-adapter", skipped: [] };
     } });
     expect(calls).toBe(2); expect(result.repaired).toBe(true);

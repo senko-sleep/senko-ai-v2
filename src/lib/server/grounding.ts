@@ -312,6 +312,8 @@ export interface WebSnippet {
 export function extractEntityQuery(userText: string): string | null {
   const lower = userText.toLowerCase();
 
+  // Everyday questions ("what time is it", "weather today") are not a subject to research.
+  if (/\b(?:what\s+time|time\s+is\s+it|what\s+day|what(?:'s|\s+is)\s+(?:the\s+)?date|today|tonight|tomorrow|right\s+now|weather|forecast|temperature)\b/i.test(userText)) return null;
   // Reject common non-entity "what is X" queries early
   if (/\bwhat\s+is\s+(?:the\s+)?(?:weather|time|date|temperature|capital|currency|population|distance|difference|definition|meaning|synonym)\b/i.test(userText)) return null;
   if (/\bwrite\s+(?:me\s+)?(?:a|an)\s+\w+\b/i.test(userText)) return null;
@@ -348,6 +350,8 @@ export function extractEntityQuery(userText: string): string | null {
       .trim();
     const words = subject.split(" ").filter(Boolean);
     // A real subject is a short name-like phrase, not leftover sentence.
+    // A leftover question ("what time is it in") is not a name either.
+    if (/^(?:what|how|when|where|why|which|is|are|can|could|do|does|will|should)\b/i.test(subject)) return null;
     if (words.length >= 1 && words.length <= 5 && subject.length >= 3 && !/^(?:it|this|that|something|anything|everything|data|stats|dashboard|app|website|game|pokedex|encyclopedia|wiki|tracker|calculator|quiz|timer|todo|calendar|weather)$/i.test(subject)) return subject;
   }
 
@@ -372,7 +376,7 @@ export async function fetchEntityWebSnippets(
   if (searchApiUrl) {
     try {
       const res = await fetch(
-        `${searchApiUrl}/search?q=${encodeURIComponent(entityQuery + " wiki character anime")}&safe=off`,
+        `${searchApiUrl}/search?q=${encodeURIComponent(entityQuery + " wiki")}&safe=off`,
         { signal: combined }
       );
       if (res.ok) {

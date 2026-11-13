@@ -45,7 +45,7 @@ export async function resolveImageQuery(query: string): Promise<CandidateImage[]
   if (queryCache.has(key)) return queryCache.get(key)!;
   if (inflightQueries.has(key)) return inflightQueries.get(key)!;
 
-  const job = fetch(`/api/images?q=${encodeURIComponent(query.trim())}&limit=20`, { signal: AbortSignal.timeout(15_000) })
+  const job = fetch(`/api/images?q=${encodeURIComponent(query.trim())}&limit=20&verified=1`, { signal: AbortSignal.timeout(20_000) })
     .then((r) => (r.ok ? r.json() : { images: [] }))
     .then((data: { images?: CandidateImage[] }) => {
       const list = Array.isArray(data?.images) ? data.images.filter((i) => i && typeof i.url === "string") : [];

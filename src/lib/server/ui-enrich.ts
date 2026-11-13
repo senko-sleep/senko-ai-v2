@@ -117,6 +117,11 @@ function collectSlots(nodes: Obj[], dossier: EntityDossier | null | undefined): 
       for (const it of (node.items as Obj[] | undefined) || []) if (isObj(it) && (it.imageQuery || it.imageUrl)) slots.push({ obj: it, label: String(it.title || ""), kind: "item" });
     } else if (type === "vs_card") {
       for (const side of ["left", "right", "a", "b"]) if (isObj(node[side])) slots.push({ obj: node[side] as Obj, label: String((node[side] as Obj).name || ""), kind: "person" });
+      // The schema stores both sides in "combatants".
+      for (const c of (node.combatants as Obj[] | undefined) || []) if (isObj(c)) slots.push({ obj: c, label: String(c.name || ""), kind: "item" });
+    } else if (node.imageQuery || (typeof node.imageUrl === "string" && /^https?:/.test(node.imageUrl))) {
+      // Any other card with a picture: verify it too, so the browser never gets an unchecked URL.
+      slots.push({ obj: node, label: String(node.title || node.name || node.label || ""), kind: "item" });
     }
     for (const [k, v] of Object.entries(node)) if (k !== "relationships" && k !== "gallery" && k !== "items" && typeof v === "object") visit(v, k === "children" ? undefined : undefined);
     if (type === "tabs" || type === "accordion") for (const it of (node.items as Obj[] | undefined) || []) if (isObj(it)) visit(it.children);

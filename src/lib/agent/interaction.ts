@@ -605,8 +605,26 @@ export function watchNavigation(page: Page) {
 }
 
 export interface PointerHost {
-  emit(e: { type: "cursor"; x: number; y: number; kind: "move" | "click"; box?: Box | null; width: number; height: number }): void;
+  emit(e: { type: "cursor"; x: number; y: number; kind: "move" | "click"; box?: Box | null; width: number; height: number; ms?: number }): void;
 }
+
+// Where each page's visible pointer was last sent, so a glide's length (and the wait before the
+// click) matches the distance it travels on screen.
+const lastPointer = new WeakMap<Page, { x: number; y: number }>();
+
+/**
+ * Glide time for the visible cursor: long enough to watch, short enough to stay snappy.
+ * The click waits for it (overlapped with the pre-click checks), so it lands as the cursor arrives.
+ */
+export function glideMs(page: Page, x: number, y: number): number {
+  const from = lastPointer.get(page);
+  lastPointer.set(page, { x, y });
+  if (!from) return 260;
+  const dist = Math.hypot(x - from.x, y - from.y);
+  return dist < 4 ? 0 : Math.round(Math.min(560, 200 + dist * 0.3));
+}
+
+const pause = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export type ClickOutcome =
   | { ok: true; how: "id" | "fingerprint"; method: string; check: Extract<Verified, { ok: true }>; x: number; y: number }
@@ -650,11 +668,15 @@ export async function pointAndClick(
       }
       return { ok: false, reason: `It is covered by ${r.by}${dismissed ? " (closing overlays didn't help)" : ""}. Close or deal with that first.`, covered: r.by };
     }
-    // The visible cursor glides there on its own; the real pointer jumps in one step.
-    host.emit({ type: "cursor", x: r.x, y: r.y, kind: "move", box: r.box, width: r.vw, height: r.vh });
+    // The visible cursor glides there; the real pointer moves in one step and the click waits
+    // for the glide to finish (overlapped with the checks), so you see it land, then click.
+    const ms = glideMs(page, r.x, r.y);
+    host.emit({ type: "cursor", x: r.x, y: r.y, kind: "move", box: r.box, width: r.vw, height: r.vh, ms });
+    const arrive = pause(ms);
     await page.mouse.move(r.x, r.y);
     opts.signal?.throwIfAborted();
     const v = (await pageCall(page, { cmd: "verify", id: target.id, x: r.x, y: r.y, frames: 3 })) as Verified;
+    await arrive;
     if (!v.ok) {
       lastWhy = v.why === "covered" ? `covered by ${v.by}` : v.why;
       if (v.why === "missing" && !target.fp) return { ok: false, reason: "The element disappeared when the pointer reached it." };
@@ -681,7 +703,9 @@ export async function activateByKeyboard(page: Page, host: PointerHost, target: 
     | { ok: true; key: string; how: "id" | "fingerprint"; box: Box; x: number; y: number; vw: number; vh: number; check: Extract<Verified, { ok: true }> }
     | null;
   if (!a?.ok) return null;
-  host.emit({ type: "cursor", x: a.x, y: a.y, kind: "move", box: a.box, width: a.vw, height: a.vh });
+  const ms = glideMs(page, a.x, a.y);
+  host.emit({ type: "cursor", x: a.x, y: a.y, kind: "move", box: a.box, width: a.vw, height: a.vh, ms });
+  await pause(ms);
   await page.keyboard.press(a.key === " " ? "Space" : "Enter");
   return { ok: true, how: a.how, method, check: a.check, x: a.x, y: a.y };
 }

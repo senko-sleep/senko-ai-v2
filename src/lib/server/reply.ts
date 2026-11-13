@@ -13,7 +13,7 @@ import { absorbMemories, chatSystemPrompt, stripMemoryTags, takeStatusTag } from
 import { ADULT_IMAGE_QUERY, detectCollageRequest, detectImageIntentQuery, extractImagesTag, searchMultiEngineImages, type ScrapedImage } from "./images";
 import { gatherLiveGroundingNote, gatherEntityGroundingNote, extractEntityQuery } from "./grounding";
 import { sanitizeYouTubeInReply, verifyYouTubeVideo } from "./youtube";
-import { verifyGalleryImages } from "./gallery-images";
+import { onlyReachableImages, verifyGalleryImages } from "./gallery-images";
 import { lastSubject, resolveSubject } from "./subject-context";
 import { checkAdultImageRequest } from "./adult-guard";
 import { safeSearchFor } from "./persona";
@@ -100,7 +100,9 @@ async function scrapeForChat(query: string, signal?: AbortSignal, safe: Awaited<
   if (process.env.SENKO_DISABLE_IMAGE_SCRAPE === "1") return [];
   try {
     const deadline = AbortSignal.timeout(12_000);
-    return (await searchMultiEngineImages(query, 1, STORED_IMAGES, signal ? AbortSignal.any([signal, deadline]) : deadline, safe)).images;
+    const found = (await searchMultiEngineImages(query, 1, STORED_IMAGES, signal ? AbortSignal.any([signal, deadline]) : deadline, safe)).images;
+    // Only links that really serve a picture (HTTP 200 + image) reach the chat.
+    return await onlyReachableImages(found, signal, { budgetMs: 6_000 });
   } catch {
     return [];
   }
@@ -331,8 +333,8 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
       chatSystemPrompt(o.ownerId, pageNote, { compact: true, timeZone: o.timeZone }),
     ]);
     const messages: LlmMessage[] = [{ role: "system", content: system }, ...history];
-    // Think longer only where it helps; casual chat stays quick.
-    const thinking = wantsDeepThinking(o.content, { visual: !!discussSubject, places: placesAsk, composedUI, attachments: !!o.imageIds?.length }) ? "medium" as const : "off" as const;
+    // Think only where it helps, and briefly: a chat answer should start in a second or two.
+    const thinking = wantsDeepThinking(o.content, { visual: !!discussSubject, places: placesAsk, composedUI, attachments: !!o.imageIds?.length }) ? "low" as const : "off" as const;
     o.onMiniAgentStep?.({ id: THINK_STEP, label: "Thinking", status: "running" });
     // compactSystem lets the LLM layer shrink long chats to fit each provider instead of failing.
     if (composedUI) {

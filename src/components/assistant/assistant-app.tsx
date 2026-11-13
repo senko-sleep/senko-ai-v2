@@ -1619,7 +1619,9 @@ export default function AssistantApp() {
     const lastMsg = messages.find((m) => m.id === lastAssistantId);
     if (!lastMsg) return [];
     const msgArts = codeArtifacts.filter((a) => a.messageId === lastAssistantId);
-    return deriveFollowUpActions(lastMsg.content, mode, msgArts, researchSources.length);
+    // Only prompt-style follow-ups: no "Open in Code Workspace" / "Sources" chips under every
+    // reply (the workspace stays one click away in the header and on each code block).
+    return deriveFollowUpActions(lastMsg.content, mode, msgArts, researchSources.length).filter((f) => !f.action);
   }, [busy, codeArtifacts, lastAssistantId, messages, mode, researchSources.length]);
 
   const handleFollowUp = useCallback(
@@ -1789,7 +1791,7 @@ export default function AssistantApp() {
             </label>
 
             {/* Adaptive Workspace Toggle (Code / Preview / Sources) */}
-            {(!isEmpty || workspaceOpen) && (
+            {(workspaceOpen || (mode === "chat" && (codeArtifacts.length > 0 || researchSources.length > 0))) && (
               <button
                 type="button"
                 onClick={() => {

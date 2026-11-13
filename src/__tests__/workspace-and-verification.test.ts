@@ -108,6 +108,7 @@ describe("extractTrustCookies", () => {
 describe("handOffBotChallenge", () => {
   it("hands browser control to a connected viewer, emits verification state, and persists cookies when cleared", async () => {
     vi.useFakeTimers();
+    vi.stubEnv("GOOGLE_CAPTCHA_WAIT_MS", "60000"); // the hand-off is opt-in
     let blocked = true;
     const persisted = vi.fn(async () => {});
     const verifications: unknown[] = [];
@@ -161,6 +162,7 @@ describe("handOffBotChallenge", () => {
     expect(persisted).toHaveBeenCalledTimes(1);
     expect(verifications[verifications.length - 1]).toBeNull();
     vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 });
 

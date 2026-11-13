@@ -49,7 +49,8 @@ const client = await build({
       es.onmessage = m => { const e = JSON.parse(m.data); if (e.type in window.stats) window.stats[e.type]++; if (['frame','cursor','reset','pointer','audio'].includes(e.type)) bus.emit(e); if (e.type === 'status') window.lastStatus = e; };
       const post = (p, b) => fetch(p, { method: 'POST', body: JSON.stringify(b) });
       function App() {
-        const [state] = useState({ running: false, status: '', url: 'http://local/page', title: 'Fixture', plan: [], steps: [{ id: 1, label: 'Opened the page', status: 'done' }], outcome: 'done' });
+        const [state, setState] = useState({ running: false, status: '', url: 'http://local/page', title: 'Fixture', plan: [], steps: [{ id: 1, label: 'Opened the page', status: 'done' }], outcome: 'done' });
+        window.setRunning = (running) => setState((s) => ({ ...s, running, status: running ? 'Working' : '', outcome: running ? 'running' : 'done' }));
         return React.createElement(BrowserPanel, {
           state, bus, controlling: true, paused: false, opening: false, pageBusy: false, agentName: 'Senko · Gemini',
           onStop() {}, onClose() {}, onOpenBrowser() {}, onToggleControl() {}, onResume() {}, onPageOp() {},
@@ -149,9 +150,11 @@ try {
   const k = pageBox.width / vpNow.width; // page CSS px -> screen px (the page fills the view)
   const at = (x, y) => ({ x: pageBox.x + x * k, y: pageBox.y + y * k });
 
-  // 3. The AI pointer is visible, named, glides to where the agent moves, ripples on click.
+  // 3. While a task runs the AI pointer is visible, named, glides to where the agent moves and
+  // ripples on click; when the task is done it disappears. (Your input is off while it runs.)
+  await page.evaluate(() => window.setRunning(true));
   const vp = session.viewport();
-  session.emit({ type: "cursor", x: 300, y: 200, kind: "move", box: null, width: vp.width, height: vp.height });
+  session.emit({ type: "cursor", x: 300, y: 200, kind: "move", box: null, width: vp.width, height: vp.height, ms: 400 });
   session.emit({ type: "cursor", x: 300, y: 200, kind: "click", box: null, width: vp.width, height: vp.height });
   await page.waitForTimeout(700);
   const cur = await page.evaluate(() => { const el = document.querySelector(".sk-agent-cursor"); const m = /translate3d\(([\d.]+)px, ([\d.]+)px/.exec(el.style.transform); return { opacity: getComputedStyle(el).opacity, x: +m?.[1], y: +m?.[2], tag: el.textContent }; });
@@ -159,6 +162,20 @@ try {
   assert.equal(cur.tag, "Senko · Gemini");
   assert(Math.abs(cur.x - 300 * k) < 3 && Math.abs(cur.y - 200 * k) < 3, `pointer at ${cur.x},${cur.y}, expected ${300 * k},${200 * k}`);
   results.aiPointer = cur;
+  // It glides (eased, over the time given), never teleports: halfway through it is in between.
+  session.emit({ type: "cursor", x: 700, y: 500, kind: "move", box: null, width: vp.width, height: vp.height, ms: 600 });
+  await page.waitForTimeout(300);
+  const mid = await page.evaluate(() => +/translate3d\(([\d.]+)px/.exec(document.querySelector(".sk-agent-cursor").style.transform)[1]);
+  assert(mid > 300 * k + 10 && mid < 700 * k - 10, `pointer should be mid-glide, was at x=${mid}`);
+  await page.waitForTimeout(500);
+  const end = await page.evaluate(() => +/translate3d\(([\d.]+)px/.exec(document.querySelector(".sk-agent-cursor").style.transform)[1]);
+  assert(Math.abs(end - 700 * k) < 3, `pointer should land on target, was at x=${end}`);
+  results.glide = { mid: Math.round(mid), end: Math.round(end) };
+  assert.equal(await page.evaluate(() => document.querySelector(".sk-live-interactive") === null), true, "the page must not take your input while the agent runs");
+  await page.evaluate(() => window.setRunning(false));
+  await page.waitForTimeout(450);
+  assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector(".sk-agent-cursor")).opacity), "0", "AI pointer must hide when the task is done");
+  results.pointerHidesWhenDone = true;
 
   // 4. Your clicks and typing reach the real page.
   const input = await session.active().locator("#text").boundingBox();

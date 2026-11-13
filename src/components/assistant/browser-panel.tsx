@@ -7,7 +7,6 @@ import {
   ExternalLink,
   Eye,
   Globe,
-  Hand,
   ListTree,
   Loader2,
   Lock,
@@ -20,7 +19,6 @@ import {
   Play,
   Plus,
   RotateCw,
-  ShieldAlert,
   Square,
   Volume2,
   VolumeX,
@@ -139,7 +137,7 @@ export function BrowserPanel({
 
   useEffect(() => {
     if (followLog.current && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [state.steps.length, state.plan.length, showLog]);
+  }, [state.steps.length, showLog]);
 
   // The page's sound arrives on the same live stream as the picture.
   useEffect(() => {
@@ -164,7 +162,7 @@ export function BrowserPanel({
   const outcome = OUTCOME[state.outcome];
   const secure = state.url.startsWith("https://");
   const displayUrl = state.url.replace(/^https?:\/\/(www\.)?/, "");
-  const hasActivity = state.plan.length > 0 || state.steps.length > 0;
+  const hasActivity = state.steps.length > 0;
   const current = [...state.steps].reverse().find((s) => s.status === "running");
   const doneSteps = state.steps.filter((s) => s.status === "done").length;
 
@@ -385,22 +383,20 @@ export function BrowserPanel({
               <Play size={10} fill="currentColor" aria-hidden /> Resume
             </button>
           )}
-          {hasFrame && (
+          {hasFrame && !state.running && (
             <button
               type="button"
               onClick={onToggleControl}
               data-browser-control
               aria-pressed={controlling}
-              aria-label={controlling ? "View only" : state.running ? "Take control" : "Interact"}
+              aria-label={controlling ? "View only" : "Interact"}
               className={`sk-btn h-7 shrink-0 rounded-md px-2 text-[11px] font-medium ${
                 controlling ? "bg-[var(--sk-accent-soft)] text-[var(--sk-accent-ink)]" : "text-[var(--sk-muted)] hover:bg-[var(--sk-hover)] hover:text-[var(--sk-text)]"
               }`}
-              title={state.running ? "Pause the agent and use the browser yourself" : controlling ? "Switch to view-only" : "Click, scroll and type in this browser"}
+              title={controlling ? "Switch to view-only" : "Click, scroll and type in this browser"}
             >
               {controlling ? (
                 <><Eye size={11} aria-hidden /><span className="hidden sm:inline">View only</span></>
-              ) : state.running ? (
-                <><Hand size={11} aria-hidden /><span className="hidden sm:inline">Take control</span></>
               ) : (
                 <><MousePointerClick size={11} aria-hidden /><span className="hidden sm:inline">Interact</span></>
               )}
@@ -462,54 +458,6 @@ export function BrowserPanel({
         </div>
       )}
 
-      {/* Prominent Human Verification / Challenge Handoff Banner */}
-      {isVerificationChallenge && (
-        <div
-          role="region"
-          aria-label="Human verification required"
-          className="sk-verification-banner flex shrink-0 flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs"
-        >
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            <ShieldAlert size={15} className="shrink-0 text-[var(--sk-accent-ink)]" />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5 font-semibold text-[var(--sk-text)]">
-                <span>Verification Required{verification?.host ? ` on ${verification.host}` : ""}</span>
-                {verification?.provider && (
-                  <span className="rounded bg-black/30 px-1.5 py-0.5 font-mono text-[9.5px] uppercase text-[var(--sk-accent-ink)]">
-                    {verification.provider}
-                  </span>
-                )}
-              </div>
-              <p className="truncate text-[11px] text-[var(--sk-muted)]">
-                {verification?.summary || pauseReason || "Complete the check directly in the live browser below; session cookies are preserved."}
-              </p>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-1.5">
-            {!controlling && hasFrame && (
-              <button
-                type="button"
-                onClick={onToggleControl}
-                className="sk-btn h-7 border border-[var(--sk-accent-line)] bg-black/40 px-2.5 text-[11px] text-[var(--sk-text)]"
-              >
-                <MousePointerClick size={11} />
-                <span>Interact</span>
-              </button>
-            )}
-            {paused && (
-              <button
-                type="button"
-                onClick={onResume}
-                className="sk-btn sk-primary h-7 px-2.5 text-[11px] font-semibold"
-              >
-                <Play size={10} fill="currentColor" />
-                <span>Solved — Resume</span>
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
       {state.inputError && (
         <div role="alert" className="sk-browser-chrome shrink-0 bg-[var(--sk-bg)] px-3 py-1.5 text-[11px] text-[var(--sk-danger)]">
           {state.inputError}
@@ -518,7 +466,7 @@ export function BrowserPanel({
 
       {/* The live page: fills all remaining space, edge to edge */}
       <div className="sk-browser-picture relative min-h-0 flex-1" inert={mini}>
-        <LiveView bus={bus} title={state.title} onHasFrame={onHasFrame} agentRunning={state.running} agentName={agentName} interactive={controlling && !mini} onInput={onInput} onViewport={mini ? undefined : onViewport} />
+        <LiveView bus={bus} title={state.title} onHasFrame={onHasFrame} agentRunning={state.running} agentThinking={activePhase === "observing" || activePhase === "verifying"} agentName={agentName} interactive={controlling && !mini && !state.running} onInput={onInput} onViewport={mini ? undefined : onViewport} />
         {!hasFrame && state.page !== undefined && <ReaderView page={state.page} busy={pageBusy} onOp={onPageOp} />}
         {!hasFrame && state.page === undefined && (
           <div className={`absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-white/55 ${state.running ? "sk-scan" : ""}`}>
@@ -574,21 +522,6 @@ export function BrowserPanel({
               }}
               className="sk-scroll min-h-0 flex-1 overflow-y-auto px-3 py-2.5"
             >
-              {state.plan.length > 0 && (
-                <div className="mb-3 rounded-lg border border-white/[0.06] bg-white/[0.03] p-2">
-                  <div className="mb-1 text-[9.5px] font-semibold uppercase tracking-wider text-[var(--sk-accent-ink)]">
-                    Execution Plan
-                  </div>
-                  <ol className="space-y-1">
-                    {state.plan.map((p, i) => (
-                      <li key={i} className="flex gap-2 text-[11px] text-white/65">
-                        <span className="mt-0.5 font-mono text-[10px] text-[var(--sk-accent-ink)]">{i + 1}.</span>
-                        <span>{p}</span>
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              )}
               <ul className="space-y-2" aria-live="polite">
                 {state.steps.map((s) => (
                   <li key={s.id} className="flex flex-col gap-1 text-[12px]">

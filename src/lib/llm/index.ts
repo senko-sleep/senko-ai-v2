@@ -67,6 +67,12 @@ export interface LlmOptions {
   priority?: Priority;
   /** Allow a backup request on another provider when the first is slow (default true). */
   hedge?: boolean;
+  /**
+   * Never wait on the app's own pacing estimates: go straight to the provider and let it say
+   * no. Only a real rate limit / outage (a cooldown) skips a model. For the browser agent,
+   * where every second of waiting is visible.
+   */
+  eager?: boolean;
   /** Reuse an identical request's answer for this long (and share one in flight). */
   cacheTtlMs?: number;
   /** Internal: sees each provider response's headers (rate-limit learning). */
@@ -74,10 +80,11 @@ export interface LlmOptions {
   /** Receives the model's reasoning / thought summary text as it streams (kept out of the answer). */
   onThought?: (text: string) => void;
   /**
-   * How hard to think before answering. "off" (default) keeps replies fast; "medium" / "high"
-   * think longer (and stream thought summaries to onThought where the provider supports it).
+   * How hard to think before answering. "off" (default) keeps replies fast; "low" thinks briefly
+   * (chat), "medium" / "high" think longer (and stream thought summaries to onThought where the
+   * provider supports it).
    */
-  thinking?: "off" | "medium" | "high";
+  thinking?: "off" | "low" | "medium" | "high";
 }
 
 /** Every provider is rate-limited or failing; `retryInMs` says when the first frees up (if known). */
@@ -227,10 +234,11 @@ async function syncSharedCooldowns() {
   try {
     const { q } = await import("@/lib/server/db");
     const rows = await Promise.race([
-      q<{ key: string; value: string }>("SELECT key, value FROM app_kv WHERE key LIKE 'llm.cool:%'"),
+      q<{ key: string; value: string }>("SELECT key, value FROM app_kv WHERE key LIKE 'llm.cool:%' OR key = 'llm.latency'"),
       new Promise<never>((_, no) => setTimeout(() => no(new Error("slow")), 1500)),
     ]);
     for (const r of rows) {
+      if (r.key === "llm.latency") { try { mergeSharedLatency(r.value); } catch { /* bad row */ } continue; }
       const c = JSON.parse(r.value) as { until: number; reason: string; retryable: boolean };
       const k = r.key.slice("llm.cool:".length);
       if (c.until > Date.now() && (cooldowns.get(k)?.until ?? 0) < c.until) cooldowns.set(k, c);
@@ -328,38 +336,58 @@ interface LiveModel {
   vision: boolean;
 }
 
+const liveLists = new Map<string, { at: number; list: LiveModel[] }>();
+const liveRefresh = new Map<string, Promise<LiveModel[]>>();
+/** How long a fetched model list counts as fresh; an empty one (unreachable) is retried sooner. */
+const LIVE_TTL_MS = 15 * 60_000;
+const LIVE_EMPTY_TTL_MS = 60_000;
+/** The first fetch of a provider's list may hold a request this long; after that it never does. */
+const LIVE_FIRST_WAIT_MS = 1500;
+
+/**
+ * A provider's current model list. Never makes a chat wait on a slow /models endpoint: the last
+ * known list is used right away and refreshed in the background. With no list yet, it waits
+ * briefly, then goes ahead with the configured models (an empty list means "assume they exist").
+ */
 async function liveModels(c: CompatConfig): Promise<LiveModel[]> {
   const key = `models:${c.id}`;
-  const ttl = 15 * 60_000;
-  const list = await fetchLiveModels(c, key, ttl);
-  // An empty list usually means "couldn't reach it" (e.g. your local gateway isn't started
-  // yet): check again in 20s instead of ignoring it for 15 minutes.
-  const entry = cache.get(key);
-  if (!list.length && entry && Date.now() - entry.at < 1000) entry.at = Date.now() - ttl + 20_000;
-  return list;
+  const entry = liveLists.get(key);
+  const stale = !entry || Date.now() - entry.at > (entry.list.length ? LIVE_TTL_MS : LIVE_EMPTY_TTL_MS);
+  if (stale && !liveRefresh.has(key)) {
+    const job = fetchLiveModels(c)
+      .then((list) => {
+        // Keep a good list when a refresh fails; try again in a minute.
+        const prev = liveLists.get(key);
+        liveLists.set(key, list.length || !prev?.list.length ? { at: Date.now(), list } : { at: Date.now() - LIVE_TTL_MS + LIVE_EMPTY_TTL_MS, list: prev.list });
+        return list;
+      })
+      .finally(() => liveRefresh.delete(key));
+    liveRefresh.set(key, job);
+  }
+  if (entry) return entry.list;
+  const first = liveRefresh.get(key)!;
+  return Promise.race([first, new Promise<LiveModel[]>((ok) => setTimeout(() => ok([]), LIVE_FIRST_WAIT_MS))]);
 }
 
-async function fetchLiveModels(c: CompatConfig, key: string, ttl: number): Promise<LiveModel[]> {
-  return cached(key, ttl, async () => {
-    try {
-      const r = await fetch(`${c.baseUrl()}/models`, {
-        headers: { Authorization: `Bearer ${c.key()}`, ...(c.headers ? c.headers() : {}) },
-        signal: AbortSignal.timeout(8000),
-      });
-      if (!r.ok) return [];
-      const j = (await r.json()) as {
-        data?: { id: string; active?: boolean; input_modalities?: string[]; architecture?: { input_modalities?: string[] } }[];
-      };
-      return (j.data || [])
-        .filter((m) => m.active !== false)
-        .map((m) => ({
-          id: m.id.replace(/^models\//, ""),
-          vision: !!(m.architecture?.input_modalities ?? m.input_modalities)?.includes("image"),
-        }));
-    } catch {
-      return [];
-    }
-  });
+async function fetchLiveModels(c: CompatConfig): Promise<LiveModel[]> {
+  try {
+    const r = await fetch(`${c.baseUrl()}/models`, {
+      headers: { Authorization: `Bearer ${c.key()}`, ...(c.headers ? c.headers() : {}) },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) return [];
+    const j = (await r.json()) as {
+      data?: { id: string; active?: boolean; input_modalities?: string[]; architecture?: { input_modalities?: string[] } }[];
+    };
+    return (j.data || [])
+      .filter((m) => m.active !== false)
+      .map((m) => ({
+        id: m.id.replace(/^models\//, ""),
+        vision: !!(m.architecture?.input_modalities ?? m.input_modalities)?.includes("image"),
+      }));
+  } catch {
+    return [];
+  }
 }
 
 function compatProvider(c: CompatConfig): Provider {
@@ -715,7 +743,7 @@ const PROVIDERS: Provider[] = [
     maxModels: 1,
     local: senkoCompact(),
     // Replies that deserve deep thinking (reply-depth.ts) ask for the frontier tier.
-    extras: (_model, opts) => (opts?.thinking && opts.thinking !== "off" ? { reasoning_effort: "high" } : {}),
+    extras: (_model, opts) => (opts?.thinking === "high" || opts?.thinking === "medium" ? { reasoning_effort: "high" } : {}),
     missingDetail: "Optional: run the senko-llm gateway and set SENKO_LLM_URL (+ SENKO_LLM_KEY)",
     budget: () => ({ input: num("SENKO_LLM_TOKEN_BUDGET", senkoCloud() ? 60_000 : 7000), output: num("SENKO_LLM_MAX_OUTPUT", senkoCloud() ? 4096 : 1024) }),
   }),
@@ -728,10 +756,11 @@ const PROVIDERS: Provider[] = [
     envModel: () => env("GEMINI_MODEL"),
     envVisionModel: () => env("GEMINI_MODEL"),
     // Prefer flagship pro & flash models over lite previews for coding and reasoning depth.
-    preferred: ["gemini-3.8-flash", "gemini-3-flash", "gemini-3.8-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest", "gemini-3.5-flash-lite"],
-    preferredVision: ["gemini-3.8-flash", "gemini-3-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"],
-    // Measured: flash answers quickly for browser agent steps.
-    fastPreferred: ["gemini-3.8-flash", "gemini-3-flash", "gemini-3.1-flash-lite-preview", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"],
+    // Newest flash models first. When one is overloaded (Google answers 503 "high demand" or just
+    // stalls) it is benched and the measured-latency ranking moves the next one up.
+    preferred: ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite"],
+    preferredVision: ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview"],
+    fastPreferred: ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3-flash-preview"],
     // Allow both "pro" and "flash" chat models.
     filter: (m) => isGeminiChat(m.id) && (/pro|flash/.test(m.id)),
     isVision: (m) => isGeminiChat(m.id),
@@ -742,7 +771,7 @@ const PROVIDERS: Provider[] = [
       opts?.onThought && opts.thinking && opts.thinking !== "off" && /gemini-3/.test(model)
         ? { extra_body: { google: { thinking_config: { include_thoughts: true, thinking_level: env("GEMINI_THINKING_LEVEL") || opts.thinking } } } }
         : { reasoning_effort: "low" },
-    maxModels: 3,
+    maxModels: 5,
     missingDetail: "Add GEMINI_API_KEY (free at aistudio.google.com/apikey)",
     budget: () => ({ input: num("GEMINI_TOKEN_BUDGET", 60_000), output: 8192 }),
   }),
@@ -954,15 +983,15 @@ function friendly(e: unknown): string {
  * real request against someone's quota, so it only goes out when that model has plenty of
  * headroom (scheduler pressure below HEDGE_MAX_PRESSURE) and at most MAX_PARALLEL run at once.
  */
-const HEDGE_MS = (vision = false) => (vision ? num("LLM_HEDGE_VISION_MS", 7000) : num("LLM_HEDGE_MS", 3500));
-const MAX_PARALLEL = () => Math.max(1, num("LLM_MAX_PARALLEL", 2));
+const HEDGE_MS = (vision = false) => (vision ? num("LLM_HEDGE_VISION_MS", 5000) : num("LLM_HEDGE_MS", 2000));
+const MAX_PARALLEL = () => Math.max(1, num("LLM_MAX_PARALLEL", 3));
 const HEDGE_MAX_PRESSURE = 0.5;
 /** Give up on a model that hasn't sent its first words after this long. */
 const FIRST_TOKEN_MS = () => num("LLM_FIRST_TOKEN_MS", 20_000);
 /** The same limit for quick calls (agent steps), where a healthy model answers in 1-3s. */
 const FAST_FIRST_TOKEN_MS = () => num("LLM_FAST_FIRST_TOKEN_MS", 10_000);
 /** Longest a reasoning model may think before its first word. */
-const THINKING_MAX_MS = () => num("LLM_THINKING_MAX_MS", 60_000);
+const THINKING_MAX_MS = () => num("LLM_THINKING_MAX_MS", 25_000);
 
 /**
  * A model that keeps timing out is benched for longer each time (30s, 2 min, 8 min, 15 min)
@@ -973,7 +1002,52 @@ function slowCooldownMs(provider: string, model: string): number {
   const key = `${provider}:${model}`;
   const strikes = (slowStrikes.get(key) ?? 0) + 1;
   slowStrikes.set(key, strikes);
-  return Math.min(15 * 60_000, 30_000 * 4 ** (strikes - 1));
+  return Math.min(15 * 60_000, 2 * 60_000 * 2 ** (strikes - 1));
+}
+
+/**
+ * How fast each model has really been to its first words (moving average, ms). Chat requests
+ * try the quickest known models first, so a model that keeps stalling stops costing every
+ * message a hedge delay, and new/unknown models keep their configured place.
+ */
+const firstTokenMs = new Map<string, { ms: number; at: number }>();
+const UNKNOWN_LATENCY_MS = 3000;
+/** Old measurements fade out: an overloaded model is usually fine again a few hours later. */
+const LATENCY_TTL_MS = 3 * 60 * 60_000;
+let latencySavedAt = 0;
+let latencySaveTimer: ReturnType<typeof setTimeout> | null = null;
+function recordLatency(provider: string, model: string, ms: number) {
+  const key = `${provider}|${model}`;
+  const prev = firstTokenMs.get(key);
+  const fresh = prev && Date.now() - prev.at < LATENCY_TTL_MS;
+  firstTokenMs.set(key, { ms: fresh ? prev.ms * 0.6 + ms * 0.4 : ms, at: Date.now() });
+  // Shared through the database (at most every 20s) so a fresh server process starts with the
+  // fastest models instead of re-learning which ones stall.
+  if (latencySaveTimer) return;
+  latencySaveTimer = setTimeout(saveLatency, Math.max(0, 20_000 - (Date.now() - latencySavedAt)));
+  latencySaveTimer.unref?.();
+}
+function saveLatency() {
+  latencySaveTimer = null;
+  latencySavedAt = Date.now();
+  const data = Object.fromEntries([...firstTokenMs].filter(([, v]) => Date.now() - v.at < LATENCY_TTL_MS));
+  void import("@/lib/server/db")
+    .then(({ q }) => q(
+      "INSERT INTO app_kv (key, value, updated_at) VALUES ('llm.latency', $1, now()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+      [JSON.stringify(data)]
+    ))
+    .catch(() => {});
+}
+function mergeSharedLatency(raw: string) {
+  const data = JSON.parse(raw) as Record<string, { ms: number; at: number }>;
+  for (const [k, v] of Object.entries(data)) {
+    if (!v || typeof v.ms !== "number" || Date.now() - v.at > LATENCY_TTL_MS) continue;
+    if ((firstTokenMs.get(k)?.at ?? 0) < v.at) firstTokenMs.set(k, v);
+  }
+}
+export function knownLatencyMs(provider: string, model: string): number | undefined {
+  const v = firstTokenMs.get(`${provider}|${model}`);
+  return v && Date.now() - v.at < LATENCY_TTL_MS ? v.ms : undefined;
 }
 
 interface QueueEntry {
@@ -1069,7 +1143,7 @@ async function raceCandidates(
     let running = 0;
     let done = false;
     let hedge: ReturnType<typeof setTimeout> | null = null;
-    const attempts: { ctl: AbortController; timer: ReturnType<typeof setTimeout>; abort: () => void }[] = [];
+    const attempts: { ctl: AbortController; timer: ReturnType<typeof setTimeout>; abort: () => void; c: Candidate; launchedAt: number; settled?: boolean }[] = [];
     // Only one attempt's reasoning reaches the caller, so a hedged backup can't interleave thoughts.
     let thoughtOwner: AbortController | null = null;
 
@@ -1077,8 +1151,11 @@ async function raceCandidates(
       if (done) return;
       done = true;
       if (hedge) clearTimeout(hedge);
+      const now = Date.now();
       for (const a of attempts) {
         clearTimeout(a.timer);
+        // Lost the race without a word: at least this slow, so it ranks below the winner next time.
+        if (result && a.ctl !== keep && !a.settled) recordLatency(a.c.provider, a.c.model, now - a.launchedAt + 3000);
         if (a.ctl !== keep) { a.ctl.abort(); opts.signal?.removeEventListener("abort", a.abort); }
       }
       opts.signal?.removeEventListener("abort", onAbort);
@@ -1103,10 +1180,11 @@ async function raceCandidates(
       // and only where it won't eat into a nearly used-up limit.
       let i = -1;
       if (asBackup) {
-        i = queue.findIndex(
-          (q, n) => !started[n] && !live.has(q.p.id) && scheduler.pressure(q.c.provider, q.c.model) < HEDGE_MAX_PRESSURE && scheduler.delayFor(q.c.provider, q.c.model, q.est, priority) === 0
-        );
-        if (i < 0) return; // nothing with headroom: keep waiting on the first one
+        const free = (q: QueueEntry, n: number) => !started[n] && (opts.eager || (scheduler.pressure(q.c.provider, q.c.model) < HEDGE_MAX_PRESSURE && scheduler.delayFor(q.c.provider, q.c.model, q.est, priority) === 0));
+        i = queue.findIndex((q, n) => free(q, n) && !live.has(q.p.id));
+        // No other provider: a sibling model (one model overloaded doesn't mean the provider is).
+        if (i < 0) i = queue.findIndex((q, n) => free(q, n) && !q.p.local);
+        if (i < 0) { if (env("LLM_DEBUG") === "1") console.log(`[llm] no backup with headroom: ${queue.map((q, n) => `${q.c.model}:${started[n] ? "started" : `p=${scheduler.pressure(q.c.provider, q.c.model).toFixed(2)},d=${scheduler.delayFor(q.c.provider, q.c.model, q.est, priority)}`}`).join(" ")}`); return; } // nothing with headroom: keep waiting on the first one
       } else {
         i = started.indexOf(false);
       }
@@ -1119,11 +1197,12 @@ async function raceCandidates(
       const { p, c } = q;
       // Time has passed since the queue was built (hedge timer, earlier failures): re-check.
       if (isCooling(c.provider, c.model)) return launch(asBackup);
-      const late = scheduler.delayFor(c.provider, c.model, q.est, priority);
+      const late = opts.eager ? 0 : scheduler.delayFor(c.provider, c.model, q.est, priority);
       if (late > 0) {
         onPaced(late);
         return launch(asBackup);
       }
+      if (env("LLM_DEBUG") === "1") console.log(`[llm] ${new Date().toISOString().slice(17, 23)} launch ${asBackup ? "backup" : "first"} ${c.label} (${c.model}) known=${knownLatencyMs(c.provider, c.model) ?? "?"}ms`);
       live.add(p.id);
       running++;
       const ticket = scheduler.acquire(c.provider, c.model, q.est);
@@ -1139,7 +1218,8 @@ async function raceCandidates(
       // Agent steps (fast) expect an answer in a second or two: don't sit 20s on a stalled
       // cloud model. Local models keep the long limit (they may still be loading).
       const waitMs = p.local || !opts.fast ? FIRST_TOKEN_MS() : Math.min(FIRST_TOKEN_MS(), messages.some((m) => m.images?.length) ? 15_000 : FAST_FIRST_TOKEN_MS());
-      const attempt = { ctl, timer: setTimeout(giveUp, waitMs), abort };
+      const launchedAt = Date.now();
+      const attempt: (typeof attempts)[number] = { ctl, timer: setTimeout(giveUp, waitMs), abort, c, launchedAt };
       attempts.push(attempt);
       // Reasoning models think before the first word. Thinking counts as being alive (whether
       // or not the caller shows it), but not forever.
@@ -1151,8 +1231,9 @@ async function raceCandidates(
             thoughtOwner = ctl;
             clearTimeout(attempt.timer);
             attempt.timer = setTimeout(giveUp, THINKING_MAX_MS());
-            // Don't start a backup model that would race (and replace) this one.
-            if (hedge) { clearTimeout(hedge); hedge = null; }
+            // Asked to think hard: don't start a backup that would race (and replace) it.
+            // Otherwise a model that thinks for ages is just slow, and the backup still goes out.
+            if (hedge && (opts.thinking === "medium" || opts.thinking === "high")) { clearTimeout(hedge); hedge = null; }
           }
           opts.onThought?.(t);
         },
@@ -1160,6 +1241,8 @@ async function raceCandidates(
       tryCandidate(q, messages, attemptOpts, ctl.signal).then(
         ({ stream, inputTokens }) => {
           clearTimeout(attempt.timer);
+          attempt.settled = true;
+          recordLatency(c.provider, c.model, Date.now() - launchedAt);
           slowStrikes.delete(`${c.provider}:${c.model}`);
           running--;
           live.delete(p.id);
@@ -1177,6 +1260,7 @@ async function raceCandidates(
         },
         (e) => {
           clearTimeout(attempt.timer);
+          attempt.settled = true;
           if (thoughtOwner === ctl) thoughtOwner = null;
           opts.signal?.removeEventListener("abort", abort);
           running--;
@@ -1186,6 +1270,8 @@ async function raceCandidates(
           ticket.release(status === 429 || status === 0 || status === 401 || status === 403 ? 0 : undefined);
           if (done) return;
           if (e instanceof InferenceBudgetExceeded) { finish(null); return; }
+          // A stall or overload counts as very slow for the speed ranking.
+          if (slow || (e instanceof ProviderError && e.status >= 500)) recordLatency(c.provider, c.model, Math.max(Date.now() - launchedAt, 15_000));
           const err = slow ? new ProviderError(`${c.label} (${c.model}): no answer within ${Math.round((thoughtOwner === ctl ? THINKING_MAX_MS() : waitMs) / 1000)}s`, 408, null) : e;
           onFail(q, err);
           // Failed: move to the next model right away instead of waiting for the hedge timer.
@@ -1255,7 +1341,7 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
           continue;
         }
         const est = Math.min(inputTokens, inputBudget) + maxTokens;
-        const wait = scheduler.delayFor(c.provider, c.model, est, priority);
+        const wait = opts.eager ? 0 : scheduler.delayFor(c.provider, c.model, est, priority);
         if (wait > 0) {
           if (Number.isFinite(wait)) soonest = Math.min(soonest, wait);
           skipped.push(`${c.label} (${c.model}): pacing to stay under its rate limit (free in ~${Math.ceil(wait / 1000)}s)`);
@@ -1265,7 +1351,11 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
         ready.push({ p, c, est, inputBudget, maxTokens, whole: inputTokens <= inputBudget * 1.6 });
       }
     });
-    const queue = [...ready.filter((r) => r.whole), ...ready.filter((r) => !r.whole)];
+    // Chat: quickest known models first (stable, so unknown ones keep the configured order).
+    // Quality-first callers (strong) keep the capability order.
+    const bySpeed = (list: typeof ready) => opts.strong ? list
+      : [...list].sort((a, b) => (knownLatencyMs(a.c.provider, a.c.model) ?? UNKNOWN_LATENCY_MS) - (knownLatencyMs(b.c.provider, b.c.model) ?? UNKNOWN_LATENCY_MS));
+    const queue = [...bySpeed(ready.filter((r) => r.whole)), ...bySpeed(ready.filter((r) => !r.whole))];
 
     const onFail = (q: QueueEntry, e: unknown) => {
       const { c } = q;
@@ -1289,6 +1379,7 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
           : status === 404 || status === 410 ? 24 * 60 * 60_000
           : status === 422 ? (/refused/.test(pe?.message || "") ? 20_000 : 2_000) // a model that just refused is likely to again: let the others take this stretch
           : status === 408 ? slowCooldownMs(c.provider, c.model) // too slow: benched longer each time it happens
+          : status === 503 && /high demand|overloaded|unavailable|capacity/i.test(pe?.message || "") ? 5 * 60_000 // overloaded model: let the others take it
           : health.retryAt ? Math.max(1000, health.retryAt - Date.now()) : 30_000;
         // Worth waiting for: rate limits, network blips and server errors (not refusals/bad keys).
         const retryable = status === 429 || status === 0 || status === 408 || status >= 500;
@@ -1305,6 +1396,7 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
       skipped.push(msg);
     };
 
+    if (env("LLM_DEBUG") === "1") console.log(`[llm] ${new Date().toISOString().slice(17, 23)} queue: ${queue.map((q) => `${q.c.provider}:${q.c.model}`).join(", ")} | skipped: ${skipped.join("; ")}`);
     const won = await raceCandidates(queue, messages, opts, onFail, (w) => (soonest = Math.min(soonest, w)));
     if (won) return { provider: won.c.provider, providerLabel: won.c.label, model: won.c.model, stream: won.stream, skipped };
     opts.requestBudget?.assertAvailable();

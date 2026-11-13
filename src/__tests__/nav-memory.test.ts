@@ -41,6 +41,11 @@ describe("memory hints", () => {
     expect(text).not.toContain("Not on this page");
     expect(text).toContain("https://shop.test/results?q={query}");
   });
+  it("warns about mistakes made on the site before, until the same thing works again", () => {
+    const lesson = (successes: number): MemoryRow => ({ kind: "lesson", key: "goto https://shop.test/old", data: { text: "goto https://shop.test/old-page" }, successes, failures: 2, lastError: "HTTP 404" });
+    expect(memoryHints([lesson(0)], { host: "shop.test", goal: "", elements: [] })).toContain("MISTAKE before (2x): goto https://shop.test/old-page -> HTTP 404");
+    expect(memoryHints([lesson(3)], { host: "shop.test", goal: "", elements: [] })).toBe("");
+  });
   it("is empty when nothing applies", () => {
     expect(memoryHints([], { host: "x.test", goal: "", elements: [] })).toBe("");
   });

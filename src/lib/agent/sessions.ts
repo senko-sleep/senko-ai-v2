@@ -36,7 +36,7 @@ export type BusEvent =
   | { type: "reset"; epoch?: number }
   | { type: "status"; status: SessionStatus; tabs: TabInfo[]; takeover: boolean; live: LiveInfo; running: boolean; control: number; epoch: number; sessionId: string; verification?: VerificationState | null; browserDisconnected?: boolean }
   | { type: "frame"; data: string; width: number; height: number; epoch?: number; capturedAt?: number }
-  | { type: "cursor"; x: number; y: number; kind: "move" | "click"; box?: { x: number; y: number; w: number; h: number } | null; width: number; height: number }
+  | { type: "cursor"; x: number; y: number; kind: "move" | "click"; box?: { x: number; y: number; w: number; h: number } | null; width: number; height: number; ms?: number }
   | { type: "log"; text: string; level: "info" | "warn" | "error"; at: number }
   | { type: "plan"; steps: string[] }
   | { type: "step"; id: number; label: string; status: "running" | "done" | "error"; detail?: string; url?: string; at: number; shotId?: string }

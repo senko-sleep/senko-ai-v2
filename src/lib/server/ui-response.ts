@@ -114,7 +114,7 @@ export async function generateComposedUI(messages: LlmMessage[], opts: {
   storeImage?: (data: Buffer) => Promise<string>;
   onEnrich?: (phase: "images" | "done", stats: EnrichStats) => void;
   onThought?: (text: string) => void;
-  thinking?: "off" | "medium" | "high";
+  thinking?: "off" | "low" | "medium" | "high";
 }) {
   // Increase budget from 4 → 12 so weak models with provider fallbacks don't exhaust before repair.
   const requestBudget = new InferenceRequestBudget(12);
@@ -127,12 +127,13 @@ export async function generateComposedUI(messages: LlmMessage[], opts: {
     signal: opts.signal,
     simulateFail: opts.simulateFail,
     json: true,
-    hedge: false,
     requestBudget,
     maxTokens: 8000,
     maxWaitMs: 30_000,
-    // Prefer a capable model — UI JSON schema requires reliable structured output.
-    strong: true,
+    // Fastest working model, with a backup if it stalls. (Pinning "pro" models made every UI
+    // wait on rate-limited ones; flash models write valid UI JSON, and the repair pass below
+    // catches the rest.)
+    eager: true,
     onThought: opts.onThought,
     thinking: opts.thinking,
   };
