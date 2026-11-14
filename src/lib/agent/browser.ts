@@ -59,6 +59,11 @@ export const SCREEN = {
   height: Number(process.env.SCREEN_HEIGHT || 800),
 };
 
+/**
+ * A visible Chrome only on a Linux virtual display (the agent computer, streamed to the
+ * panel). Never a window on the user's own desktop: the agent works in its own hidden
+ * browser and the user watches / controls it through the panel. BROWSER_HEADLESS=1 forces it off.
+ */
 export function isHeaded(): boolean {
   return process.platform === "linux" && !!process.env.DISPLAY && process.env.BROWSER_HEADLESS !== "1";
 }
@@ -412,6 +417,37 @@ export async function getBrowser(reconnect?: string | (() => Promise<string | un
     return getBrowser();
   }
   return b;
+}
+
+/** True when this server can start its own Chrome (not Vercel / Wasmer / WASI). */
+export function canLaunchLocalBrowser(): boolean {
+  return !process.env.VERCEL && !process.env.WASMER_APP_ID && (process.platform as string) !== "wasi" && !g.__wasiPlatform && process.env.BROWSER_PROVIDER !== "managed";
+}
+
+let warming: Promise<void> | undefined;
+/**
+ * Get the agent's browser running before a task needs it. Chrome's cold start (~3s) and its
+ * first tab (up to ~4s while the disk cache is cold) were both paid after the user pressed
+ * send; a warm browser hands out a new tab in ~0.3s. Safe to call often.
+ */
+export function warmBrowser(): Promise<void> {
+  // The browser closed or crashed since the last warm-up: warm the next one.
+  if (!g.__agentBrowser) warming = undefined;
+  warming ??= (async () => {
+    const b = await getBrowser();
+    // A local headless Chrome: open and close one throwaway tab so the renderer and caches
+    // are hot. (Not a visible window: it would flash on screen. Not managed providers: they
+    // bill per session and give one context.)
+    if (!isHeaded() && (!g.__agentBrowserMode || /^(chrome|msedge|chromium|chromium-headless-shell|custom)$/.test(g.__agentBrowserMode.channel))) {
+      const ctx = await b.newContext();
+      await ctx.newPage();
+      await ctx.close();
+    }
+  })().catch((e) => {
+    warming = undefined;
+    throw e;
+  });
+  return warming;
 }
 
 /**

@@ -295,6 +295,19 @@ const DEFAULT_DEPS: EmbedDeps = { probe, findSite, youtube, openLive };
 
 // ── The turn ────────────────────────────────────────────────────────────────
 
+const CHALLENGE_TITLE = /^(?:just a moment|attention required|checking your browser|please wait)/i;
+
+/** Drop Cloudflare's one-time challenge parameters from a URL. */
+export function cleanChallengeUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    for (const k of [...u.searchParams.keys()]) if (k.startsWith("__cf_chl")) u.searchParams.delete(k);
+    return u.href;
+  } catch {
+    return url;
+  }
+}
+
 function hostOf(url: string): string {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
@@ -433,21 +446,23 @@ export async function runEmbedTurn(req: EmbedRequest, ctx: EmbedContext): Promis
 
   // 4. How to show it.
   const mode: EmbedMode =page.challenged ? "live" : allowsFraming(page.headers) ? "direct" : "proxy";
-  let embedUrl = page.finalUrl;
-  let embedTitle = pageTitle(page.html);
+  let embedUrl = cleanChallengeUrl(page.finalUrl);
+  let embedTitle = page.challenged ? undefined : pageTitle(page.html);
   let note = why;
   if (mode === "live") {
     note = [note, `${host} shows a bot check to servers, so it's open in your live browser instead`].filter(Boolean).join(". ");
     if (ctx.chatId && ctx.ownerId) {
       step({ id: 3, label: `Opening ${host} in the live browser`, status: "running" });
-      const live = await d.openLive(ctx.chatId, ctx.ownerId, page.finalUrl, !!req.video && !videos.length).catch((e) => {
+      const live = await d.openLive(ctx.chatId, ctx.ownerId, embedUrl, !!req.video && !videos.length).catch((e) => {
         step({ id: 3, label: "The live browser isn't available here", status: "error", detail: e instanceof Error ? e.message.split("\n")[0] : String(e) });
         return null;
       });
       if (live) {
-        step({ id: 3, label: `Opened ${hostOf(live.url)} in the live browser`, status: "done", url: live.url });
-        embedUrl = live.url;
-        embedTitle = live.title || embedTitle;
+        // Not the bot check's temporary address or its "Just a moment..." title.
+        const clean = cleanChallengeUrl(live.url);
+        step({ id: 3, label: `Opened ${hostOf(clean)} in the live browser`, status: "done", url: clean });
+        embedUrl = clean;
+        if (live.title && !CHALLENGE_TITLE.test(live.title)) embedTitle = live.title;
         if (!videos.length) videos = live.videos;
       }
     }

@@ -147,6 +147,14 @@ let hostWaking: Promise<number> | null = null;
  * On Vercel the agent's browser runs on a separate on-demand computer. Wake it (or confirm
  * it's up) before agent work. Instant when it's already running or not needed.
  */
+let lastWarm = 0;
+/** Ask the server to start the agent's browser now (fire and forget, at most every 30s). */
+export function warmAgentBrowser(): void {
+  if (Date.now() - lastWarm < 30_000) return;
+  lastWarm = Date.now();
+  void fetch("/api/agent-host", { method: "POST" }).catch(() => {});
+}
+
 export function ensureAgentHost(): Promise<number> {
   if (Date.now() < hostReadyUntil) return Promise.resolve(hostVersion);
   if (!hostWaking) {

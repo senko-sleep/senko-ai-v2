@@ -77,6 +77,11 @@ export function detectComicRequest(text: string): ComicRequest | null {
   const before = new RegExp(`^(.*?)\\b(?:fan\\s*)?${KIND}\\b`, "i").exec(rest);
   let query = after?.[1] ?? before?.[1] ?? "";
   query = tidy(query.replace(new RegExp(`\\b(?:fan\\s*)?${KIND}\\b`, "gi"), " ").replace(/\b(?:an?|the|some|any|fan)\b\s*$/i, ""));
+  // A delegated choice is a follow-up, not a title. Leave it to the normal
+  // conversation path, which has the preceding search results and messages.
+  // Include the common "pic one" typo without stripping words from real titles.
+  const namedTitle = new RegExp(`\\b${KIND}\\b\\s+(?:called|named|titled)\\s+`, "i").test(rest);
+  if (!namedTitle && /^(?:pick|pic|choose|select)\s+(?:one|it|something|anything)(?:\s+(?:for\s+me|please|pls|and|make\s+it|it|as|to\s+read))*$/i.test(query)) return null;
   if (!query || query.length < 2 || /^(?:me|a|an|it|one|good|some|new|this|that)$/i.test(query)) return null;
   return explicit ? { query: query.slice(0, 80), source, explicit } : { query: query.slice(0, 80), source };
 }

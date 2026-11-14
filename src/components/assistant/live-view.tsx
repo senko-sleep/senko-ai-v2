@@ -59,9 +59,6 @@ export type UserInput = BrowserInput;
 // CSS cursors the page may ask for (url() cursors fall back to the default arrow).
 const CSS_CURSOR = /^(auto|default|none|context-menu|help|pointer|progress|wait|cell|crosshair|text|vertical-text|alias|copy|move|no-drop|not-allowed|grab|grabbing|all-scroll|col-resize|row-resize|[nsew]{1,2}-resize|nesw-resize|nwse-resize|zoom-in|zoom-out)$/;
 
-/** CSS width pages are laid out at when the panel is narrower (then scaled to fit). */
-const DESKTOP_WIDTH = 1280;
-
 // Browser key names -> Playwright key names.
 const KEY_MAP: Record<string, string> = { " ": "Space", Esc: "Escape", Del: "Delete", Left: "ArrowLeft", Right: "ArrowRight", Up: "ArrowUp", Down: "ArrowDown" };
 
@@ -75,6 +72,7 @@ export const LiveView = memo(function LiveView({
   interactive = false,
   onInput,
   onViewport,
+  pageZoom = 0.75,
 }: {
   bus: LiveBus;
   title: string;
@@ -88,8 +86,10 @@ export const LiveView = memo(function LiveView({
   /** When true, your clicks, scrolling and typing go to the page. */
   interactive?: boolean;
   onInput?: (e: UserInput) => void;
-  /** The panel's size in CSS px; the session resizes the real page to it. */
+  /** Logical page size in CSS px; the session resizes the real page to it. */
   onViewport?: (size: { width: number; height: number }) => void;
+  /** Scale the logical page into the panel. Smaller values show more of the page. */
+  pageZoom?: number;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const keyboardRef = useRef<HTMLTextAreaElement>(null);
@@ -100,7 +100,13 @@ export const LiveView = memo(function LiveView({
   const rippleLayerRef = useRef<HTMLDivElement>(null);
   const [pageCursor, setPageCursor] = useState("default");
   const onViewportRef = useRef(onViewport);
-  useEffect(() => { onViewportRef.current = onViewport; }, [onViewport]);
+  const zoomRef = useRef(pageZoom);
+  const reportViewportRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    onViewportRef.current = onViewport;
+    zoomRef.current = pageZoom;
+    reportViewportRef.current?.();
+  }, [onViewport, pageZoom]);
 
   // The AI's pointer is on screen only while it works: when the task is done it fades out.
   const runningRef = useRef(agentRunning);
@@ -149,9 +155,13 @@ export const LiveView = memo(function LiveView({
       // JPEGs are opaque; clear letterboxing only when geometry changes.
       ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.imageSmoothingQuality = "low";
+      // Frames normally match the panel's pixels exactly; when they don't (mid-resize), scale well.
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
     };
 
+    // Draw only confirmed browser frames. Translating the screenshot ahead of Chrome
+    // moves fixed headers and can snap backward when unrelated frames arrive.
     const draw = () => {
       if (!bitmap) return;
       const dpr = size.dpr;
@@ -293,7 +303,7 @@ export const LiveView = memo(function LiveView({
       }
     });
 
-    // The real browser's viewport follows this panel, so pages lay out for the space you see.
+    // Keep the page's aspect ratio while showing more content at smaller zoom levels.
     let reportTimer: ReturnType<typeof setTimeout> | undefined;
     let reported = "";
     const report = () => {
@@ -301,16 +311,16 @@ export const LiveView = memo(function LiveView({
       reportTimer = setTimeout(() => {
         const r = wrap.getBoundingClientRect();
         const w = Math.round(r.width), h = Math.round(r.height);
-        if (w < 200 || h < 120 || `${w}x${h}` === reported) return;
-        reported = `${w}x${h}`;
-        // Pages get a desktop-width viewport (~1280 CSS px) shown scaled down to the panel,
-        // like a normal browser window zoomed out, instead of a cramped tablet layout.
-        // Same aspect ratio as the panel, so it still fills it edge to edge.
-        const zoom = Math.max(0.5, Math.min(1, w / DESKTOP_WIDTH));
-        onViewportRef.current?.({ width: Math.round(w / zoom), height: Math.round(h / zoom) });
+        if (w < 200 || h < 120 || !onViewportRef.current) return;
+        const scale = Math.max(Number.isFinite(zoomRef.current) && zoomRef.current > 0 ? zoomRef.current : 0.75, w / 3840, h / 2160);
+        const width = Math.round(w / scale), height = Math.round(h / scale);
+        if (`${width}x${height}` === reported) return;
+        reported = `${width}x${height}`;
+        onViewportRef.current({ width, height });
       }, 250);
     };
     const resize = () => { layoutDirty = true; schedule(); report(); };
+    reportViewportRef.current = report;
     const visibility = () => {
       if (document.hidden) {
         cancelAnimationFrame(raf); raf = 0; decoder.reset();
@@ -334,6 +344,7 @@ export const LiveView = memo(function LiveView({
       decoder.dispose();
       clearTimeout(boxTimer);
       clearTimeout(reportTimer);
+      reportViewportRef.current = null;
       bitmap?.close();
     };
   }, [bus, onHasFrame]);
@@ -355,6 +366,7 @@ export const LiveView = memo(function LiveView({
     let hoverTimer: ReturnType<typeof setTimeout> | undefined;
     let pressed: { button: "left" | "right" | "middle"; x: number; y: number; clickCount: number } | null = null;
     let touch: { id: number; x: number; y: number; scrolling: boolean } | null = null;
+    let lastPress: { button: "left" | "right" | "middle"; t: number; x: number; y: number; count: number } | null = null;
     const flush = () => {
       cancelAnimationFrame(inputRaf); inputRaf = 0;
       clearTimeout(hoverTimer); hoverTimer = undefined;
@@ -398,7 +410,14 @@ export const LiveView = memo(function LiveView({
       }
       (keyboardRef.current || wrap).focus({ preventScroll: true });
       flush();
-      pressed = { ...p, button: e.button === 2 ? "right" : e.button === 1 ? "middle" : "left", clickCount: Math.min(3, e.detail || 1) };
+      // Chrome reports detail = 0 on pointer events, so count double/triple clicks here
+      // (same button, within 500ms and a few pixels of the last press).
+      const button = e.button === 2 ? "right" : e.button === 1 ? "middle" : "left";
+      const now = performance.now();
+      const again = lastPress && lastPress.button === button && now - lastPress.t < 500 && Math.hypot(lastPress.x - e.clientX, lastPress.y - e.clientY) < 6;
+      const clickCount = again ? Math.min(3, lastPress!.count + 1) : 1;
+      lastPress = { button, t: now, x: e.clientX, y: e.clientY, count: clickCount };
+      pressed = { ...p, button, clickCount };
       wrap.setPointerCapture(e.pointerId);
       onInput({ type: "down", ...pressed });
     };
@@ -435,8 +454,10 @@ export const LiveView = memo(function LiveView({
       const p = toPage(e.clientX, e.clientY);
       if (!p) return;
       e.preventDefault();
-      const scale = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1;
-      appendInput(continuous, { type: "wheel", dx: e.deltaX * scale, dy: e.deltaY * scale, ...p });
+      const { fit, vp } = geomRef.current;
+      const scale = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? fit.h : 1;
+      const dx = e.deltaX * scale * vp.w / fit.w, dy = e.deltaY * scale * vp.h / fit.h;
+      appendInput(continuous, { type: "wheel", dx, dy, ...p });
       queue();
     };
     const onKeyDown = (e: KeyboardEvent) => {

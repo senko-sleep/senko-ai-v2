@@ -8,8 +8,8 @@
 //   evicted sessions are saved first and restore when you come back, and the UI is told why.
 import type { Browser, BrowserContext, CDPSession, Cookie, Frame, Page } from "playwright";
 import { randomUUID } from "node:crypto";
+import { clearanceCookies, loadClearance, rememberClearance } from "./clearance-jar";
 import { SCREEN, browserMode, browserProxy, freeMemoryMB, getBrowser, isHeaded, isLowMemoryHost, restartBrowser } from "./browser";
-import { isGoogleHost } from "./google-gate";
 import { TimeoutError, orTimeout, withTimeout } from "./timeouts";
 import { isAdHost, isPrivateUrl } from "./safety";
 import { json, newId, q, q1, toBuffer } from "@/lib/server/db";
@@ -96,7 +96,8 @@ const LOCAL_CHANNELS = new Set(["custom", "chrome", "msedge", "chromium", "chrom
 const encodesHere = () => { const c = browserMode()?.channel; return !c || LOCAL_CHANNELS.has(c); };
 const smallHost = () => isLowMemoryHost() && encodesHere();
 const FPS_CAP = () => Math.min(240, Math.max(1, Number(process.env.LIVE_FPS) || (smallHost() ? 30 : 60)));
-const QUALITY = () => Math.min(95, Math.max(20, Number(process.env.LIVE_QUALITY || (smallHost() ? 50 : 60))));
+// Text needs a clean JPEG: 60 smeared small code / UI text into blocks.
+const QUALITY = () => Math.min(95, Math.max(20, Number(process.env.LIVE_QUALITY || (smallHost() ? 55 : 82))));
 // Live view size relative to the real screen. Smaller frames encode much faster on weak CPUs.
 const SCALE = () => Math.min(1, Math.max(0.3, Number(process.env.LIVE_SCALE || (smallHost() ? 0.75 : 1))));
 const CAST_IDLE_GRACE_MS = 5000;
@@ -109,28 +110,9 @@ const HEALTH_STRIKES = 3;
 // One input event (click, key, scroll) that takes longer than this means the tab's input
 // pipeline is stuck, even if its scripts still run. The tab is replaced so the queue moves on.
 const INPUT_STALL_MS = () => Math.max(3000, Number(process.env.BROWSER_INPUT_STALL_MS || 15_000));
-// Anti-abuse and verification clearance cookies (never login cookies) carry over to a new chat's
-// fresh browser so its first search or page visit doesn't look like a brand-new robot.
-const GOOGLE_TRUST_COOKIES = new Set(["NID", "AEC", "SOCS", "CONSENT", "GOOGLE_ABUSE_EXEMPTION", "__Secure-ENID", "1P_JAR"]);
-const CLEARANCE_COOKIES = new Set(["cf_clearance", "__cf_bm", "_cfuvid", "datadome", "_px3", "_pxvid", "_pxde"]);
-const gJar = globalThis as unknown as { __googleJar?: Map<string, Cookie[]> };
-const googleJar = (gJar.__googleJar ??= new Map());
-
+/** Clearance / anti-abuse cookies in a saved storage state (see clearance-jar.ts). */
 export function extractTrustCookies(storage: unknown): Cookie[] {
-  const cookies = (storage as { cookies?: Cookie[] } | null)?.cookies;
-  if (!Array.isArray(cookies)) return [];
-  const now = Date.now() / 1000;
-  return cookies.filter((c) => {
-    if (!(c.expires === -1 || c.expires > now)) return false;
-    const host = (c.domain || "").replace(/^\./, "");
-    if (GOOGLE_TRUST_COOKIES.has(c.name) && isGoogleHost(host)) return true;
-    if (CLEARANCE_COOKIES.has(c.name) && host.length > 0) return true;
-    return false;
-  });
-}
-
-function googleTrustCookies(storage: unknown): Cookie[] {
-  return extractTrustCookies(storage);
+  return clearanceCookies((storage as { cookies?: Cookie[] } | null)?.cookies);
 }
 
 export function liveInfo(): LiveInfo {
@@ -244,6 +226,80 @@ const POINTER_SCRIPT = () => {
   }, { capture: true, passive: true });
 };
 
+// Chrome draws a <select>'s option list as a separate popup window, which the live view's
+// screencast never shows: you clicked a dropdown, saw nothing, and the invisible list ate your
+// next click. Here a dropdown opens as an in-page list instead (visible in the stream), and
+// picking from it sets the value and fires input/change like a real choice.
+const SELECT_SCRIPT = () => {
+  const w = window as unknown as { __senkoSelectHooked?: boolean };
+  if (w.__senkoSelectHooked) return;
+  w.__senkoSelectHooked = true;
+  let panel: HTMLDivElement | null = null;
+  let owner: HTMLSelectElement | null = null;
+  const close = () => {
+    panel?.remove();
+    panel = null;
+    owner = null;
+  };
+  const choose = (s: HTMLSelectElement, i: number) => {
+    if (s.selectedIndex !== i) {
+      s.selectedIndex = i;
+      s.dispatchEvent(new Event("input", { bubbles: true }));
+      s.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    close();
+    s.focus();
+  };
+  const open = (s: HTMLSelectElement) => {
+    close();
+    owner = s;
+    const r = s.getBoundingClientRect();
+    const p = document.createElement("div");
+    p.setAttribute("data-senko-select", "");
+    const below = innerHeight - r.bottom;
+    const maxH = Math.max(120, Math.min(320, Math.max(below, r.top) - 8));
+    p.style.cssText = `position:fixed;z-index:2147483647;left:${Math.max(0, r.left)}px;min-width:${Math.max(r.width, 120)}px;max-height:${maxH}px;overflow:auto;background:#fff;color:#111;border:1px solid #888;border-radius:4px;box-shadow:0 6px 20px rgba(0,0,0,.25);font:14px system-ui,sans-serif;padding:2px 0;` +
+      (below >= Math.min(maxH, 160) || below >= r.top ? `top:${r.bottom + 2}px;` : `bottom:${innerHeight - r.top + 2}px;`);
+    Array.from(s.options).forEach((o, i) => {
+      const item = document.createElement("div");
+      item.textContent = o.label || o.text;
+      const parent = o.parentElement;
+      const indent = parent && parent.tagName === "OPTGROUP" ? 18 : 10;
+      item.style.cssText = `padding:5px ${indent}px;white-space:nowrap;cursor:default;${o.disabled ? "color:#999;" : ""}${i === s.selectedIndex ? "background:#1a73e8;color:#fff;" : ""}`;
+      if (!o.disabled) {
+        item.addEventListener("mouseenter", () => { if (i !== s.selectedIndex) item.style.background = "#e8f0fe"; });
+        item.addEventListener("mouseleave", () => { if (i !== s.selectedIndex) item.style.background = ""; });
+        item.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); choose(s, i); }, true);
+      }
+      p.appendChild(item);
+    });
+    document.documentElement.appendChild(p);
+    const sel = p.children[s.selectedIndex] as HTMLElement | undefined;
+    sel?.scrollIntoView({ block: "nearest" });
+    panel = p;
+  };
+  document.addEventListener("mousedown", (e) => {
+    const t = e.target instanceof Element ? e.target : null;
+    if (panel && t && panel.contains(t)) return;
+    const s = t?.closest("select") as HTMLSelectElement | null;
+    if (s && !s.multiple && s.size <= 1 && !s.disabled && e.button === 0) {
+      e.preventDefault(); // no native (invisible) popup
+      s.focus();
+      if (owner === s) close();
+      else open(s);
+      return;
+    }
+    close();
+  }, true);
+  document.addEventListener("keydown", (e) => {
+    if (!panel || !owner) return;
+    if (e.key === "Escape" || e.key === "Tab") close();
+    else if (e.key === "Enter") { e.preventDefault(); choose(owner, owner.selectedIndex); }
+  }, true);
+  addEventListener("scroll", (e) => { if (panel && !(e.target instanceof Node && panel.contains(e.target))) close(); }, true);
+  addEventListener("resize", close);
+};
+
 export class BrowserSession {
   readonly sessionId = randomUUID();
   readonly chatId: string;
@@ -331,7 +387,8 @@ export class BrowserSession {
       proxy: browserProxy(),
       storageState: saved?.storage ? (saved.storage as never) : undefined,
     });
-    if (!existingContext && !saved?.storage) await this.seedGoogleCookies();
+    // Every session (new, restored or reattached) gets the human checks you've already passed.
+    await this.seedClearance();
     if (existingContext) {
       // Reattach to the existing cloud Chrome after a Wasmer worker restart.
       // Keep its live tabs instead of replaying stale URLs into a second context.
@@ -352,6 +409,7 @@ export class BrowserSession {
       })
       .catch(() => {});
     await this.context.addInitScript(POINTER_SCRIPT);
+    await this.context.addInitScript(SELECT_SCRIPT);
     await this.context.route("**/*", (route) => {
       const url = route.request().url();
       let host = "";
@@ -407,16 +465,12 @@ export class BrowserSession {
     if (this.subs.size) await this.startCast();
   }
 
-  /** A new chat starts with the owner's Google trust cookies (from a live session, or the newest saved one). */
-  private async seedGoogleCookies() {
-    let cookies = googleJar.get(this.ownerId);
-    if (!cookies) {
-      const row = await q1<{ storage: unknown }>(
-        "SELECT storage FROM browser_sessions WHERE owner_id = $1 AND storage IS NOT NULL ORDER BY updated_at DESC LIMIT 1",
-        [this.ownerId]
-      ).catch(() => null);
-      cookies = googleTrustCookies(json(row?.storage, null));
-    }
+  /**
+   * Put the account's remembered clearance cookies (captchas / human checks already solved on
+   * any chat, Google's anti-abuse cookies) into this browser, so a cleared site stays cleared.
+   */
+  private async seedClearance() {
+    const cookies = await loadClearance(this.ownerId).catch(() => [] as Cookie[]);
     if (cookies.length) await this.context.addCookies(cookies).catch(() => {});
   }
 
@@ -614,13 +668,17 @@ export class BrowserSession {
 
   private adopt(p: Page) {
     this.pages.push(p);
-    if (this.viewportOverride) void p.setViewportSize(this.viewportOverride).catch(() => {});
+    if (this.viewportOverride) void this.applyViewport(p, this.viewportOverride);
     p.on("close", () => {
       const i = this.pages.indexOf(p);
       if (i === -1) return;
+      const lastUrl = p.url();
       this.pages.splice(i, 1);
       if (this.activeIndex >= this.pages.length) this.activeIndex = Math.max(0, this.pages.length - 1);
-      if (this.castPage === p) void this.startCast();
+      // The last tab went away (closed, or its window was): a session always keeps one tab, so
+      // the panel and your clicks never hit "no open tabs". It reopens where it was.
+      if (!this.pages.length && this.status === "active") void this.ensureTab(lastUrl);
+      else if (this.castPage === p) void this.startCast();
       this.emitStatus();
     });
     // A crashed renderer never recovers by itself; every call into it would fail or hang.
@@ -714,6 +772,30 @@ export class BrowserSession {
     );
   }
 
+  private reopening: Promise<Page | null> | null = null;
+  /** The active tab, opening a fresh one (at `url`) if every tab is gone. Null if the browser is. */
+  async ensureTab(url?: string): Promise<Page | null> {
+    if (this.pages.length) return this.active();
+    this.reopening ??= (async () => {
+      try {
+        const keep = url && /^https?:\/\//i.test(url) ? url : undefined;
+        const p = await this.newTabInternal();
+        if (keep) void p.goto(keep, { waitUntil: "domcontentloaded", timeout: 45_000 }).catch(() => {});
+        await this.front(p);
+        await this.startCast();
+        this.log(`The tab was closed, so a new one was opened${keep ? ` at ${hostOf(keep)}` : ""}.`);
+        this.emitStatus();
+        return p;
+      } catch (e) {
+        this.log(`Couldn't reopen a tab: ${e instanceof Error ? e.message.split("\n")[0] : e}`, "warn");
+        return null;
+      } finally {
+        this.reopening = null;
+      }
+    })();
+    return this.reopening;
+  }
+
   async openTab(url?: string): Promise<Page> {
     const p = await this.newTabInternal();
     if (url) await p.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
@@ -773,8 +855,8 @@ export class BrowserSession {
     if (!this.context || this.status === "closed") return;
     // Every browser call is bounded: a frozen tab must not stall saving the others.
     const storage = await withTimeout(this.context.storageState({ indexedDB: true }), 8000, null);
-    const trust = googleTrustCookies(storage);
-    if (trust.length) googleJar.set(this.ownerId, trust);
+    // Remember any human check passed in this browser, for every chat from now on.
+    if (storage?.cookies?.length) void rememberClearance(this.ownerId, storage.cookies).catch(() => {});
     const tabs: SavedTab[] = await Promise.all(
       this.pages.map(async (p) => {
         const [info, title] = await Promise.all([
@@ -915,14 +997,20 @@ export class BrowserSession {
   private viewportOverride: { width: number; height: number } | null = null;
 
   /** Size the real page to the viewer's panel, so sites lay out for the space you see. */
+  /** Size the real page to the live view panel (CSS px), like resizing a browser window. */
   async setViewport(width: number, height: number) {
     // A headed window or an explicitly configured UHD desktop keeps its own size.
     if (isHeaded() || (SCREEN.width === 3840 && SCREEN.height === 2160)) return;
-    const size = { width: Math.round(Math.min(2560, Math.max(320, width))), height: Math.round(Math.min(1600, Math.max(240, height))) };
+    // Up to 4K: Chrome's screencast sends CSS-pixel frames, so the viewport is the resolution.
+    const size = { width: Math.round(Math.min(3840, Math.max(320, width))), height: Math.round(Math.min(2160, Math.max(240, height))) };
     const cur = this.viewportOverride;
     if (cur && cur.width === size.width && cur.height === size.height) return;
     this.viewportOverride = size;
-    await Promise.all(this.pages.map((p) => p.setViewportSize(size).catch(() => {})));
+    await Promise.all(this.pages.map((p) => this.applyViewport(p, size)));
+  }
+
+  private async applyViewport(p: Page, size: { width: number; height: number }) {
+    await p.setViewportSize(size).catch(() => {});
   }
 
   /** Viewport size of the active page in CSS pixels. */
@@ -981,8 +1069,11 @@ export class BrowserSession {
         format: "jpeg",
         quality: QUALITY(),
         // Scale only the encoded picture. CDP metadata still gives the full input viewport.
-        maxWidth: Math.round(Math.min(3840, Math.max(320, Number(process.env.LIVE_MAX_WIDTH) || 1280)) * SCALE()),
-        maxHeight: Math.round(Math.min(2160, Math.max(240, Number(process.env.LIVE_MAX_HEIGHT) || 800)) * SCALE()),
+        // Up to 4K: frames are the viewport's CSS size, which matches the panel (setViewport),
+        // so they're drawn 1:1. (The old 1280x800 cap blurred any bigger panel.) Only small
+        // hosts scale them down to keep encoding fast.
+        maxWidth: Math.round(Math.min(3840, Math.max(320, Number(process.env.LIVE_MAX_WIDTH) || (smallHost() ? 1280 : 3840))) * SCALE()),
+        maxHeight: Math.round(Math.min(2160, Math.max(240, Number(process.env.LIVE_MAX_HEIGHT) || (smallHost() ? 800 : 2160))) * SCALE()),
         everyNthFrame: 1,
       }), 10_000, "starting the live view");
     } catch {
@@ -1014,7 +1105,7 @@ export class BrowserSession {
   // ---- screenshots / page reading ------------------------------------------------------
 
   async screenshot(quality = 70): Promise<Buffer> {
-    return this.active().screenshot({ type: "jpeg", quality, timeout: 15_000 });
+    return this.active().screenshot({ type: "jpeg", quality, timeout: 15_000, scale: "css" });
   }
 
   /** Save a screenshot to the timeline (DB) and announce it. */
@@ -1141,7 +1232,9 @@ export class BrowserSession {
 
   private async applyInput(ev: InputEvent) {
     this.lastUsed = Date.now();
-    const p = this.active();
+    // Every tab was closed: reopen one rather than failing each click with "no open tabs".
+    const p = this.pages.length ? this.active() : await this.ensureTab();
+    if (!p) throw new Error("The browser closed. Open it again from the panel.");
     switch (ev.type) {
       case "click":
         await p.mouse.click(ev.x, ev.y, { button: ev.button || "left", clickCount: ev.double ? 2 : 1 });

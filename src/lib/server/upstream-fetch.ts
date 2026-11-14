@@ -22,9 +22,12 @@ export interface UpstreamOptions {
 const CHALLENGE_STATUS = new Set([403, 429, 503]);
 const CHALLENGE_TEXT = /<title>\s*(?:Just a moment|Attention Required|DDoS-Guard|Checking your browser|Please Wait\.\.\. \| Cloudflare)/i;
 
-export function looksChallenged(status: number, headers: Headers, bodyStart: string): boolean {
+export function looksChallenged(status: number, headers: Headers, bodyStart: string, url = ""): boolean {
   if (headers.get("cf-mitigated") === "challenge") return true;
-  return CHALLENGE_STATUS.has(status) && CHALLENGE_TEXT.test(bodyStart);
+  if (/[?&]__cf_chl_/.test(url)) return true;
+  if (CHALLENGE_STATUS.has(status) && CHALLENGE_TEXT.test(bodyStart)) return true;
+  // Some challenge pages answer 200; they still load Cloudflare's challenge script.
+  return CHALLENGE_TEXT.test(bodyStart) && /\/cdn-cgi\/challenge-platform\/|window\._cf_chl_opt/.test(bodyStart);
 }
 
 /** GET a URL with browser-like headers; flags bot-check answers. */
@@ -34,15 +37,15 @@ export async function fetchUpstream(url: string, o: UpstreamOptions = {}): Promi
   const signal = o.signal ? AbortSignal.any([o.signal, timeout]) : timeout;
   const res = await fetch(url, { headers, signal, redirect: "follow" });
   const finalUrl = res.url || url;
-  if (!CHALLENGE_STATUS.has(res.status) && res.headers.get("cf-mitigated") !== "challenge") {
-    return { res, finalUrl, challenged: false };
-  }
-  // Only a page can be a bot check; read it to tell (and hand it back re-wrapped).
   const type = res.headers.get("content-type") || "";
-  const text = /html|text/i.test(type) || !type ? await res.text() : "";
+  // Only a page can be a bot check: anything else streams straight through.
+  if (!/text\/html/i.test(type)) {
+    return { res, finalUrl, challenged: looksChallenged(res.status, res.headers, "", finalUrl) };
+  }
+  const text = await res.text();
   return {
     res: new Response(text || null, { status: res.status, headers: res.headers }),
     finalUrl,
-    challenged: looksChallenged(res.status, res.headers, text.slice(0, 4000)),
+    challenged: looksChallenged(res.status, res.headers, text.slice(0, 8000), finalUrl),
   };
 }

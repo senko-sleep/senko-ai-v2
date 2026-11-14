@@ -7,6 +7,21 @@ import {
 import type { ComicSeries } from "@/lib/comics/types";
 
 describe("detectComicRequest", () => {
+  it.each([
+    "pic one for me make it for manga i wanna embed so i can read",
+    "pick one for me make it for manga i wanna embed so i can read",
+    "choose one for me manga please",
+    "select something for me as a manga reader",
+    "send me a manga of pick one for me",
+  ])("does not invent a comic title from the follow-up %j", (text) => {
+    expect(detectComicRequest(text)).toBeNull();
+  });
+
+  it("keeps real titles containing choice words", () => {
+    expect(detectComicRequest("show me a one piece manga")?.query).toBe("one piece");
+    expect(detectComicRequest("read a manga called Pick One")?.query).toBe("Pick One");
+  });
+
   it("pulls the subject out of a reader request", () => {
     expect(detectComicRequest("send me a manga of fnf as a embed ui all pages")).toEqual({ query: "fnf", source: undefined });
     expect(detectComicRequest("show me a one piece manga")?.query).toBe("one piece");

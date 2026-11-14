@@ -11,6 +11,7 @@ import {
   Loader2,
   Lock,
   Maximize2,
+  Minus,
   Minimize2,
   MonitorPlay,
   MousePointerClick,
@@ -127,6 +128,7 @@ export function BrowserPanel({
   const [showLog, setShowLog] = useState(false);
   const [editingUrl, setEditingUrl] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  const [pageZoom, setPageZoom] = useState(75);
   const [minimized, setMinimized] = useState(false);
   const mobileToggleRef = useRef<HTMLButtonElement>(null);
   const narrowViewport = useSyncExternalStore(subscribeToBrowserWidth, () => window.matchMedia(narrowBrowserQuery).matches, () => false);
@@ -362,6 +364,17 @@ export function BrowserPanel({
         )}
 
         <div className="flex shrink-0 items-center gap-0.5">
+          <details className="relative">
+            <summary className="sk-btn h-7 cursor-pointer list-none rounded-md px-1.5 text-[11px] text-[var(--sk-muted)] hover:bg-[var(--sk-hover)] hover:text-[var(--sk-text)] [&::-webkit-details-marker]:hidden" aria-label={`Page zoom: ${pageZoom}%`} title="Adjust page size">
+              {pageZoom}%
+            </summary>
+            <div role="group" aria-label="Page zoom" className="absolute right-0 top-full z-20 mt-1 flex items-center gap-1 rounded-lg border border-[var(--sk-line)] bg-[var(--sk-bg)] p-1.5 shadow-lg">
+              <button type="button" className={`${iconBtn} disabled:opacity-40`} aria-label="Zoom out" disabled={pageZoom <= 50} onClick={() => setPageZoom(v => Math.max(50, v - 25))}><Minus size={13} aria-hidden /></button>
+              <span className="min-w-9 text-center text-[11px] text-[var(--sk-text)]" aria-live="polite">{pageZoom}%</span>
+              <button type="button" className={`${iconBtn} disabled:opacity-40`} aria-label="Zoom in" disabled={pageZoom >= 150} onClick={() => setPageZoom(v => Math.min(150, v + 25))}><Plus size={13} aria-hidden /></button>
+              <button type="button" className="sk-btn h-7 rounded-md px-2 text-[11px] text-[var(--sk-muted)] hover:bg-[var(--sk-hover)]" aria-label="Reset page zoom to 75%" onClick={() => setPageZoom(75)}>Reset</button>
+            </div>
+          </details>
           {!controlling && !paused && state.outcome !== "idle" && (
             <span className={`hidden shrink-0 px-1.5 text-[10.5px] font-medium xl:inline ${outcome.cls}`} aria-live="polite">
               {outcome.text}
@@ -466,7 +479,7 @@ export function BrowserPanel({
 
       {/* The live page: fills all remaining space, edge to edge */}
       <div className="sk-browser-picture relative min-h-0 flex-1" inert={mini}>
-        <LiveView bus={bus} title={state.title} onHasFrame={onHasFrame} agentRunning={state.running} agentThinking={activePhase === "observing" || activePhase === "verifying"} agentName={agentName} interactive={controlling && !mini && !state.running} onInput={onInput} onViewport={mini ? undefined : onViewport} />
+        <LiveView bus={bus} title={state.title} onHasFrame={onHasFrame} agentRunning={state.running && !paused && !controlling} agentThinking={activePhase === "observing" || activePhase === "verifying"} agentName={agentName} interactive={!mini && (!state.running || paused || controlling || isVerificationChallenge)} onInput={onInput} onViewport={mini ? undefined : onViewport} pageZoom={pageZoom / 100} />
         {!hasFrame && state.page !== undefined && <ReaderView page={state.page} busy={pageBusy} onOp={onPageOp} />}
         {!hasFrame && state.page === undefined && (
           <div className={`absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-white/55 ${state.running ? "sk-scan" : ""}`}>

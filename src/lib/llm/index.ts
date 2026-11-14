@@ -477,6 +477,9 @@ function compatProvider(c: CompatConfig): Provider {
   };
 }
 
+/** A provider's JSON mode rejected the model's own output. */
+const BAD_JSON = /failed to validate json|json_validate_failed|failed_generation/i;
+
 /** POST with a 45s limit on *connecting* only (long answers can keep streaming). */
 async function connect(url: string, body: unknown, headers: Record<string, string>, signal?: AbortSignal, budget?: InferenceRequestBudget, provider = "unknown") {
   signal?.throwIfAborted();
@@ -530,7 +533,8 @@ async function throwIfBad(res: Response, label: string, model: string) {
     /* not json */
   }
   const retry = retryDelayMs(res.headers.get("retry-after"), text);
-  throw new ProviderError(`${label} ${res.status} (${model}): ${String(msg).slice(0, 240)}`, res.status, retry);
+  const status = res.status === 400 && BAD_JSON.test(text) ? 422 : res.status;
+  throw new ProviderError(`${label} ${res.status} (${model}): ${String(msg).slice(0, 240)}`, status, retry);
 }
 
 async function* sseContent(body: ReadableStream<Uint8Array>, onThought?: (text: string) => void): AsyncGenerator<string> {
@@ -558,7 +562,10 @@ async function* sseContent(body: ReadableStream<Uint8Array>, onThought?: (text: 
         }
         if (j.error) {
           const m = typeof j.error === "string" ? j.error : j.error.message || JSON.stringify(j.error);
-          throw new ProviderError(`stream error: ${m}`, /rate|quota|429/i.test(m) ? 429 : 500, null);
+          // "Failed to validate JSON" (Groq's JSON mode) is one bad answer, not an outage:
+          // try the next model right away instead of benching this provider for 30s.
+          const status = /rate|quota|429/i.test(m) ? 429 : BAD_JSON.test(m) ? 422 : 500;
+          throw new ProviderError(`stream error: ${m}`, status, null);
         }
         const fr = j.choices?.[0]?.finish_reason;
         if (fr && /content_filter|safety|prohibited/i.test(fr)) {

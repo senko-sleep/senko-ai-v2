@@ -84,6 +84,23 @@ describe("refusal routing", () => {
     expect(body?.response_format).toEqual({ type: "json_object" });
     expect(JSON.parse(result.text).ops).toEqual([]);
   });
+  it("treats a JSON-mode validation failure as one bad answer, not an outage", async () => {
+    const calls = { groq: 0, router: 0 };
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url.endsWith("/models")) return Response.json({ data: (url.includes("groq") ? ["g-model"] : ["vendor/r-model:free"]).map((id) => ({ id, architecture: { input_modalities: ["text"] }, pricing: { prompt: "0", completion: "0" } })) });
+      if (url.includes("groq")) {
+        calls.groq++;
+        const err = { error: { message: "Failed to validate JSON. Please adjust your prompt. See 'failed_generation' for more details." } };
+        return new Response(`data: ${JSON.stringify(err)}\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      calls.router++; return sse('{"ok":true}');
+    });
+    const { complete } = await freshLlm();
+    const result = await complete([{ role: "user", content: "Return JSON." }], { provider: "groq", json: true, maxWaitMs: 2000, hedge: false });
+    expect(JSON.parse(result.text).ok).toBe(true);
+    expect(calls.groq).toBe(1);
+    expect(calls.router).toBe(1);
+  });
   it("skips remaining models after an account credit failure and fails over", async () => {
     const calls = { groq: 0, router: 0 };
     vi.stubGlobal("fetch", async (url: string) => {

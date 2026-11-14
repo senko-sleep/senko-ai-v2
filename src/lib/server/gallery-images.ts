@@ -1,7 +1,15 @@
 import { lookup } from "node:dns/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import sharp from "sharp";
+import type SharpType from "sharp";
+
+// Loaded on first use: sharp is a native module, and a host that can't load it (Wasmer's
+// WebAssembly runtime) must still serve chat replies; only image collages need it.
+let sharpMod: Promise<typeof SharpType> | undefined;
+function loadSharp(): Promise<typeof SharpType> {
+  sharpMod ??= import("sharp").then((m) => (m as unknown as { default: typeof SharpType }).default ?? (m as unknown as typeof SharpType));
+  return sharpMod;
+}
 import { assertPublicHttpUrl, isPrivateAddress } from "./net-guard";
 import type { ScrapedImage } from "./images";
 
@@ -80,6 +88,7 @@ async function download(raw: string, signal: AbortSignal, hops = 0, headersOnly 
  * so they still move in the chat; a huge animation falls back to its first frame.
  */
 export async function toWebp(input: Buffer) {
+  const sharp = await loadSharp();
   const still = () =>
     sharp(input, { limitInputPixels: 24_000_000 })
       .timeout({ seconds: 3 }).rotate().resize(1080, 1080, { fit: "inside", withoutEnlargement: true })
@@ -102,6 +111,7 @@ async function verify(candidate: ScrapedImage, signal: AbortSignal): Promise<Ver
     const { data, info } = await toWebp(input);
     const height = info.pageHeight || info.height;
     if (info.width < 120 || height < 120) return;
+    const sharp = await loadSharp();
     const pixels = await sharp(data).resize(9, 8, { fit: "fill" }).flatten().greyscale().raw().toBuffer();
     let fingerprint = BigInt(0);
     for (let row = 0; row < 8; row++) {

@@ -8,13 +8,20 @@ export function registerNodeInstrumentation() {
       .then((list) => console.log(`[startup] AI models ready: ${list.filter((p) => p.available).map((p) => p.label).join(", ") || "none"}`))
       .catch(() => {});
   }, 500);
-  if (process.env.VERCEL || process.env.PREWARM_BROWSER === "0") return;
-  if (process.env.NODE_ENV !== "production" && process.env.PREWARM_BROWSER !== "1") return;
-  if (process.env.BROWSERBASE_API_KEY || process.env.BROWSERLESS_TOKEN || process.env.STEEL_API_KEY) return;
+  if (process.env.PREWARM_BROWSER === "0") return;
+  // Start Chrome now wherever this server runs its own (your PC in dev too, Docker): a cold
+  // Chrome plus its first tab took ~4-8s, paid after the user pressed send. Hosts that only
+  // use a managed browser (billed per session) warm it when Agent mode is picked instead
+  // (POST /api/agent-host). PREWARM_BROWSER=0 turns this off on low-RAM machines.
   setTimeout(() => {
     import("@/lib/agent/browser")
-      .then(({ getBrowser }) => getBrowser())
-      .then(() => console.log("[startup] browser ready"))
+      .then(async ({ canLaunchLocalBrowser, isLowMemoryHost, warmBrowser }) => {
+        if (!canLaunchLocalBrowser()) return;
+        if (isLowMemoryHost() && process.env.PREWARM_BROWSER !== "1") return;
+        const t = Date.now();
+        await warmBrowser();
+        console.log(`[startup] browser ready in ${Date.now() - t}ms`);
+      })
       .catch((error) => console.warn("[startup] browser prewarm failed:", error instanceof Error ? error.message : error));
-  }, 1000);
+  }, 1500);
 }

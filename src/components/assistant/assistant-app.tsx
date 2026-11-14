@@ -196,7 +196,7 @@ export default function AssistantApp() {
         const [settings] = await Promise.all([API.getSettings().catch(() => ({}) as API.Settings), refreshChats()]);
         if (settings.personalizedSuggestions === false) setPersonalized(false);
         if (settings.provider) setProvider(settings.provider);
-        if (settings.mode === "agent" || settings.mode === "chat") setMode(settings.mode);
+        // The last-used mode isn't restored: the app opens on a new conversation, in Chat mode.
         const fromHash = chatFromHash();
         if (fromHash) void openChat(fromHash);
       } catch (e) {
@@ -243,7 +243,8 @@ export default function AssistantApp() {
   // ---- preferences that sync across devices -----------------------------------
   const changeMode = (m: Mode) => {
     setMode(m);
-    API.saveSettings({ mode: m }).catch(() => {});
+    // Start the browser while the user is still typing the task.
+    if (m === "agent") API.warmAgentBrowser();
   };
   const changeProvider = (p: string) => {
     setProvider(p);
@@ -625,6 +626,8 @@ export default function AssistantApp() {
     setHash(null);
     setMessages([]);
     setAttachments([]);
+    // New conversations always start in Chat mode; Agent is opt-in per conversation.
+    setMode("chat");
     if (!window.matchMedia("(min-width: 1024px)").matches) setSidebarOpen(false);
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [detach]);
@@ -1045,6 +1048,7 @@ export default function AssistantApp() {
         } finally {
           clearTimeout(slow);
         }
+        setBrowser((b) => (b.status === "Starting the agent computer…" || b.status === "Starting…" ? { ...b, status: "Opening the browser…" } : b));
         const res = await fetch(`/api/chats/${chatId}/agent`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },

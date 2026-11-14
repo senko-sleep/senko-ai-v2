@@ -17,6 +17,8 @@ import postcss from "postcss";
 import tailwind from "@tailwindcss/postcss";
 
 const headed = process.argv.includes("--headed");
+// This checks the streamed panel, so the agent's Chrome runs headless even on a desktop.
+process.env.BROWSER_HEADLESS = "1";
 const cache = path.resolve("node_modules/.cache/live-panel");
 await mkdir(cache, { recursive: true });
 const stubDb = {
@@ -49,10 +51,14 @@ const client = await build({
       es.onmessage = m => { const e = JSON.parse(m.data); if (e.type in window.stats) window.stats[e.type]++; if (['frame','cursor','reset','pointer','audio'].includes(e.type)) bus.emit(e); if (e.type === 'status') window.lastStatus = e; };
       const post = (p, b) => fetch(p, { method: 'POST', body: JSON.stringify(b) });
       function App() {
+        const [paused, setPaused] = useState(false);
+        const [controlling, setControlling] = useState(false);
+        window.setPaused = setPaused;
+        window.setControlling = setControlling;
         const [state, setState] = useState({ running: false, status: '', url: 'http://local/page', title: 'Fixture', plan: [], steps: [{ id: 1, label: 'Opened the page', status: 'done' }], outcome: 'done' });
         window.setRunning = (running) => setState((s) => ({ ...s, running, status: running ? 'Working' : '', outcome: running ? 'running' : 'done' }));
         return React.createElement(BrowserPanel, {
-          state, bus, controlling: true, paused: false, opening: false, pageBusy: false, agentName: 'Senko · Gemini',
+          state, bus, controlling, paused, opening: false, pageBusy: false, agentName: 'Senko · Gemini',
           onStop() {}, onClose() {}, onOpenBrowser() {}, onToggleControl() {}, onResume() {}, onPageOp() {},
           onInput: e => { window.stats.inputs++; post('/input', e); },
           onNav: n => post('/input', 'url' in n ? { type: 'goto', url: n.url } : { type: 'nav', action: n.action }),
@@ -84,8 +90,21 @@ a{position:absolute;left:20px;top:80px;font-size:22px} #grab{position:absolute;l
 #play{position:absolute;left:20px;top:210px;width:120px;height:40px}</style>
 <input id="text" aria-label="Text"><a href="/next">Go next</a><div id="grab">grab me</div><button id="play">Play sound</button><div id="size"></div>
 <audio id="snd" src="/tone.wav" loop></audio>
+<label id="cbl" style="position:absolute;left:20px;top:270px"><input type="checkbox" id="cb"> Remember me</label>
+<input type="range" id="rng" min="0" max="100" value="0" style="position:absolute;left:20px;top:310px;width:300px">
+<div id="dbl" style="position:absolute;left:20px;top:350px;width:140px;height:36px;background:#fde">double-click me</div>
+<div id="ctx" style="position:absolute;left:180px;top:350px;width:140px;height:36px;background:#efd">right-click me</div>
+<form id="form" style="position:absolute;left:20px;top:400px"><input id="q" aria-label="Search"><button>Go</button></form>
+<div id="hov" style="position:absolute;left:20px;top:450px;width:140px;height:36px;background:#ddf">hover me</div>
+<select id="sel" style="position:absolute;left:180px;top:450px"><option>one</option><option>two</option><option>three</option></select>
+<div id="ce" contenteditable style="position:absolute;left:20px;top:500px;width:300px;height:36px;border:1px solid #999"></div>
+<button id="cnt" style="position:absolute;left:340px;top:500px">Clicked 0</button>
 <script>const s=()=>document.getElementById('size').textContent=innerWidth+'x'+innerHeight;s();addEventListener('resize',s);
-document.getElementById('play').onclick=()=>document.getElementById('snd').play();</script>`;
+document.getElementById('play').onclick=()=>document.getElementById('snd').play();
+window.fx={};const $=id=>document.getElementById(id);
+$('dbl').ondblclick=()=>fx.dbl=true;$('ctx').oncontextmenu=e=>{e.preventDefault();fx.ctx=true};
+$('form').onsubmit=e=>{e.preventDefault();fx.submitted=$('q').value};$('hov').onmouseenter=()=>fx.hover=true;
+let n=0;$('cnt').onclick=()=>{n++;$('cnt').textContent='Clicked '+n};</script>`;
 
 let session;
 const server = createServer(async (req, res) => {
@@ -102,6 +121,8 @@ const server = createServer(async (req, res) => {
     try { for (;;) { const { done, value } = await reader.read(); if (done) break; if (!res.write(value)) await new Promise((r) => res.once("drain", r)); } } catch {} finally { res.end(); }
   } else if (url === "/input") {
     const e = await body();
+    // Like the app: input without control claims it (CONTROL_REQUIRED -> takeover -> retry).
+    if (!session.takeover) { session.setTakeover(true); results.autoClaimed = true; }
     try { await session.inputBatch([e]); res.end("ok"); } catch (err) { res.statusCode = 409; res.end(String(err)); }
   } else if (url === "/viewport") { const { width, height } = await body(); await session.setViewport(width, height); res.end("ok"); }
   else { res.statusCode = 404; res.end(); }
@@ -111,14 +132,16 @@ const base = `http://127.0.0.1:${server.address().port}`;
 process.env.APP_URL = base; // lets the session's browser open this local fixture
 
 const results = {};
-// The page gets a ~1280 CSS px wide viewport, scaled down to narrower panels (same aspect ratio).
-const expectVp = (w, h) => { const z = Math.max(0.5, Math.min(1, w / 1280)); return [Math.round(w / z), Math.round(h / z)]; };
+// A compact 75% default shows more content with the panel's same aspect ratio.
+const expectVp = (w, h, zoom = 0.75) => [Math.round(w / zoom), Math.round(h / zoom)];
 let viewer;
 try {
   session = new BrowserSession("panel-fixture", "test");
   await session.start(null);
   results.browser = session.context.browser()?.version();
   await session.active().goto(`${base}/page`);
+  // Start like the app after a task: the agent holds control; your first input takes it.
+  session.setTakeover(false);
 
   viewer = await chromium.launch({ headless: !headed, args: ["--autoplay-policy=no-user-gesture-required"] });
   const page = await (await viewer.newContext({ viewport: { width: 1200, height: 800 } })).newPage();
@@ -144,6 +167,16 @@ try {
   const box2 = await view.boundingBox();
   await session.active().waitForFunction(([w, h]) => Math.abs(innerWidth - w) <= 1 && Math.abs(innerHeight - h) <= 1, expectVp(Math.round(box2.width), Math.round(box2.height)), { timeout: 5000 });
   results.resizedViewport = await session.active().evaluate(() => `${innerWidth}x${innerHeight}`);
+  await page.getByLabel('Page zoom: 75%', { exact: true }).click();
+  await page.getByRole('button', { name: 'Zoom out', exact: true }).click();
+  await session.active().waitForFunction(([w, h]) => innerWidth === w && innerHeight === h, expectVp(Math.round(box2.width), Math.round(box2.height), 0.5));
+  await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  await session.active().waitForFunction(([w, h]) => innerWidth === w && innerHeight === h, expectVp(Math.round(box2.width), Math.round(box2.height), 1));
+  await page.getByRole('button', { name: 'Reset page zoom to 75%', exact: true }).click();
+  await session.active().waitForFunction(([w, h]) => innerWidth === w && innerHeight === h, expectVp(Math.round(box2.width), Math.round(box2.height)));
+  await page.getByLabel('Page zoom: 75%', { exact: true }).click();
+  results.zoomControls = true;
   await page.waitForTimeout(400);
   const pageBox = await view.boundingBox();
   const vpNow = session.viewport();
@@ -208,6 +241,15 @@ try {
   await page.mouse.wheel(0, 900);
   await session.active().waitForFunction(() => scrollY > 300, null, { timeout: 5000 });
   results.scrolled = await session.active().evaluate(() => scrollY);
+  const scrollPositions = [results.scrolled];
+  for (let i = 0; i < 3; i++) {
+    await page.mouse.wheel(0, 120);
+    await session.active().waitForFunction(y => scrollY > y, scrollPositions.at(-1), { timeout: 5000 });
+    scrollPositions.push(await session.active().evaluate(() => scrollY));
+  }
+  await page.waitForTimeout(400);
+  assert.equal(await session.active().evaluate(() => scrollY), scrollPositions.at(-1), 'scroll must settle without further movement');
+  results.consecutiveScroll = scrollPositions;
   await page.mouse.wheel(0, -5000);
   await session.active().waitForFunction(() => scrollY === 0, null, { timeout: 5000 });
   await page.mouse.click(at(link.x + 10, link.y + 8).x, at(link.x + 10, link.y + 8).y);
@@ -215,14 +257,105 @@ try {
   await page.waitForFunction(() => window.stats.frame > 0);
   results.navigation = true;
 
-  // 8. The address bar navigates.
+  // 8. Every other kind of interaction a website has.
+  await session.active().goto(`${base}/page`);
+  await page.waitForTimeout(500);
+  const el = async (sel) => {
+    await session.active().locator(sel).scrollIntoViewIfNeeded();
+    await page.waitForTimeout(250); // let the scrolled frame reach the panel
+    const b = await session.active().locator(sel).boundingBox();
+    return { b, c: at(b.x + b.width / 2, b.y + b.height / 2) };
+  };
+  const fx = () => session.active().evaluate(() => window.fx);
+  const checks = {};
+  { const { c } = await el("#cb"); await page.mouse.click(c.x, c.y); await session.active().waitForFunction(() => document.querySelector("#cb").checked, null, { timeout: 5000 }); checks.checkbox = true; }
+  { const { b } = await el("#rng"); const from = at(b.x + 4, b.y + b.height / 2), to = at(b.x + b.width * 0.75, b.y + b.height / 2);
+    await page.mouse.move(from.x, from.y); await page.mouse.down(); await page.mouse.move(to.x, to.y, { steps: 8 }); await page.mouse.up();
+    await session.active().waitForFunction(() => +document.querySelector("#rng").value > 50, null, { timeout: 5000 }); checks.dragSlider = await session.active().evaluate(() => +document.querySelector("#rng").value); }
+  { const { c } = await el("#dbl"); await page.mouse.dblclick(c.x, c.y); await session.active().waitForFunction(() => window.fx.dbl, null, { timeout: 5000 }); checks.doubleClick = true; }
+  { const { c } = await el("#ctx"); await page.mouse.click(c.x, c.y, { button: "right" }); await session.active().waitForFunction(() => window.fx.ctx, null, { timeout: 5000 }); checks.rightClick = true; }
+  { const { c } = await el("#hov"); await page.mouse.move(c.x - 200, c.y); await page.mouse.move(c.x, c.y, { steps: 5 }); await session.active().waitForFunction(() => window.fx.hover, null, { timeout: 5000 }); checks.hover = true; }
+  { const { c } = await el("#q"); await page.mouse.click(c.x, c.y); await page.keyboard.type("fnf"); await page.keyboard.press("Enter"); await session.active().waitForFunction(() => window.fx.submitted === "fnf", null, { timeout: 5000 }); checks.formEnter = true; }
+  // Dropdowns open as an in-page list the stream can show (Chrome's native popup is invisible in it).
+  { const { c } = await el("#sel"); await page.mouse.click(c.x, c.y);
+    await session.active().waitForSelector("[data-senko-select]", { timeout: 5000 });
+    await page.waitForTimeout(300);
+    const opt = await session.active().locator("[data-senko-select] > div", { hasText: "three" }).boundingBox();
+    const oc = at(opt.x + opt.width / 2, opt.y + opt.height / 2);
+    await page.mouse.click(oc.x, oc.y);
+    await session.active().waitForFunction(() => document.querySelector("#sel").value === "three" && !document.querySelector("[data-senko-select]"), null, { timeout: 5000 });
+    checks.dropdown = "three"; }
+  { const { c } = await el("#ce"); await page.mouse.click(c.x, c.y); await page.waitForTimeout(300); await page.keyboard.type("rich text");
+    await session.active().waitForFunction(() => document.querySelector("#ce").textContent.includes("rich text"), null, { timeout: 5000 }).catch(async (e) => {
+      console.log("contenteditable debug:", JSON.stringify(await session.active().evaluate(() => ({ active: document.activeElement?.id || document.activeElement?.tagName, text: document.querySelector("#ce").textContent, sel: document.querySelector("#sel").value, q: document.querySelector("#q").value }))));
+      throw e; });
+    checks.contentEditable = true; }
+  { const { c } = await el("#cnt"); for (let i = 0; i < 5; i++) await page.mouse.click(c.x, c.y); await session.active().waitForFunction(() => document.querySelector("#cnt").textContent === "Clicked 5", null, { timeout: 5000 }); checks.rapidClicks = 5; }
+  results.interactions = checks;
+  void fx;
+
+  // 9. The address bar navigates.
   await page.getByRole("button", { name: /local\/page|Search or enter address/ }).click();
   await page.getByRole("textbox", { name: "Address or search" }).fill(`${base}/page`);
   await page.keyboard.press("Enter");
   await session.active().waitForURL(/\/page$/, { timeout: 5000 });
   results.addressBar = true;
 
+  // 10. Closing the last tab never leaves the panel dead ("This session has no open tabs"):
+  // a new tab opens where it was and your clicks keep working.
+  await session.active().close();
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline && !(session.pages.length && /\/page$/.test(session.pages[0].url()))) await page.waitForTimeout(100);
+  assert(session.pages.length === 1, "a tab must reopen after the last one closes");
+  await session.active().waitForSelector("#cnt", { timeout: 10_000 });
+  await page.waitForTimeout(600);
+  { const { c } = await el("#cnt"); await page.mouse.click(c.x, c.y); }
+  await session.active().waitForFunction(() => document.querySelector("#cnt").textContent === "Clicked 1", null, { timeout: 5000 });
+  results.reopensClosedTab = true;
+
+  // A pause can arrive before the running flag clears: input must already work.
+  await page.evaluate(() => { window.setRunning(true); window.setPaused(true); });
+  await page.waitForFunction(() => document.querySelector('.sk-live-interactive'));
+  const pausedBox = await view.boundingBox();
+  await session.active().waitForFunction(([w, h]) => innerWidth === w && innerHeight === h, expectVp(Math.round(pausedBox.width), Math.round(pausedBox.height)));
+  await session.active().locator('#text').scrollIntoViewIfNeeded();
+  await page.waitForTimeout(400);
+  const pausedVp = session.viewport();
+  const pausedField = await session.active().locator('#text').boundingBox();
+  await page.mouse.click(pausedBox.x + (pausedField.x + 20) * pausedBox.width / pausedVp.width, pausedBox.y + (pausedField.y + 10) * pausedBox.height / pausedVp.height);
+  await page.keyboard.type('paused input works');
+  await session.active().waitForFunction(() => document.querySelector('#text').value === 'paused input works', null, { timeout: 5000 });
+  assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.sk-agent-cursor')).opacity), '0');
+  await page.mouse.wheel(0, 200);
+  await session.active().waitForFunction(() => scrollY > 100, null, { timeout: 5000 });
+  results.pausedInput = true;
+  await page.evaluate(() => { window.setPaused(false); window.setControlling(true); });
+  await page.waitForFunction(() => document.querySelector('.sk-live-interactive'));
+  results.controlOverridesRunning = true;
+  await page.evaluate(() => { window.setRunning(false); window.setControlling(false); });
+
+  await page.evaluate(() => document.getElementById('host').style.setProperty('--w', '360px'));
+  await page.waitForTimeout(500);
+  const narrowToolbar = await page.locator('.sk-browser-toolbar').evaluate(el => ({ width: el.clientWidth, content: el.scrollWidth }));
+  assert(narrowToolbar.content <= narrowToolbar.width, `toolbar overflows at 360px: ${JSON.stringify(narrowToolbar)}`);
+  await mkdir('test-results/live-panel', { recursive: true });
+  await page.screenshot({ path: 'test-results/live-panel/panel-narrow.png' });
+  results.narrowToolbar = narrowToolbar;
+  await page.evaluate(() => document.getElementById('host').style.setProperty('--w', '700px'));
+  await page.waitForTimeout(500);
+
   await page.screenshot({ path: "test-results/live-panel/panel.png" }).catch(async () => { await mkdir("test-results/live-panel", { recursive: true }); await page.screenshot({ path: "test-results/live-panel/panel.png" }); });
+  for (const width of [375, 768]) {
+    await page.setViewportSize({ width, height: 800 });
+    await page.evaluate(w => document.getElementById('host').style.setProperty('--w', `${w}px`), width);
+    await page.waitForTimeout(400);
+    await page.getByLabel('Page zoom: 75%', { exact: true }).click();
+    const menu = await page.getByRole('group', { name: 'Page zoom', exact: true }).boundingBox();
+    assert(menu && menu.x >= 0 && menu.x + menu.width <= width, `zoom controls must fit at ${width}px`);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `page overflows at ${width}px`);
+    await page.screenshot({ path: `test-results/live-panel/panel-zoom-${width}.png` });
+    await page.getByLabel('Page zoom: 75%', { exact: true }).click();
+  }
   results.passed = true;
 } finally {
   await mkdir("test-results/live-panel", { recursive: true });

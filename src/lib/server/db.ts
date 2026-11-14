@@ -105,9 +105,14 @@ CREATE TABLE IF NOT EXISTS nav_memory (
 async function createPg(url: string): Promise<Driver> {
   const { Pool } = await import("pg");
   const local = /localhost|127\.0\.0\.1/.test(url);
+  const noSsl = local || /sslmode=disable/.test(url);
+  // TLS is set here, not by sslmode in the URL (pg warns that sslmode=require will change
+  // meaning). The server's certificate is verified so the connection can't be intercepted;
+  // PG_SSL_NO_VERIFY=1 is the escape hatch for hosts with self-signed certificates.
+  const connectionString = url.replace(/([?&])(?:sslmode|uselibpqcompat)=[^&]*&?/gi, "$1").replace(/[?&]$/, "");
   const pool = new Pool({
-    connectionString: url,
-    ssl: local || /sslmode=disable/.test(url) ? undefined : { rejectUnauthorized: false },
+    connectionString,
+    ssl: noSsl ? undefined : { rejectUnauthorized: process.env.PG_SSL_NO_VERIFY !== "1" },
     max: 5,
     // Serverless Postgres and scale-to-zero hosts close idle connections; drop ours first.
     idleTimeoutMillis: 10_000,

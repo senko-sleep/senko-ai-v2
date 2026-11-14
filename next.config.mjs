@@ -26,7 +26,17 @@ const nextConfig = {
   // session doesn't keep every route in memory.
   onDemandEntries: { maxInactiveAge: 5 * 60_000, pagesBufferLength: 3 },
   async headers() {
+    // The app itself is never framed: other sites can't clickjack it, and an embedded page that
+    // navigates its frame to "/" can't load the app inside itself (each copy re-embedding the
+    // next ran the dev server out of memory).
+    const noFraming = [
+      { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+      { key: "X-Frame-Options", value: "DENY" },
+    ];
     return [
+      { source: "/", headers: noFraming },
+      { source: "/classic/:path*", headers: noFraming },
+      { source: "/music/:path*", headers: noFraming },
       {
         source: "/code/:path*",
         headers: [

@@ -8,6 +8,8 @@ export default defineConfig({
     include: ["src/__tests__/**/*.test.ts"],
     maxWorkers: 2,
     execArgv: ["--no-wasm-tier-up"],
+    // Tests drive Chrome headless (on a Windows/Mac desktop the app opens a real window).
+    env: { BROWSER_HEADLESS: "1" },
   },
   resolve: {
     alias: {
