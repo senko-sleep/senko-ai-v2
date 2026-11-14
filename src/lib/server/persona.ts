@@ -124,7 +124,7 @@ export function currentTimeLine(timeZone?: string): string {
   return `Current date and time: ${now.toLocaleString("en-US", { ...fmt, timeZone: "UTC" })} UTC (the user's time zone is unknown).`;
 }
 
-export async function chatSystemPrompt(ownerId: string, extra = "", opts: { compact?: boolean; timeZone?: string } = {}): Promise<string> {
+export async function chatSystemPrompt(ownerId: string, extra = "", opts: { compact?: boolean; timeZone?: string; spoken?: boolean } = {}): Promise<string> {
   const [personality, memories] = await Promise.all([
     opts.compact ? Promise.resolve(COMPACT_PERSONALITY) : personalityFor(ownerId),
     memoriesFor(ownerId),
@@ -134,7 +134,7 @@ export async function chatSystemPrompt(ownerId: string, extra = "", opts: { comp
   const mem = list.length
     ? `THINGS I REMEMBER ABOUT YOU (persistent memory, shared across your devices):\n${list.map((m) => `- ${m.key}: ${m.value}`).join("\n")}`
     : "THINGS I REMEMBER ABOUT YOU: nothing saved yet.";
-  return [personality, TOOLS, CHAT_LAYOUT_SYSTEM, contentGuidance(level), mem, currentTimeLine(opts.timeZone), extra].filter(Boolean).join("\n\n");
+  return [opts.spoken ? extra : "", personality, opts.spoken ? "" : TOOLS, opts.spoken ? "" : CHAT_LAYOUT_SYSTEM, contentGuidance(level), mem, currentTimeLine(opts.timeZone), opts.spoken ? "" : extra].filter(Boolean).join("\n\n");
 }
 
 /** Short version of the voice for agent summaries (keeps agent prompts small). */

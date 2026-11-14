@@ -8,6 +8,20 @@ import type { ComicSeries } from "@/lib/comics/types";
 
 describe("detectComicRequest", () => {
   it.each([
+    "send me a audio message talking to me about a bed time story about a girl finding out about her sexuality make it fun and in japan should be a anime",
+    "tell me a bedtime story about a girl discovering her sexuality in Japan",
+    "send me a story about bisexuality",
+    "give me a story about a sextant",
+    "send me an audio message discussing a manga about sexuality",
+  ])("does not route storytelling or identity discussion into adult comics: %j", text => {
+    expect(detectComicRequest(text)).toBeNull();
+  });
+
+  it("keeps identity-themed comic searches non-explicit", () => {
+    expect(detectComicRequest("find me a manga about sexuality")).toEqual({ query: "sexuality", source: undefined });
+    expect(detectComicRequest("find me a manga about bisexuality")?.explicit).toBeUndefined();
+  });
+  it.each([
     "pic one for me make it for manga i wanna embed so i can read",
     "pick one for me make it for manga i wanna embed so i can read",
     "choose one for me manga please",

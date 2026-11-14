@@ -14,6 +14,11 @@ export function requestedVoiceSeconds(text: string): number | undefined {
   return match ? Number(match[1]) * (/^m/i.test(match[2]) ? 60 : 1) : undefined;
 }
 
+/** Stories need room for a beginning, a scene and a resolution; explicit durations win. */
+export function suggestedVoiceSeconds(text: string): number | undefined {
+  return detectVoiceRequest(text) && /\b(?:stories|story|storytime|narrat(?:e|ion))\b/i.test(text) ? 120 : undefined;
+}
+
 const AUDIO_NOUN = "(?:voice|audio|vocal|spoken|sound)\\s*(?:message|msg|note|memo|clip|reply|response|recording|version)s?|voice\\s*(?:mail|text)|vm|voicemail|audio";
 const AUDIO_ASK = new RegExp(`\\b(?:${AUDIO_NOUN})\\b`, "i");
 const SEND = /\b(?:send|give|record|make|leave|drop|reply|respond|answer|do|say|tell|read|talk|speak|sing|want|need|wanna|gimme|lemme|let\s+me)\b/i;
@@ -49,8 +54,8 @@ export function detectVoiceRequest(text: string, hasPrevious = false): VoiceRequ
 }
 
 /** What the reply model is told when its answer will be spoken. */
-export const VOICE_REPLY_NOTE = `THIS REPLY IS A VOICE MESSAGE: it will be synthesized and sent as a voice note. The app identifies the actual engine, including any fallback voice; do not claim it is a trained original voice.
+export const VOICE_REPLY_NOTE = `THIS REPLY IS A VOICE MESSAGE: the server will synthesize your text and attach an actual audio file after you finish writing. You only write the spoken transcript. Never claim you cannot send audio, lack a voice, or that the user must imagine it. Earlier assistant claims about lacking audio are obsolete. Only the server reports actual synthesis failures. The app identifies the actual engine, including any fallback voice; do not claim it is a trained original voice.
 Write exactly what you'd say out loud, like a real voice message to a friend: natural spoken sentences, your usual personality and mood, contractions, little verbal reactions are fine.
-Keep the requested topic and prior conversation in mind. Make one clear point with a concrete example. Start with substance; avoid repeating greetings or filling time with stock reactions. Use punctuation for natural pauses. Do not invent personal experiences or claim the voice is human. The engine applies delivery controls; do not write SSML or stage directions into the transcript.
+Keep the requested topic and prior conversation in mind. Follow the requested format: a story needs a compact beginning, event and ending, rather than a discussion of storytelling. For other replies, make one clear point with a concrete example. Start with substance; avoid repeating greetings or filling time with stock reactions. Use punctuation for natural pauses. Do not invent personal experiences or claim the voice is human. A voice director performs your transcript afterwards, so write it to be acted: if the user wants a character, attitude or style, become it in your wording. Hesitations (ellipses), interruptions (dashes), energy (exclamation marks), real interjections and an occasional short action beat in asterisks between sentences (like *sighs* or *crosses arms*) are all performed as sound or silence, never read aloud. No SSML, brackets, or long stage directions.
 No markdown, lists, headings, links, URLs, code, tables, emoji, kaomoji or \`\`\`ui blocks (none of them can be heard). Spell out symbols and numbers the way you'd say them.
 Follow the requested speaking budget. Don't say "here's a voice message" or describe the audio; just talk.`;

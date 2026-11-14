@@ -12,7 +12,7 @@ export function voiceLimits() {
     minSeconds, maxSeconds, defaultSeconds: Math.max(minSeconds, Math.min(maxSeconds, setting("DEFAULT_SECONDS", 30, 120))),
     maxChars: setting("MAX_CHARS", 1500, 1500), perMinute: setting("PER_MINUTE", 3), perHour: setting("PER_HOUR", 20),
     perUser: setting("PER_USER_CONCURRENT", 1, 8), global: setting("GLOBAL_CONCURRENT", 2, 32),
-    queue: setting("QUEUE_PER_USER", 2, 10), globalQueue: setting("GLOBAL_QUEUE", 32, 128), timeoutMs: setting("TIMEOUT_MS", 60000, 60000),
+    queue: setting("QUEUE_PER_USER", 2, 10), globalQueue: setting("GLOBAL_QUEUE", 32, 128), timeoutMs: setting("TIMEOUT_MS", 180000, 240000),
   };
 }
 export class VoiceError extends HttpError {

@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { CodeJobCard } from "./code-job-card";
 import { VoiceMessage } from "./voice-message";
+import { VoiceGenerationProgress } from "./voice-progress";
 import { AlertTriangle, Bot, Check, CheckCircle2, Code2, Compass, Copy, Download, ExternalLink, Eye, GitBranch, Grid3X3, PauseCircle, PawPrint, Pencil, RotateCcw, Sparkles, Square } from "lucide-react";
 import { FoxMark } from "./fox-mark";
 import { activitySources, visibleTrail, websiteUrl } from "./activity";
@@ -416,6 +417,7 @@ export const MessageBubble = memo(function MessageBubble({
           />
         )}
 
+        {msg.voiceProgress && <VoiceGenerationProgress progress={msg.voiceProgress} pending={!!msg.pending} startedAt={msg.startedAt} />}
         {msg.voice && !msg.pending && <VoiceMessage voice={msg.voice} />}
         {msg.voiceError && <p role="alert" className="my-2 text-sm text-[var(--sk-danger)]">{msg.voiceError.code === "rate_limited" ? "Rate limited" : msg.voiceError.code === "duration_limit" ? "Duration limit reached" : "Generation failed"}: {msg.voiceError.message}</p>}
         {msg.content && (

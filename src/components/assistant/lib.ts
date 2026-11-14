@@ -3,6 +3,8 @@ import type { ChatVideo } from "@/lib/chat-video";
 import type { ComicCard } from "@/lib/comics/types";
 import type { SearchCard } from "@/lib/search/types";
 import type { SiteEmbedCard } from "@/lib/embed/types";
+import type { VoiceProgress } from "@/lib/voice/progress";
+export type { VoiceProgress } from "@/lib/voice/progress";
 
 export type Mode = "chat" | "agent";
 
@@ -10,13 +12,16 @@ export type Mode = "chat" | "agent";
 export interface VoiceNote {
   audioId: string;
   mime: string;
-  engine: "senko" | "custom" | "elevenlabs" | "windows";
+  engine: "senko-hybrid" | "senko" | "custom" | "elevenlabs" | "windows";
   voice: string;
   emotion?: string;
   seconds?: number;
   model?: string;
-  modelKind?: "authored-formant-voicebank";
+  modelKind?: "authored-formant-voicebank" | "pretrained-neural-blend";
   modelFingerprint?: string;
+  segments?: number;
+  character?: string;
+  performance?: "director" | "neutral";
 }
 
 export interface Msg {
@@ -25,6 +30,7 @@ export interface Msg {
   content: string;
   /** True while waiting for / receiving the reply. */
   pending?: boolean;
+  voiceProgress?: VoiceProgress;
   error?: string;
   actions?: BrowserCommand[];
   /** Assistant suggested running this request in Agent mode. */
@@ -106,6 +112,7 @@ export interface StoredMessage {
     search?: SearchCard;
     embed?: SiteEmbedCard;
     voice?: VoiceNote;
+    voiceProgress?: VoiceProgress;
     voiceError?: { code: string; message: string; retryAfter?: number };
     thinking?: { steps: AgentStep[]; thoughts?: string; ms?: number };
   };
@@ -127,6 +134,7 @@ export function fromStored(m: StoredMessage): Msg {
     search: meta.search,
     embed: meta.embed,
     voice: meta.voice?.audioId ? meta.voice : undefined,
+    voiceProgress: meta.voiceProgress || (meta.voice?.segments ? { phase: "ready", completed: meta.voice.segments, total: meta.voice.segments, seconds: meta.voice.seconds } : undefined),
     voiceError: meta.voiceError,
     error: meta.error && !m.content ? meta.error : undefined,
     actions: meta.actions,

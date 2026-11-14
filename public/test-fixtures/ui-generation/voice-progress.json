@@ -1,0 +1,16 @@
+{
+    "message":  {
+                    "id":  "voice-progress-synthesis",
+                    "content":  "",
+                    "voiceProgress":  {
+                                          "phase":  "synthesizing",
+                                          "seconds":  6.7786666666666671,
+                                          "completed":  1,
+                                          "total":  10
+                                      },
+                    "pending":  true,
+                    "role":  "assistant",
+                    "startedAt":  1794637230860
+                },
+    "scope":  "Captured synthesis progress — real 10-part story run"
+}

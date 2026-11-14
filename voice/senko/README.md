@@ -1,8 +1,14 @@
 # Voice messages
 
-## Current Senko voicebank
+## Current natural hybrid voice
 
-The default is now `SENKO_VOICE_ENGINE=senko`: an authored formant voicebank combining warm, bright and airy traits. It generates speech locally on Node using the eSpeak NG Emscripten engine and is labeled **Senko (designed synthetic voice)**. It is not a neural model trained from scratch. See [MODEL_CARD.md](MODEL_CARD.md) for source, mood blending, provenance, local model builds and independent intelligibility checks. `auto` also prefers this bank. Zira remains an explicitly selectable fallback engine, not the default Senko identity.
+The active local engine is now `senko-hybrid`: pretrained Kokoro-82M neural speech, a fixed authored style blend, and a restrained synthetic texture. It is labeled **Senko (neural hybrid voice)**. The earlier formant bank is available for comparison, but is not the active default. No from-scratch neural training or Qwen inference is claimed.
+
+Run `npm run voice:neural:setup` for repeatable isolated installation, pinned public model downloads, a real inference check, and engine selection. Models and the Python environment remain local under `.data/voice/` across restarts. This laptop uses one global inference slot. See [NEURAL_RESEARCH.md](NEURAL_RESEARCH.md) for the supplied paper review, hardware decision, exact provenance and tests.
+
+## Earlier formant voicebank
+
+The earlier `SENKO_VOICE_ENGINE=senko` option is: an authored formant voicebank combining warm, bright and airy traits. It generates speech locally on Node using the eSpeak NG Emscripten engine and is labeled **Senko (designed synthetic voice)**. It is not a neural model trained from scratch. See [MODEL_CARD.md](MODEL_CARD.md) for source, mood blending, provenance, local model builds and independent intelligibility checks. `auto` prefers the installed neural hybrid before this earlier bank. Zira remains an explicitly selectable fallback engine, not the default Senko identity.
 
 The sections below describe the existing transport, limits and optional fallback engines.
 

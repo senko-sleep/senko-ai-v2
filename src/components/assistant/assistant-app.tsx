@@ -43,6 +43,7 @@ import {
   type Suggestion,
   type VerificationInfo,
   type ApprovalInfo,
+  type VoiceProgress,
 } from "./lib";
 
 const EMPTY_BROWSER: BrowserState = { running: false, status: "", url: "", title: "", plan: [], steps: [], outcome: "idle" };
@@ -121,7 +122,6 @@ export default function AssistantApp() {
 
   // ---- UI ----------------------------------------------------------------
   const [input, setInput] = useState("");
-  const [voiceDuration, setVoiceDuration] = useState(30);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [busy, setBusy] = useState(false);
   const [streamingId, setStreamingId] = useState<string | null>(null);
@@ -736,7 +736,6 @@ export default function AssistantApp() {
             provider,
             truncateFrom: opts?.truncateFrom,
             timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-            voiceDurationSeconds: voiceDuration,
           }),
           signal: ctl.signal,
         });
@@ -775,8 +774,13 @@ export default function AssistantApp() {
             query?: string;
             images?: { url: string; alt: string; source: string; engine: string }[];
             step?: AgentStep;
+            progress?: VoiceProgress;
           };
-          if (e.type === "images" && e.images?.length) {
+          if (e.type === "voice_progress" && e.progress) {
+            clearTimeout(timer);
+            timer = setTimeout(onIdle, 180_000);
+            patch(replyId, (m) => ({ ...m, voiceProgress: e.progress }));
+          } else if (e.type === "images" && e.images?.length) {
             patch(replyId, (m) => ({ ...m, scrapedImages: e.images, imageQuery: e.query }));
           } else if (e.type === "start") {
             if (opts?.userId && e.userMessageId) {
@@ -817,7 +821,7 @@ export default function AssistantApp() {
             const final = fromStored(e.message);
             if (thoughtRaf) { cancelAnimationFrame(thoughtRaf); flushThoughts(); }
             // The saved trace (steps, thoughts, duration) replaces the live one.
-            patch(replyId, (m) => ({ ...final, id: m.id, provider: final.provider || m.provider, miniAgentSteps: final.miniAgentSteps || m.miniAgentSteps, thoughts: final.thoughts || m.thoughts, thinkingMs: final.thinkingMs, miniAgentRunning: false, miniAgentLabel: m.miniAgentLabel }));
+            patch(replyId, (m) => ({ ...final, id: m.id, provider: final.provider || m.provider, voiceProgress: final.voiceProgress || m.voiceProgress, miniAgentSteps: final.miniAgentSteps || m.miniAgentSteps, thoughts: final.thoughts || m.thoughts, thinkingMs: final.thinkingMs, miniAgentRunning: false, miniAgentLabel: m.miniAgentLabel }));
             if (final.actions?.[0]) openTab(final.actions[0].url); // may be blocked; the card stays
           } else if (e.type === "error") {
             if (rafId) {
@@ -848,6 +852,7 @@ export default function AssistantApp() {
                   reason === "timeout"
                     ? "The reply stalled for 3 minutes. Try again, or pick another model in Settings."
                     : networkError(e),
+                voiceProgress: m.voiceProgress ? { ...m.voiceProgress, phase: "error", message: reason === "timeout" ? "Audio generation stopped responding. Please try again." : networkError(e) } : undefined,
               }
         );
       } finally {
@@ -860,7 +865,7 @@ export default function AssistantApp() {
         void refreshChats(); // the title may have been set from this message
       }
     },
-    [patch, provider, refreshChats, voiceDuration]
+    [patch, provider, refreshChats]
   );
 
   // ---- you driving the browser -------------------------------------------------
@@ -1685,8 +1690,6 @@ export default function AssistantApp() {
   const composer = (
     <Composer
       value={input}
-      voiceDuration={voiceDuration}
-      onVoiceDurationChange={setVoiceDuration}
       onChange={setInput}
       onSubmit={() => void send(input)}
       onStop={stop}

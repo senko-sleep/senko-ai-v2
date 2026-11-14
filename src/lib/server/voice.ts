@@ -11,6 +11,7 @@
 // Nothing is faked: with no engine configured, or every engine failing, the reply says so.
 import { windowsSpeech } from "../../../scripts/windows-voice.mjs";
 import { senkoSpeech } from "../../../scripts/senko-voice.mjs";
+import { hybridAvailable, hybridSpeech } from "../../../scripts/senko-hybrid.mjs";
 import voicebank from "../../../voice/senko/voicebank.json";
 import { validateVoiceInput, withVoiceBudget, VoiceError, voiceLimits } from "./voice-policy";
 import { verifyVoiceAudio } from "./voice-audio";
@@ -18,10 +19,13 @@ import { VOICE_PRESETS } from "@/lib/voice-synth";
 import profile from "../../../voice/senko/profile.json";
 import { HttpError } from "./identity";
 import { newId, q } from "./db";
+import type { VoiceProgress } from "@/lib/voice/progress";
+import { mapBeats, neutralPlan, performanceInstruction, plainSpeech, segmentInstructions, type PerformancePlan } from "@/lib/voice/performance";
 
-export type VoiceEngineId = "senko" | "custom" | "elevenlabs" | "windows";
+export type VoiceEngineId = "senko-hybrid" | "senko" | "custom" | "elevenlabs" | "windows";
 
 export interface VoiceMeta {
+  segments?: number;
   /** /api/uploads/<audioId> serves the audio. */
   audioId: string;
   mime: string;
@@ -33,29 +37,39 @@ export interface VoiceMeta {
   /** Length in seconds when the engine reports it. */
   seconds?: number;
   model?: string;
-  modelKind?: "authored-formant-voicebank";
+  modelKind?: "authored-formant-voicebank" | "pretrained-neural-blend";
   modelFingerprint?: string;
+  /** Who the director had her perform as, when it wasn't simply herself. */
+  character?: string;
+  /** "director" (LLM-directed acting) or "neutral" (punctuation timing only). */
+  performance?: "director" | "neutral";
 }
 
 export interface SynthRequest {
+  onProgress?: (progress: VoiceProgress) => void;
   text: string;
   ownerId: string;
   durationSeconds?: number;
   emotion?: string;
+  /** The directed performance; synthesizeVoice uses neutral timing when absent. */
+  plan?: PerformancePlan;
   /** Senko's personality prompt (the user's custom one when set), for the custom model. */
   personality?: string;
   signal?: AbortSignal;
 }
 
 export interface SynthResult {
+  segments?: number;
   audio: Buffer;
   mime: string;
   engine: VoiceEngineId;
   voice: string;
   seconds?: number;
   model?: string;
-  modelKind?: "authored-formant-voicebank";
+  modelKind?: "authored-formant-voicebank" | "pretrained-neural-blend";
   modelFingerprint?: string;
+  character?: string;
+  performance?: "director" | "neutral";
 }
 
 export interface VoiceEngine {
@@ -75,7 +89,9 @@ const AUDIO_MIME = /^audio\/(?:mpeg|mp3|wav|x-wav|wave|ogg|opus|webm|mp4|aac|fla
 
 const KAOMOJI = /(?:[=:;xX]?[(（][^()（）\n]{0,8}[)）]|[=^>][wWoO.,_-]?[=^<]|>\/\/\/<|;[wW];|(?<![\w])[;:=][wW3pPdD](?![\w])|\bXD\b|\b[xX]3\b)/g;
 
-/** A markdown chat reply as plain sentences to speak: no code, cards, links, tags or emoji. */
+/** A markdown chat reply as plain sentences to speak: no code, cards, links, tags or emoji.
+ *  Action beats (*pouts*, (sighs)) are kept as `*beat*` so the performance planner can act
+ *  them out; engines without performance support receive `plainSpeech()` with beats removed. */
 export function speechText(markdown: string): string {
   const t = markdown
     .replace(/```[\s\S]*?(?:```|$)/g, " ") // code and ui blocks can't be heard
@@ -85,6 +101,8 @@ export function speechText(markdown: string): string {
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ") // images
     .replace(/\[([^\]]+)\]\((?:[^)]*)\)/g, "$1") // links -> their words
     .replace(/https?:\/\/\S+/g, " ")
+    // Protect action beats from the emphasis/kaomoji stripping below.
+    .replace(/[\s\S]*/, all => mapBeats(all, beat => ` \u27E8${beat.replace(/[\u27E8\u27E9]/g, "")}\u27E9 `))
     .replace(/^\s{0,3}#{1,6}\s+/gm, "")
     .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, "")
     .replace(/^\s*>\s?/gm, "")
@@ -96,6 +114,7 @@ export function speechText(markdown: string): string {
     .replace(/[ \t]+/g, " ")
     .replace(/ +([.,!?])/g, "$1")
     .replace(/\s*\n+\s*/g, "\n")
+    .replace(/\u27E8([^\u27E9\n]*)\u27E9/g, "*$1*")
     .trim();
   return t;
 }
@@ -142,7 +161,7 @@ async function errorText(res: Response): Promise<string> {
 export const customEngine: VoiceEngine = {
   id: "custom",
   available: () => !!process.env.SENKO_VOICE_URL?.trim(),
-  async synthesize({ text, emotion, personality, signal, durationSeconds }) {
+  async synthesize({ text, emotion, personality, signal, durationSeconds, plan }) {
     const url = process.env.SENKO_VOICE_URL!.trim();
     const token = process.env.SENKO_VOICE_TOKEN || process.env.SENKO_VOICE_KEY;
     const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "audio/mpeg, audio/wav, audio/ogg" };
@@ -153,7 +172,12 @@ export const customEngine: VoiceEngine = {
       headers,
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       body: JSON.stringify({
-        text,
+        // Plain words for simple engines; expressive engines should render `performance`.
+        text: plainSpeech(text),
+        transcript: text,
+        performance: plan,
+        instruct: plan ? performanceInstruction(plan) : undefined,
+        segments: plan ? segmentInstructions(plan) : undefined,
         voice: profile.id,
         mood: emotion || "neutral",
         personality: personality || undefined,
@@ -198,7 +222,7 @@ export const elevenLabsEngine: VoiceEngine = {
       method: "POST",
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       headers: { "xi-api-key": process.env.ELEVENLABS_API_KEY!.trim(), "Content-Type": "application/json", Accept: "audio/mpeg" },
-      body: JSON.stringify({ text, model_id: "eleven_turbo_v2_5", voice_settings: elevenSettings(emotion) }),
+      body: JSON.stringify({ text: plainSpeech(text), model_id: "eleven_turbo_v2_5", voice_settings: elevenSettings(emotion) }),
     });
     if (!res.ok) throw new Error(`ElevenLabs ${await errorText(res)}`);
     const { audio, mime } = await readAudio(res, "audio/mpeg");
@@ -210,7 +234,7 @@ export const windowsEngine: VoiceEngine = {
   id: "windows",
   available: () => process.platform === "win32" && process.env.SENKO_VOICE_WINDOWS !== "0",
   async synthesize({ text, signal }) {
-    try { return { ...await windowsSpeech(text, signal), engine: "windows" }; }
+    try { return { ...await windowsSpeech(plainSpeech(text), signal), engine: "windows" }; }
     catch (error) {
       console.warn("[voice] System speech failed", error instanceof Error ? error.message : "unknown");
       throw new VoiceError(503, "engine_unavailable", "The local speech engine could not generate audio.");
@@ -224,7 +248,7 @@ export const senkoEngine: VoiceEngine = {
   available: () => true,
   async synthesize({ text, emotion, durationSeconds, signal }) {
     try {
-      const result = await senkoSpeech({ text, emotion, bank: voicebank, maxSeconds: durationSeconds ?? voiceLimits().defaultSeconds, signal });
+      const result = await senkoSpeech({ text: plainSpeech(text), emotion, bank: voicebank, maxSeconds: durationSeconds ?? voiceLimits().defaultSeconds, signal });
       return { audio: result.audio, mime: result.mime, seconds: result.seconds, engine: "senko", voice: result.voice, model: result.model, modelKind: "authored-formant-voicebank", modelFingerprint: result.fingerprint };
     } catch (error) {
       console.warn("[voice] Senko synthesis failed", error instanceof Error ? error.message : "unknown");
@@ -234,10 +258,25 @@ export const senkoEngine: VoiceEngine = {
   },
 };
 
-export function voiceEngines(all: VoiceEngine[] = [senkoEngine, customEngine, windowsEngine, elevenLabsEngine]): VoiceEngine[] {
-  const pick = (process.env.SENKO_VOICE_ENGINE || "senko").trim().toLowerCase();
+export const hybridEngine: VoiceEngine = {
+  id: "senko-hybrid",
+  available: hybridAvailable,
+  async synthesize({ text, emotion, durationSeconds, signal, onProgress, plan }) {
+    try {
+      const result = await hybridSpeech({ text, emotion, plan, durationSeconds: durationSeconds ?? voiceLimits().defaultSeconds, signal, onProgress });
+      return { audio: result.audio, mime: result.mime, seconds: result.seconds, segments: result.segments, engine: "senko-hybrid", voice: result.voice, model: result.model, modelKind: result.modelKind, modelFingerprint: result.fingerprint };
+    } catch (error) {
+      if (error instanceof Error && /duration limit/.test(error.message)) throw new VoiceError(422, "duration_limit", "Senko's speech exceeds the selected duration. Ask for a shorter message.");
+      if (error instanceof Error && /timed out/.test(error.message)) throw new VoiceError(504, "timeout", "Neural voice generation exceeded its time limit. Try a shorter message.");
+      throw new VoiceError(503, "synthesis_failed", "Senko's neural voice could not generate this message.");
+    }
+  },
+};
+
+export function voiceEngines(all: VoiceEngine[] = [hybridEngine, senkoEngine, customEngine, windowsEngine, elevenLabsEngine]): VoiceEngine[] {
+  const pick = (process.env.SENKO_VOICE_ENGINE || "senko-hybrid").trim().toLowerCase();
   const fallback = process.env.SENKO_VOICE_FALLBACK || "windows";
-  const ids = pick === "auto" ? ["senko", "custom", fallback, "elevenlabs"] : pick === "custom" ? ["custom", fallback] : [pick];
+  const ids = pick === "auto" ? ["senko-hybrid", "senko", "custom", fallback, "elevenlabs"] : pick === "custom" ? ["custom", fallback] : [pick];
   return ids.flatMap(id => all.filter(e => e.id === id && e.available())).filter((e, i, list) => list.indexOf(e) === i);
 }
 
@@ -245,15 +284,17 @@ export function voiceEngines(all: VoiceEngine[] = [senkoEngine, customEngine, wi
 export async function synthesizeVoice(r: SynthRequest, engines = voiceEngines()): Promise<SynthResult> {
   const seconds = validateVoiceInput(r.text, r.durationSeconds);
   if (!r.ownerId) throw new VoiceError(401, "unauthorized", "A signed-in device is required for voice generation.");
+  const plan = r.plan ?? neutralPlan(r.text);
+  r.onProgress?.({ phase: "queued", completed: 0, total: 0 });
   return withVoiceBudget(r.ownerId, r.signal, async signal => {
     if (!engines.length) throw new VoiceError(503, "engine_unavailable", "No compatible speech engine is available on this server.");
     let last: unknown;
     for (const engine of engines) {
       signal.throwIfAborted();
       try {
-        const result = await engine.synthesize({ ...r, signal });
+        const result = await engine.synthesize({ ...r, plan, signal });
         const verified = await verifyVoiceAudio(result.audio, seconds, signal);
-        return { ...result, ...verified };
+        return { ...result, ...verified, performance: plan.source, character: plan.source === "director" && !/^senko\.?$/i.test(plan.character) ? plan.character : undefined };
       } catch (error) {
         last = error;
         if (signal.aborted || error instanceof VoiceError && [422, 429].includes(error.status)) throw error;

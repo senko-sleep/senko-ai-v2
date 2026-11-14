@@ -1,0 +1,25 @@
+{
+  "id": "senko-hybrid-v1",
+  "name": "Senko",
+  "kind": "pretrained-neural-blend",
+  "baseModel": "hexgrad/Kokoro-82M",
+  "runtime": "kokoro-onnx==0.4.7",
+  "modelFile": "kokoro-v1.0.onnx",
+  "rendererVersion": "1.0.0",
+  "sampleRate": 24000,
+  "cpuThreads": 6,
+  "maxPhonemesPerBatch": 160,
+  "language": "en-us",
+  "intent": "Human conversational speech and warmth, with a restrained synthetic shimmer. No hard tuning, flat robotic cadence, or exaggerated idol delivery.",
+  "provenance": "Pretrained Kokoro model and published style embeddings; original blend and texture design. No from-scratch training or unique-speaker training claim.",
+  "styleBlend": { "af_heart": 0.50, "af_bella": 0.30, "af_nicole": 0.20 },
+  "texture": { "amount": 0.045, "carrierHz": 37, "lowpassHz": 4200 },
+  "moods": {
+    "neutral": { "speed": 1.0, "gain": 1.0, "textureScale": 1.0 },
+    "soft": { "speed": 0.97, "gain": 0.94, "textureScale": 0.65 },
+    "excited": { "speed": 1.035, "gain": 1.02, "textureScale": 1.0 },
+    "sleepy": { "speed": 0.94, "gain": 0.92, "textureScale": 0.55 },
+    "sassy": { "speed": 1.015, "gain": 1.0, "textureScale": 1.1 }
+  },
+  "emotionCapabilities": "Stable timbre with bounded pace, dynamics and texture changes. No learned emotion embedding or laughter/cry synthesis is claimed."
+}

@@ -5,8 +5,9 @@ export function VoiceMessage({ voice }: { voice: VoiceNote }) {
   const [status, setStatus] = useState("Audio ready");
   const [seconds, setSeconds] = useState(voice.seconds || 0);
   const src = `/api/uploads/${encodeURIComponent(voice.audioId)}`;
+  const act = voice.character ? ` · ${voice.character}` : "";
   return <section className="my-2 rounded-xl border border-[var(--sk-line)] p-3" aria-label="Voice message">
-    <p className="mb-2 text-xs text-[var(--sk-muted)]">{voice.voice} · {Math.floor(seconds / 60)}:{String(Math.floor(seconds % 60)).padStart(2, "0")}</p>
+    <p className="mb-2 text-xs text-[var(--sk-muted)]">{voice.voice}{act} · {Math.floor(seconds / 60)}:{String(Math.floor(seconds % 60)).padStart(2, "0")}</p>
     <audio controls preload="metadata" src={src} aria-label={`${voice.voice} voice message`} className="w-full max-w-sm"
       onLoadStart={() => setStatus("Loading audio")}
       onLoadedMetadata={e => { if (Number.isFinite(e.currentTarget.duration)) setSeconds(e.currentTarget.duration); setStatus("Audio ready"); }}

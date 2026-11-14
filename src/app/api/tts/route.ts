@@ -1,6 +1,8 @@
 import { HttpError, route } from "@/lib/server/identity";
 import { personalityFor } from "@/lib/server/persona";
 import { speechText, synthesizeVoice } from "@/lib/server/voice";
+import { directPerformance } from "@/lib/server/voice-director";
+import { parseDirectorPlan, type PerformancePlan } from "@/lib/voice/performance";
 import { voiceLimits, VoiceError } from "@/lib/server/voice-policy";
 
 export const runtime = "nodejs";
@@ -26,9 +28,17 @@ export const POST = route(async (req, who) => {
   if (body.emotion !== undefined && (typeof body.emotion !== "string" || !["neutral", "soft", "excited", "sleepy", "sassy"].includes(body.emotion))) throw new HttpError(400, "Choose a supported voice mood: neutral, soft, excited, sleepy or sassy.");
   if (body.text.length > voiceLimits().maxChars) throw new VoiceError(413, "text_limit", `Voice text must be at most ${voiceLimits().maxChars} characters.`);
   try {
-    const result = await synthesizeVoice({ text: speechText(body.text), ownerId: who.ownerId, durationSeconds: body.durationSeconds, emotion: body.emotion, personality: await personalityFor(who.ownerId), signal: req.signal });
+    const cleaned = speechText(body.text);
+    const personality = await personalityFor(who.ownerId);
+    let plan: PerformancePlan | undefined;
+    if (body.performance && typeof body.performance === "object") {
+      plan = parseDirectorPlan(JSON.stringify(body.performance), cleaned) ?? undefined;
+    } else if (body.direct || typeof body.character === "string") {
+      plan = await directPerformance(cleaned, { request: typeof body.character === "string" ? body.character : undefined, mood: body.emotion, personality, signal: req.signal });
+    }
+    const result = await synthesizeVoice({ text: cleaned, plan, ownerId: who.ownerId, durationSeconds: body.durationSeconds, emotion: body.emotion, personality, signal: req.signal });
     return new Response(new Uint8Array(result.audio), {
-      headers: { "Content-Type": result.mime, "Cache-Control": "no-store", "X-Voice-Engine": result.engine, "X-Voice-Name": result.voice, "X-Audio-Duration": String(result.seconds), ...(result.model ? { "X-Voice-Model": result.model, "X-Voice-Model-Kind": result.modelKind || "", "X-Voice-Fingerprint": result.modelFingerprint || "" } : {}) },
+      headers: { "Content-Type": result.mime, "Cache-Control": "no-store", "X-Voice-Engine": result.engine, "X-Voice-Name": result.voice, "X-Audio-Duration": String(result.seconds), ...(result.performance ? { "X-Voice-Performance": result.performance } : {}), ...(result.character ? { "X-Voice-Character": result.character } : {}), ...(result.model ? { "X-Voice-Model": result.model, "X-Voice-Model-Kind": result.modelKind || "", "X-Voice-Fingerprint": result.modelFingerprint || "" } : {}) },
     });
   } catch (error) {
     if (error instanceof VoiceError) throw error;

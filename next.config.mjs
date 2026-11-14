@@ -5,7 +5,7 @@
 const nextConfig = {
   reactCompiler: true,
   devIndicators: false,
-  outputFileTracingIncludes: { "/api/*": ["./scripts/windows-voice.ps1", "./scripts/senko-voice*.mjs", "./voice/senko/voicebank.json", "./node_modules/@echogarden/espeak-ng-emscripten/**/*", "./node_modules/ffmpeg-static/ffmpeg*"] },
+  outputFileTracingIncludes: { "/api/*": ["./scripts/windows-voice.ps1", "./scripts/senko-voice*.mjs", "./scripts/senko-hybrid.py", "./voice/senko/*.json", "./node_modules/@echogarden/espeak-ng-emscripten/**/*", "./node_modules/ffmpeg-static/ffmpeg*"] },
   // Lets a second dev server (e.g. for screenshot tests) run beside the main one.
   ...(process.env.NEXT_DIST_DIR ? { distDir: process.env.NEXT_DIST_DIR } : {}),
   // Prisma Compute deploys the standalone server; the deploy workflow sets this.

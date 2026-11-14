@@ -10,7 +10,7 @@
     "softly bright",
     "airy"
   ],
-  "delivery": "Warm conversational foundation, softly bright energy, a light airy edge, clear consonants, and intimate soft delivery when calm. Keep one recognizable timbre across moods.",
+  "delivery": "Natural human conversational phrasing with a restrained synthetic shimmer. Warm and intimate when calm, softly bright and playful when excited. Preserve a stable voice identity; avoid flat robot cadence and exaggerated idol delivery.",
   "moods": [
     "neutral",
     "soft",
@@ -18,11 +18,11 @@
     "sleepy",
     "sassy"
   ],
-  "sampleRate": 22050,
+  "sampleRate": 24000,
   "channels": 1,
   "voicebank": {
-    "id": "senko-formant-v1",
-    "kind": "authored-formant-voicebank",
-    "source": "voice/senko/voicebank.json"
+    "id": "senko-hybrid-v1",
+    "kind": "pretrained-neural-blend",
+    "source": "voice/senko/hybrid.json"
   }
 }

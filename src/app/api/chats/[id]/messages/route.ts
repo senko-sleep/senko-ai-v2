@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { addMessage, maybeTitle, requireChat, truncateMessagesFrom, type TruncateTarget } from "@/lib/server/chats";
 import { errorResponse, HttpError, identify } from "@/lib/server/identity";
 import { reply } from "@/lib/server/reply";
-import { detectVoiceRequest, requestedVoiceSeconds } from "@/lib/voice/intent";
+import { detectVoiceRequest, requestedVoiceSeconds, suggestedVoiceSeconds } from "@/lib/voice/intent";
 import { validateVoiceInput } from "@/lib/server/voice-policy";
 
 export const runtime = "nodejs";
@@ -41,7 +41,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const content = String(body.content || "").slice(0, 100_000);
   const imageIds = Array.isArray(body.imageIds) ? body.imageIds.filter((x) => typeof x === "string").slice(0, 20) : [];
   if (!content.trim() && !imageIds.length) return errorResponse(new HttpError(400, "Message is empty."));
-  const voiceDuration = requestedVoiceSeconds(content) ?? body.voiceDurationSeconds;
+  const voiceDuration = requestedVoiceSeconds(content) ?? body.voiceDurationSeconds ?? suggestedVoiceSeconds(content);
   try {
     if (detectVoiceRequest(content) || body.voiceDurationSeconds !== undefined) validateVoiceInput("Voice request", voiceDuration);
   } catch (error) { return errorResponse(error); }
@@ -96,6 +96,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           onImages: (info) => send({ type: "images", ...info }),
           onMiniAgentStep: (step) => send({ type: "mini_agent_step", step }),
           onThought: (text) => send({ type: "thought", text }),
+          onVoiceProgress: (progress) => send({ type: "voice_progress", progress }),
         });
         if (message.meta.error && !message.content) send({ type: "error", error: message.meta.error, assistantMessageId: message.id });
         else send({ type: "done", message });

@@ -38,7 +38,7 @@ export function createVoiceService({ config, synthesize, fetchImpl = fetch }) {
       let bytes = 0;
       for await (const chunk of req) {
         bytes += chunk.length;
-        if (bytes > 32_768) return json(413, { error: "Request too large" });
+        if (bytes > 131_072) return json(413, { error: "Request too large" });
         chunks.push(chunk);
       }
       let input;

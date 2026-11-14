@@ -1,5 +1,6 @@
 // Reading a chat message as a comic-reader request, a site pick, or a series pick.
 import type { ComicSeries, ComicSourceId, ComicSourceInfo } from "./types";
+import { detectVoiceRequest } from "@/lib/voice/intent";
 
 const KIND = "(?:manga|mangas|manhwa|manhua|webtoons?|comics?|comic\\s+books?|doujin(?:shi)?s?|graphic\\s+novels?)";
 const KIND_RE = new RegExp(`\\b${KIND}\\b`, "i");
@@ -35,7 +36,9 @@ const SITE_ASK = new RegExp(`\\b${KIND}\\s+(?:web\\s?)?(?:sites?|pages?)\\b|\\b(
 const ADULT_SITES = new Set<ComicSourceId>(["ehentai", "imhentai", "hentaiera", "hentaifox"]);
 
 /** Porn wording: adult comics (SafeSearch off, subject checked for minors / real people). */
-const EXPLICIT = /\b(?:h[\s-]?manga|hentai|porn\w*|xxx|nsfw|r34|rule\s?34|lewds?|smut|ecchi|nudes?|naked|sex\w*|18\+|explicit|erotic\w*)\b/gi;
+// Match sexual-content wording, not identity/education words such as sexuality
+// or unrelated prefixes such as sextant. Identity alone never implies pornography.
+const EXPLICIT = /\b(?:h[\s-]?manga|hentai|porn\w*|xxx|nsfw|r34|rule\s?34|lewds?|smut|ecchi|nudes?|naked|sex|sexual(?:ly)?|18\+|explicit|erotic\w*)\b/gi;
 
 const MEDIA = /\b(?:pics?|pictures?|images?|imgs?|photos?|videos?|vids?|clips?|gifs?|collages?|gallery|galleries|wallpapers?|art|fan\s?art|drawings?)\b/i;
 
@@ -61,6 +64,8 @@ function tidy(s: string): string {
 /** "send me a manga of fnf as a embed ui all pages" -> { query: "fnf" }. */
 export function detectComicRequest(text: string): ComicRequest | null {
   const full = text.trim();
+  // Spoken answers belong to the voice path even when discussing a comic.
+  if (detectVoiceRequest(full)) return null;
   // Site names first: "e-hentai" is a site, not just porn wording.
   const source = SITE_WORDS.find((s) => s.re.test(full))?.id;
   let raw = full;

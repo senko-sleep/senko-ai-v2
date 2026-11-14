@@ -24,8 +24,11 @@ import { comicTurn } from "./comic-reply";
 import { searchTurn } from "./search-reply";
 import { embedTurn, runEmbedTurn } from "./embed-reply";
 import { followContext } from "./turn-context";
-import { detectVoiceRequest, VOICE_REPLY_NOTE } from "@/lib/voice/intent";
+import { detectVoiceRequest, suggestedVoiceSeconds, VOICE_REPLY_NOTE } from "@/lib/voice/intent";
+import type { VoiceProgress } from "@/lib/voice/progress";
+import { prepareSpokenReply } from "@/lib/voice/reply";
 import { saveAudio, speechText, synthesizeVoice, type VoiceMeta } from "./voice";
+import { directPerformance } from "./voice-director";
 import { validateVoiceInput, voiceLimits, VoiceError } from "./voice-policy";
 import { extractCodeArtifacts } from "@/components/assistant/workspace-artifacts";
 import { stripCodeBlocks, wantsCodeJob } from "@/lib/code-intent";
@@ -43,6 +46,7 @@ const ABOUT_PAGE =
 const STORED_IMAGES = 120;
 
 export interface ReplyOptions {
+  onVoiceProgress?: (progress: VoiceProgress) => void;
   ownerId: string;
   chatId: string;
   content: string;
@@ -119,7 +123,7 @@ async function scrapeForChat(query: string, signal?: AbortSignal, safe: Awaited<
 export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
   const trace = traceReply(opts);
   // Steps and thoughts go to the browser and into the saved message.
-  const o: ReplyOptions = { ...opts, onMiniAgentStep: trace.step, onThought: trace.thought };
+  const o: ReplyOptions = { ...opts, voiceDurationSeconds: opts.voiceDurationSeconds ?? suggestedVoiceSeconds(opts.content), onMiniAgentStep: trace.step, onThought: trace.thought };
   const userMessageId = await addMessage(o.chatId, "user", o.content, o.imageIds || []);
   await maybeTitle(o.chatId, o.content || "Image", o.provider);
   const assistantMessageId = newId("m_");
@@ -131,13 +135,14 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
   // "send me a voice message" / "say that out loud": the reply is spoken in Senko's voice.
   const lastReply = [...storedHistory.slice(0, -1)].reverse().find((m) => m.role === "assistant" && m.content.trim() && !m.meta?.error);
   const voiceAsk = o.imageIds?.length || o.simulateFail?.length ? null : detectVoiceRequest(o.content, !!lastReply);
+  if (voiceAsk) o.onVoiceProgress?.({ phase: "preparing", completed: 0, total: 0 });
   if (voiceAsk?.mode === "repeat" && lastReply) {
     // Her last reply, as it was, now spoken: no new text to write.
     o.onStart?.({ userMessageId, assistantMessageId });
     trace.answered();
     const meta: MessageMeta = {};
     const spoken = speechText(lastReply.content);
-    const voice = await recordVoice(o, spoken, lastReply.meta?.mood);
+    const voice = await recordVoice(o, spoken, lastReply.meta?.mood, storedHistory);
     const content = spoken;
     if (voice.meta) meta.voice = voice.meta;
     if (voice.failure) meta.voiceError = voice.failure;
@@ -369,10 +374,13 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
 
     // Told up front, so the words are written to be heard (no markdown, links or cards).
     const requestedSeconds = o.voiceDurationSeconds ?? voiceLimits().defaultSeconds;
-    const extra = [pageNote, voiceAsk ? `${VOICE_REPLY_NOTE}\nAim for about ${Math.max(5, Math.floor(requestedSeconds * 2))} words, fitting a ${requestedSeconds}-second maximum. Keep the topic coherent; avoid filler. Never exceed ${voiceLimits().maxChars} characters.` : ""].filter(Boolean).join("\n\n");
+    const story = !!suggestedVoiceSeconds(o.content);
+    const minWords = story && requestedSeconds >= 60 ? Math.floor(requestedSeconds * 1.15) : 0;
+    const maxWords = Math.max(5, Math.floor(requestedSeconds * (story ? 1.6 : 1.4)));
+    const extra = [voiceAsk ? `${VOICE_REPLY_NOTE}\nHARD SPEAKING BUDGET: write ${minWords ? `between ${minWords} and` : "at most"} ${maxWords} words for a ${requestedSeconds}-second maximum, including pauses. Use ${requestedSeconds <= 5 ? "one short sentence" : story && requestedSeconds >= 60 ? "several short paragraphs with a developed scene, character dialogue and a satisfying ending; this must be a full short story, not a plot summary" : "two or three connected sentences"}. Keep the requested topic coherent. Never exceed ${voiceLimits().maxChars} characters.` : "", pageNote].filter(Boolean).join("\n\n");
     const [system, compactSystem] = await Promise.all([
-      chatSystemPrompt(o.ownerId, extra, { timeZone: o.timeZone }),
-      chatSystemPrompt(o.ownerId, extra, { compact: true, timeZone: o.timeZone }),
+      chatSystemPrompt(o.ownerId, extra, { timeZone: o.timeZone, spoken: !!voiceAsk }),
+      chatSystemPrompt(o.ownerId, extra, { compact: true, timeZone: o.timeZone, spoken: !!voiceAsk }),
     ]);
     const messages: LlmMessage[] = [{ role: "system", content: system }, ...history];
     // Think only where it helps, and briefly: a chat answer should start in a second or two.
@@ -404,11 +412,27 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
           o.onMiniAgentStep?.({ id: WRITE_STEP, label: "Writing the reply", status: "running", detail: opened.providerLabel ? `${opened.providerLabel} · ${opened.model}` : undefined });
         }
         text += chunk;
-        o.onDelta?.(chunk);
+        // Voice drafts are validated before publication; a model disclaimer or
+        // overlong story must not appear as the final response while TTS runs.
+        if (!voiceAsk) o.onDelta?.(chunk);
       }
       if (text) o.onMiniAgentStep?.({ id: WRITE_STEP, label: "Wrote the reply", status: "done", detail: opened.providerLabel ? `${opened.providerLabel} · ${opened.model}` : undefined });
     }
     if (!text.trim()) throw new Error("The AI returned an empty reply. Try again.");
+    if (voiceAsk && !o.signal?.aborted) {
+      text = await prepareSpokenReply(text, maxWords, voiceLimits().maxChars, async issue => {
+        o.onMiniAgentStep?.({ id: WRITE_STEP, label: "Preparing spoken reply", status: "running" });
+        const correction = `${extra}\nREWRITE REQUIRED: ${issue} Answer the user's latest request directly with a complete short spoken transcript. Audio is attached by the server. Do not discuss your capabilities or offer a text alternative.`;
+        const rewritten = await openStream([{ role: "system", content: `${system}\n\n${correction}` }, ...history], {
+          provider: o.provider, signal: o.signal, compactSystem: `${compactSystem}\n\n${correction}`, thinking: "off",
+        });
+        Object.assign(meta, { provider: rewritten.provider, providerLabel: rewritten.providerLabel, model: rewritten.model });
+        let result = "";
+        for await (const chunk of rewritten.stream) result += chunk;
+        return result;
+      }, minWords);
+      o.onPreview?.(text);
+    }
   } catch (e) {
     if (composedUI) o.onMiniAgentStep?.({ id: 1, label: "UI generation did not pass validation", status: "error", detail: e instanceof Error ? e.message : String(e) });
     if (o.signal?.aborted) {
@@ -416,6 +440,12 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
       if (!text) meta.error = "Stopped.";
     } else {
       meta.error = e instanceof Error ? e.message : String(e);
+      if (voiceAsk) {
+        // Do not publish the rejected draft as a successful text substitute.
+        text = "";
+        meta.voiceError = { code: "transcript_failed", message: meta.error };
+        o.onVoiceProgress?.({ phase: "error", completed: 0, total: 0, message: meta.error });
+      }
     }
   }
 
@@ -564,7 +594,7 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
   const voiceTag = VOICE_TAG.test(clean);
   if (voiceTag) clean = clean.replace(VOICE_TAG_ALL, "").replace(/\n{3,}/g, "\n\n").trim();
   if ((voiceAsk || voiceTag) && clean && !meta.error && !o.signal?.aborted && !o.simulateFail?.length) {
-    const voice = await recordVoice(o, speechText(clean), meta.mood);
+    const voice = await recordVoice(o, speechText(clean), meta.mood, storedHistory);
     if (voice.meta) meta.voice = voice.meta;
     if (voice.failure) meta.voiceError = voice.failure;
   }
@@ -581,19 +611,33 @@ const VOICE_TAG_ALL = /\[\[\s*voice\s*\]\]/gi;
  * Speak `text` in Senko's voice and store it. Returns the voice meta, or a plain sentence saying
  * why there's no audio (never a player for audio that doesn't exist).
  */
-async function recordVoice(o: ReplyOptions, text: string, mood?: string): Promise<{ meta?: VoiceMeta; error?: string; failure?: MessageMeta["voiceError"] }> {
+async function recordVoice(o: ReplyOptions, text: string, mood?: string, recent: StoredMessage[] = []): Promise<{ meta?: VoiceMeta; error?: string; failure?: MessageMeta["voiceError"] }> {
   const STEP = 60;
-  o.onMiniAgentStep?.({ id: STEP, label: "Generating speech", status: "running" });
+  let latest: VoiceProgress = { phase: "queued", completed: 0, total: 0 };
+  o.onMiniAgentStep?.({ id: STEP, label: "Directing the performance", status: "running" });
   try {
     if (!text.trim()) throw new Error("the reply has nothing that can be spoken");
     const personality = await personalityFor(o.ownerId).catch(() => undefined);
     validateVoiceInput(text, o.voiceDurationSeconds);
-    const got = await synthesizeVoice({ text, ownerId: o.ownerId, durationSeconds: o.voiceDurationSeconds, emotion: mood, personality, signal: o.signal });
+    // The director model decides who she is being and how each phrase is acted; no presets.
+    const plan = await directPerformance(text, {
+      request: o.content,
+      recent: recent.filter(m => m.content.trim() && !m.meta?.error).slice(-6).map(m => `${m.role === "user" ? "user" : "senko"}: ${m.content.replace(/\s+/g, " ").slice(0, 300)}`),
+      mood, personality, provider: o.provider, signal: o.signal,
+    });
+    o.onMiniAgentStep?.({ id: STEP, label: "Generating speech", status: "running", detail: plan.source === "director" ? plan.character : "neutral timing" });
+    const got = await synthesizeVoice({ text, plan, ownerId: o.ownerId, durationSeconds: o.voiceDurationSeconds, emotion: mood, personality, signal: o.signal, onProgress: progress => {
+      latest = progress;
+      o.onVoiceProgress?.(progress);
+    } });
+    o.onVoiceProgress?.({ ...latest, phase: "assembling", seconds: got.seconds });
     const audioId = await saveAudio(o.ownerId, got.mime, got.audio);
+    o.onVoiceProgress?.({ phase: "ready", completed: got.segments || 1, total: got.segments || 1, seconds: got.seconds });
     o.onMiniAgentStep?.({ id: STEP, label: "Recorded a voice message", status: "done", detail: got.engine === "custom" ? `${got.voice} · own voice model` : got.voice });
-    return { meta: { audioId, mime: got.mime, engine: got.engine, voice: got.voice, emotion: mood || undefined, seconds: got.seconds, model: got.model, modelKind: got.modelKind, modelFingerprint: got.modelFingerprint } };
+    return { meta: { audioId, mime: got.mime, engine: got.engine, voice: got.voice, emotion: mood || undefined, seconds: got.seconds, segments: got.segments, model: got.model, modelKind: got.modelKind, modelFingerprint: got.modelFingerprint, character: got.character, performance: got.performance } };
   } catch (e) {
     const why = e instanceof VoiceError ? e.message : "Speech generation failed. Please try again later";
+    o.onVoiceProgress?.({ ...latest, phase: "error", message: why });
     o.onMiniAgentStep?.({ id: STEP, label: "Couldn't record the voice message", status: "error", detail: why });
     if (!(e instanceof VoiceError)) console.warn("[voice] Recording failed", e);
     return { error: `I couldn't record this as a voice message: ${why.replace(/[.\s]+$/, "")}.`, failure: { code: e instanceof VoiceError ? e.code : "synthesis_failed", message: e instanceof VoiceError ? e.message : "Speech generation failed.", retryAfter: e instanceof VoiceError ? e.retryAfter : undefined } };

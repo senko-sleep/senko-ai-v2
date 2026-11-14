@@ -16,6 +16,12 @@ formant definition. Five performances are provided: neutral, soft, excited,
 sleepy and sassy. Unknown emotions use neutral; related mood tags map to a known
 performance. Synthesis is CPU-only and needs no hosted API or GPU.
 
+Phrase-level delivery is separate from the voice definition: text is normalized
+and escaped, sentence boundaries receive short pauses, questions use restrained
+pitch/pace changes, and quiet moods use softer dynamics. The model fingerprint
+includes the renderer version. Breath noise and flutter can vary between renders;
+the fingerprint identifies the model design, not a checksum of the audio waveform.
+
 Miku and Teto informed the separation of recognizable character timbre from
 performance controls. Their voices or recordings are not incorporated. Vocaloid
 and Synthesizer V voicebanks can rely on recorded source voices and trained

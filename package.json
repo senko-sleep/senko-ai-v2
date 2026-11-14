@@ -23,7 +23,10 @@
     "dev:voice": "concurrently --names app,voice \"npm run dev\" \"npm run voice:serve\"",
     "voice:bank:test": "node --test scripts/senko-voice.test.mjs",
     "voice:bank:evaluate": "node scripts/senko-voice-evaluate.mjs",
-    "voice:bank:build": "node scripts/senko-voice-build.mjs"
+    "voice:bank:build": "node scripts/senko-voice-build.mjs",
+    "voice:neural:assets": "python scripts/neural-voice-setup.py",
+    "voice:neural:test": "node --test scripts/senko-hybrid.test.mjs",
+    "voice:neural:setup": "node scripts/neural-voice-setup.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",
