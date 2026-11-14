@@ -1,0 +1,28 @@
+{
+  "id": "senko-v1",
+  "name": "Senko",
+  "language": "en",
+  "traits": [
+    "warm",
+    "playful",
+    "expressive",
+    "gently sassy",
+    "softly bright",
+    "airy"
+  ],
+  "delivery": "Warm conversational foundation, softly bright energy, a light airy edge, clear consonants, and intimate soft delivery when calm. Keep one recognizable timbre across moods.",
+  "moods": [
+    "neutral",
+    "soft",
+    "excited",
+    "sleepy",
+    "sassy"
+  ],
+  "sampleRate": 22050,
+  "channels": 1,
+  "voicebank": {
+    "id": "senko-formant-v1",
+    "kind": "authored-formant-voicebank",
+    "source": "voice/senko/voicebank.json"
+  }
+}

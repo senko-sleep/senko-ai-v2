@@ -16,13 +16,17 @@ import { sanitizeYouTubeInReply, verifyYouTubeVideo } from "./youtube";
 import { onlyReachableImages, verifyGalleryImages } from "./gallery-images";
 import { lastSubject, resolveSubject } from "./subject-context";
 import { checkAdultImageRequest } from "./adult-guard";
-import { safeSearchFor } from "./persona";
+import { personalityFor, safeSearchFor } from "./persona";
 import { geocode, PLACES_NOTE, singlePlaceQuery, wantsPlaces } from "./geocode";
 import { discussionSubject, subjectSearchQuery, visualAnswerNote } from "./visual-intent";
 import { wantsDeepThinking } from "./reply-depth";
 import { comicTurn } from "./comic-reply";
 import { searchTurn } from "./search-reply";
-import { embedTurn } from "./embed-reply";
+import { embedTurn, runEmbedTurn } from "./embed-reply";
+import { followContext } from "./turn-context";
+import { detectVoiceRequest, VOICE_REPLY_NOTE } from "@/lib/voice/intent";
+import { saveAudio, speechText, synthesizeVoice, type VoiceMeta } from "./voice";
+import { validateVoiceInput, voiceLimits, VoiceError } from "./voice-policy";
 import { extractCodeArtifacts } from "@/components/assistant/workspace-artifacts";
 import { stripCodeBlocks, wantsCodeJob } from "@/lib/code-intent";
 import { CodingWorkspaceRuntime, verifyAndSanitizeCodingClaims } from "@/lib/agent/coding-runtime";
@@ -30,6 +34,8 @@ import { isExecutableCodingRequest, materializeReplyFilesToWorkspace, runAutonom
 
 const AGENT_TAG = /\[\[\s*agent\s*\]\]/gi;
 const CODE_TAG = /\[\[\s*code\s*:\s*([^\]\n]{3,2000})\]\]/i;
+/** The model chose the embed tool: [[embed: https://site]] (a URL it has, e.g. from results above). */
+const EMBED_TAG = /\[\[\s*embed\s*:\s*(https?:\/\/[^\s|\]]+)[^\]\n]*\]\]/gi;
 const ABOUT_PAGE =
   /\b(this|the|that|current)\s+(page|site|website|video|tab|episode|show|article|screen)\b|\bwhat('?s| is) (on|this)\b|\bon (the )?screen\b/i;
 
@@ -40,6 +46,7 @@ export interface ReplyOptions {
   ownerId: string;
   chatId: string;
   content: string;
+  voiceDurationSeconds?: number;
   imageIds?: string[];
   provider?: string;
   /** The user's IANA time zone (e.g. "America/New_York"), so "what time is it" is right. */
@@ -121,21 +128,43 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
   const storedHistory = await getMessages(o.chatId);
   const subject = lastSubject(storedHistory.slice(0, -1));
 
+  // "send me a voice message" / "say that out loud": the reply is spoken in Senko's voice.
+  const lastReply = [...storedHistory.slice(0, -1)].reverse().find((m) => m.role === "assistant" && m.content.trim() && !m.meta?.error);
+  const voiceAsk = o.imageIds?.length || o.simulateFail?.length ? null : detectVoiceRequest(o.content, !!lastReply);
+  if (voiceAsk?.mode === "repeat" && lastReply) {
+    // Her last reply, as it was, now spoken: no new text to write.
+    o.onStart?.({ userMessageId, assistantMessageId });
+    trace.answered();
+    const meta: MessageMeta = {};
+    const spoken = speechText(lastReply.content);
+    const voice = await recordVoice(o, spoken, lastReply.meta?.mood);
+    const content = spoken;
+    if (voice.meta) meta.voice = voice.meta;
+    if (voice.failure) meta.voiceError = voice.failure;
+    if (lastReply.meta?.mood) meta.mood = lastReply.meta.mood;
+    meta.thinking = trace.meta();
+    await addMessage(o.chatId, "assistant", content, [], meta, assistantMessageId, userMessageId);
+    return { id: assistantMessageId, role: "assistant", content, imageIds: [], meta, createdAt: new Date().toISOString() };
+  }
+
   // "search X" / "top 20 sites for X" / "fnf hentai": a real web search, shown as a results card.
   // "send me a manga of X": the in-chat reader (pick a site, pick from its top 20, read every page).
-  if (!o.imageIds?.length && !o.simulateFail?.length) {
+  if (!o.imageIds?.length && !o.simulateFail?.length && !voiceAsk) {
     const safe = await safeSearchFor(o.ownerId).catch(() => "off" as const);
     const fail = (what: string) => (e: unknown) => ({
       content: `I couldn't ${what} (${e instanceof Error ? e.message : String(e)}). Try again?`,
       meta: {} as MessageMeta,
     });
     // "send me an embed of example.com" / "embed the new sml video": find the page, embed it live.
+    // Follow-ups are read against what the chat just did: "now a random hentai website" after an
+    // embed is another embed, "embed the 2nd one" points at a result already on screen.
     let turn: { content: string; meta: MessageMeta } | null = await embedTurn(o.content, {
       safe,
       step: o.onMiniAgentStep!,
       signal: o.signal,
       chatId: o.chatId,
       ownerId: o.ownerId,
+      follow: followContext(storedHistory.slice(0, -1)),
     }).catch(fail("embed that"));
     if (!turn) turn = await comicTurn(o.content, storedHistory.slice(0, -1), safe, o.onMiniAgentStep!, o.signal).catch(fail("load that from the site"));
     if (!turn) turn = await searchTurn(o.content, safe, o.onMiniAgentStep!, { chatId: o.chatId, signal: o.signal }).catch(fail("finish the search"));
@@ -222,13 +251,14 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
 
   // Build requests go to a coding job in the chat's workspace (decided here, not by the model).
   const chatHasProject = storedHistory.some((m) => m.meta?.codeTask);
-  const composedUI = wantsGeneratedUI(o.content);
-  const codeJob = !composedUI && !o.imageIds?.length && wantsCodeJob(o.content, chatHasProject);
+  // A voice message is spoken words: no generated UI cards or coding jobs.
+  const composedUI = !voiceAsk && wantsGeneratedUI(o.content);
+  const codeJob = !voiceAsk && !composedUI && !o.imageIds?.length && wantsCodeJob(o.content, chatHasProject);
   // Location questions get a map card without the user having to ask for "a ui".
-  const placesAsk = !codeJob && wantsPlaces(o.content);
+  const placesAsk = !codeJob && !voiceAsk && wantsPlaces(o.content);
 
   // Image requests ("show me pics of X") scrape every engine in parallel with the reply.
-  const askedImages = o.imageIds?.length || composedUI || codeJob ? undefined : detectImageIntentQuery(o.content);
+  const askedImages = o.imageIds?.length || composedUI || codeJob || voiceAsk ? undefined : detectImageIntentQuery(o.content);
   // Same rules as collages: adult images follow SafeSearch and never show minors or real people.
   const imageSafe = askedImages ? await safeSearchFor(o.ownerId).catch(() => "off" as const) : "off";
   let imageQuery = askedImages ? resolveSubject(askedImages, subject).query : undefined;
@@ -273,7 +303,7 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
     if (imageQuery) {
       pageNote = [
         pageNote,
-        `IMAGE GALLERY: the app is already scraping images for "${imageQuery}" from Bing, DuckDuckGo, Wallhaven, Reddit, Wikimedia, image boards and gallery sites, and shows them under your reply as a carousel with a "View all images" gallery. Reply briefly and naturally (1-2 sentences). Don't paste image URLs or markdown images, and don't add an [[images: ...]] tag.`,
+        `IMAGE RESULTS: the app is fetching pictures for "${imageQuery}" and keeps a full gallery available. Compose the visible images and text yourself using chat-layout, with image indexes 0 through 3 and imageQuery "${imageQuery}" as fallback on each image. Choose placement, sizes, grouping and amount of prose to fit this request; you are not limited to a strip below the text. Don't invent image URLs or add an [[images: ...]] tag.`,
       ]
         .filter(Boolean)
         .join("\n\n");
@@ -337,9 +367,12 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
       }
     }
 
+    // Told up front, so the words are written to be heard (no markdown, links or cards).
+    const requestedSeconds = o.voiceDurationSeconds ?? voiceLimits().defaultSeconds;
+    const extra = [pageNote, voiceAsk ? `${VOICE_REPLY_NOTE}\nAim for about ${Math.max(5, Math.floor(requestedSeconds * 2))} words, fitting a ${requestedSeconds}-second maximum. Keep the topic coherent; avoid filler. Never exceed ${voiceLimits().maxChars} characters.` : ""].filter(Boolean).join("\n\n");
     const [system, compactSystem] = await Promise.all([
-      chatSystemPrompt(o.ownerId, pageNote, { timeZone: o.timeZone }),
-      chatSystemPrompt(o.ownerId, pageNote, { compact: true, timeZone: o.timeZone }),
+      chatSystemPrompt(o.ownerId, extra, { timeZone: o.timeZone }),
+      chatSystemPrompt(o.ownerId, extra, { compact: true, timeZone: o.timeZone }),
     ]);
     const messages: LlmMessage[] = [{ role: "system", content: system }, ...history];
     // Think only where it helps, and briefly: a chat answer should start in a second or two.
@@ -489,6 +522,27 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
   clean = parsed.clean;
   if (parsed.actions.length) meta.actions = parsed.actions;
 
+  // The AI can choose the embed tool itself. The site is really opened and checked; the reply
+  // only says it's embedded if the card exists, otherwise it says why not.
+  const embedAsk = [...clean.matchAll(EMBED_TAG)][0]?.[1];
+  clean = clean.replace(EMBED_TAG, "").replace(/\n{3,}/g, "\n\n").trim();
+  if (embedAsk && !o.signal?.aborted && !o.simulateFail?.length) {
+    const safe = await safeSearchFor(o.ownerId).catch(() => "off" as const);
+    let host = embedAsk;
+    try { host = new URL(embedAsk).hostname.replace(/^www\./, ""); } catch { /* keep as typed */ }
+    const shown = await runEmbedTurn({ asked: host, url: embedAsk }, {
+      safe, step: o.onMiniAgentStep!, signal: o.signal, chatId: o.chatId, ownerId: o.ownerId,
+    }).catch((e: unknown) => ({ content: `I couldn't embed ${host} (${e instanceof Error ? e.message : String(e)}).`, meta: {} as MessageMeta }));
+    if (shown.meta.embed) {
+      meta.embed = shown.meta.embed;
+      if (shown.meta.videos) meta.videos = shown.meta.videos;
+      if (shown.meta.embed.note) clean = `${clean}\n\n_${shown.meta.embed.note}._`.trim();
+    } else {
+      clean = `${clean}\n\n${shown.content}`.trim();
+    }
+    o.onPreview?.(clean);
+  }
+
   // The AI can also ask for a gallery itself with [[images: query]].
   const tagged = extractImagesTag(clean);
   clean = tagged.clean;
@@ -505,7 +559,43 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
     }
   }
 
+  // Voice message: asked for in the message, or chosen by the model with [[voice]] when the
+  // wording was unusual ("lemme hear you"). The text stays as the transcript under the player.
+  const voiceTag = VOICE_TAG.test(clean);
+  if (voiceTag) clean = clean.replace(VOICE_TAG_ALL, "").replace(/\n{3,}/g, "\n\n").trim();
+  if ((voiceAsk || voiceTag) && clean && !meta.error && !o.signal?.aborted && !o.simulateFail?.length) {
+    const voice = await recordVoice(o, speechText(clean), meta.mood);
+    if (voice.meta) meta.voice = voice.meta;
+    if (voice.failure) meta.voiceError = voice.failure;
+  }
+
   meta.thinking = trace.meta();
   await addMessage(o.chatId, "assistant", clean, [], meta, assistantMessageId, userMessageId);
   return { id: assistantMessageId, role: "assistant", content: clean, imageIds: [], meta, createdAt: new Date().toISOString() };
+}
+
+const VOICE_TAG = /\[\[\s*voice\s*\]\]/i;
+const VOICE_TAG_ALL = /\[\[\s*voice\s*\]\]/gi;
+
+/**
+ * Speak `text` in Senko's voice and store it. Returns the voice meta, or a plain sentence saying
+ * why there's no audio (never a player for audio that doesn't exist).
+ */
+async function recordVoice(o: ReplyOptions, text: string, mood?: string): Promise<{ meta?: VoiceMeta; error?: string; failure?: MessageMeta["voiceError"] }> {
+  const STEP = 60;
+  o.onMiniAgentStep?.({ id: STEP, label: "Generating speech", status: "running" });
+  try {
+    if (!text.trim()) throw new Error("the reply has nothing that can be spoken");
+    const personality = await personalityFor(o.ownerId).catch(() => undefined);
+    validateVoiceInput(text, o.voiceDurationSeconds);
+    const got = await synthesizeVoice({ text, ownerId: o.ownerId, durationSeconds: o.voiceDurationSeconds, emotion: mood, personality, signal: o.signal });
+    const audioId = await saveAudio(o.ownerId, got.mime, got.audio);
+    o.onMiniAgentStep?.({ id: STEP, label: "Recorded a voice message", status: "done", detail: got.engine === "custom" ? `${got.voice} · own voice model` : got.voice });
+    return { meta: { audioId, mime: got.mime, engine: got.engine, voice: got.voice, emotion: mood || undefined, seconds: got.seconds, model: got.model, modelKind: got.modelKind, modelFingerprint: got.modelFingerprint } };
+  } catch (e) {
+    const why = e instanceof VoiceError ? e.message : "Speech generation failed. Please try again later";
+    o.onMiniAgentStep?.({ id: STEP, label: "Couldn't record the voice message", status: "error", detail: why });
+    if (!(e instanceof VoiceError)) console.warn("[voice] Recording failed", e);
+    return { error: `I couldn't record this as a voice message: ${why.replace(/[.\s]+$/, "")}.`, failure: { code: e instanceof VoiceError ? e.code : "synthesis_failed", message: e instanceof VoiceError ? e.message : "Speech generation failed.", retryAfter: e instanceof VoiceError ? e.retryAfter : undefined } };
+  }
 }

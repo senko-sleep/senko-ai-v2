@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, ExternalLink, Maximize, Minimize, MonitorPlay, RefreshCw, Shuffle, StretchVertical } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ExternalLink, Maximize, Minimize, MonitorPlay, RefreshCw, Shuffle, StretchVertical } from "lucide-react";
 import type { EmbedMode, SiteEmbedCard } from "@/lib/embed/types";
 import { proxiedPageUrl, useProxyToken } from "@/lib/proxy-token-client";
 
@@ -25,6 +25,9 @@ export function SiteEmbedView({ card, onOpenLive }: { card: SiteEmbedCard; onOpe
   // No IntersectionObserver (old browsers): just load it.
   const [visible, setVisible] = useState(() => typeof IntersectionObserver === "undefined");
   const [loaded, setLoaded] = useState(false);
+  // The proxy said it couldn't load the page, or the frame never finished loading.
+  const [failed, setFailed] = useState<string | null>(null);
+  const [stalled, setStalled] = useState(false);
   const [tall, setTall] = useState(false);
   const [full, setFull] = useState(false);
   // Pseudo-fullscreen where the Fullscreen API isn't available (iPhone Safari).
@@ -47,8 +50,18 @@ export function SiteEmbedView({ card, onOpenLive }: { card: SiteEmbedCard; onOpe
   useEffect(() => {
     const onMsg = (e: MessageEvent) => {
       if (e.source !== frameRef.current?.contentWindow) return;
-      const d = e.data as { senkoEmbed?: number; url?: string; title?: string } | null;
-      if (d?.senkoEmbed && typeof d.url === "string" && /^https?:\/\//.test(d.url)) setCurrent({ url: d.url, title: d.title || undefined });
+      const d = e.data as { senkoEmbed?: number; senkoEmbedError?: number; url?: string; title?: string; reason?: string } | null;
+      if (d?.senkoEmbedError) {
+        setFailed(typeof d.reason === "string" && d.reason ? d.reason.slice(0, 200) : "The proxy couldn't load it");
+        setLoaded(true);
+        return;
+      }
+      if (d?.senkoEmbed && typeof d.url === "string" && /^https?:\/\//.test(d.url)) {
+        setCurrent({ url: d.url, title: d.title || undefined });
+        // The proxied page is up (its DOM is ready), even if slow ads hold back "load".
+        setLoaded(true);
+        setStalled(false);
+      }
     };
     window.addEventListener("message", onMsg);
     return () => window.removeEventListener("message", onMsg);
@@ -72,10 +85,10 @@ export function SiteEmbedView({ card, onOpenLive }: { card: SiteEmbedCard; onOpe
     };
   }, [fakeFull]);
 
-  // A frame that never fires load (blocked) shouldn't spin forever.
+  // A frame that never fires load shouldn't spin forever, or pretend it loaded: say it stalled.
   useEffect(() => {
     if (!visible || loaded) return;
-    const t = setTimeout(() => setLoaded(true), 12_000);
+    const t = setTimeout(() => setStalled(true), 15_000);
     return () => clearTimeout(t);
   }, [visible, loaded, nonce, mode]);
 
@@ -95,8 +108,13 @@ export function SiteEmbedView({ card, onOpenLive }: { card: SiteEmbedCard; onOpe
     setFakeFull(true);
   }, [fakeFull]);
 
-  const reload = () => {
+  const reset = () => {
     setLoaded(false);
+    setFailed(null);
+    setStalled(false);
+  };
+  const reload = () => {
+    reset();
     setNonce((n) => n + 1);
   };
   const back = () => {
@@ -105,7 +123,7 @@ export function SiteEmbedView({ card, onOpenLive }: { card: SiteEmbedCard; onOpe
   };
   const switchMode = () => {
     setMode((m) => (m === "proxy" ? "direct" : "proxy"));
-    setLoaded(false);
+    reset();
   };
 
   const expanded = full || fakeFull;
@@ -165,7 +183,11 @@ export function SiteEmbedView({ card, onOpenLive }: { card: SiteEmbedCard; onOpe
       {mode === "live" ? (
         <div className="flex aspect-video w-full flex-col items-center justify-center gap-2.5 bg-black p-4 text-center text-[12.5px] text-white/70">
           <MonitorPlay size={22} className="text-[var(--sk-accent)]" aria-hidden />
-          <span className="max-w-[44ch]">{host} won&apos;t load outside a real browser, so it&apos;s open in this chat&apos;s live browser, with working videos and fullscreen there.</span>
+          <span className="max-w-[44ch]">
+            {card.liveUnavailable
+              ? <>{host} won&apos;t load outside a real browser, and the live browser couldn&apos;t open it. Open it in a new tab, or try embedding it anyway.</>
+              : <>{host} won&apos;t load outside a real browser, so it&apos;s open in this chat&apos;s live browser, with working videos and fullscreen there.</>}
+          </span>
           {onOpenLive && (
             <button type="button" onClick={() => onOpenLive(current.url)} className="sk-btn h-8 rounded-full bg-[var(--sk-accent)] px-3.5 text-[12px] font-medium text-white hover:opacity-90">
               <MonitorPlay size={12.5} aria-hidden /> Show live browser
@@ -199,7 +221,39 @@ export function SiteEmbedView({ card, onOpenLive }: { card: SiteEmbedCard; onOpe
               onLoad={() => setLoaded(true)}
             />
           )}
-          {(!ready || !loaded) && (
+          {stalled && !loaded && !failed && (
+            // Not finished, but whatever it has drawn stays visible: a slim note, not a cover.
+            <div role="status" className="absolute inset-x-0 bottom-0 z-10 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 bg-black/85 px-3 py-2 text-center text-[11.5px] text-white/75 backdrop-blur-sm">
+              <span className="inline-flex items-center gap-1.5"><AlertTriangle size={12.5} className="shrink-0 text-amber-400" aria-hidden /> {host} is still loading (slow, or it may not work inside other sites).</span>
+              <span className="inline-flex gap-2">
+                <button type="button" onClick={reload} className="underline-offset-2 hover:underline">Retry</button>
+                <button type="button" onClick={switchMode} className="underline-offset-2 hover:underline">{mode === "proxy" ? "Load directly" : "Load through proxy"}</button>
+                <a href={current.url} target="_blank" rel="noopener noreferrer" className="underline-offset-2 hover:underline">New tab</a>
+              </span>
+            </div>
+          )}
+          {failed ? (
+            <div role="alert" className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 bg-black p-4 text-center text-[12.5px] text-white/70">
+              <AlertTriangle size={20} className="text-amber-400" aria-hidden />
+              <span className="max-w-[46ch]">Couldn&apos;t show {host} here: {failed.replace(/[.\s]+$/, "")}.</span>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <button type="button" onClick={reload} className="sk-btn h-8 rounded-full border border-white/15 px-3 text-[12px] text-white/85 hover:bg-white/10">
+                  <RefreshCw size={12} aria-hidden /> Retry
+                </button>
+                <button type="button" onClick={switchMode} className="sk-btn h-8 rounded-full border border-white/15 px-3 text-[12px] text-white/85 hover:bg-white/10">
+                  <Shuffle size={12} aria-hidden /> {mode === "proxy" ? "Load directly" : "Load through proxy"}
+                </button>
+                {onOpenLive && (
+                  <button type="button" onClick={() => onOpenLive(current.url)} className="sk-btn h-8 rounded-full bg-[var(--sk-accent)] px-3 text-[12px] font-medium text-white hover:opacity-90">
+                    <MonitorPlay size={12} aria-hidden /> Live browser
+                  </button>
+                )}
+                <a href={current.url} target="_blank" rel="noopener noreferrer" className="sk-btn inline-flex h-8 items-center gap-1 rounded-full border border-white/15 px-3 text-[12px] text-white/85 hover:bg-white/10">
+                  <ExternalLink size={12} aria-hidden /> New tab
+                </a>
+              </div>
+            </div>
+          ) : (!ready || !loaded) && !stalled && (
             <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-[11.5px] text-white/50">
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-white/15 border-t-[var(--sk-accent)]" />
               Loading {host}…

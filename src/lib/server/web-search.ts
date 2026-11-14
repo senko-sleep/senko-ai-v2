@@ -344,6 +344,8 @@ const PROVIDER_MS = 12_000;
 /** Chromium may need to start first. */
 const BROWSER_MS = 25_000;
 /** Share of the query's words a result needs to count as a match: short queries need every word. */
+/** The query asks for websites, not information ("anime sites", "a site to read manga"). */
+const SITE_QUERY = /\b(?:web\s?)?sites?\b|\bwebpages?\b/i;
 export const matchNeeded = (terms: string[]) => (terms.length <= 2 ? 0.75 : 0.5);
 
 function urlKey(url: string): string {
@@ -418,6 +420,13 @@ export async function searchWeb(query: string, opts: SearchOptions): Promise<Sea
   // Hardly any: keep partial matches and pages two engines agree on (e.g. "Friday Night Funkin'" for "fnf").
   // Never a page that only shares one word of a longer query (the "Friday" film for "friday night funkin fan art").
   ranked = matching.length >= Math.min(3, ranked.length) ? matching : ranked.filter((x) => x.match >= MATCH * 0.67 || (x.engines.length > 1 && x.match > 0));
+
+  // "hentai websites" asks for sites of that kind: an encyclopedia article *about* hentai
+  // matches every word but isn't one. Keep wiki pages only if there's nothing else.
+  if (SITE_QUERY.test(query)) {
+    const sites = ranked.filter((x) => categorize(x.r.url, x.r.title, x.r.snippet) !== "wiki");
+    if (sites.length) ranked = sites;
+  }
 
   let hiddenAdult = 0;
   const results: WebResult[] = [];

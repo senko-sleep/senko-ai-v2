@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { addMessage, maybeTitle, requireChat, truncateMessagesFrom, type TruncateTarget } from "@/lib/server/chats";
 import { errorResponse, HttpError, identify } from "@/lib/server/identity";
 import { reply } from "@/lib/server/reply";
+import { detectVoiceRequest, requestedVoiceSeconds } from "@/lib/voice/intent";
+import { validateVoiceInput } from "@/lib/server/voice-policy";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,6 +25,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     imageIds?: string[];
     provider?: string;
     timeZone?: string;
+    voiceDurationSeconds?: number;
     record?: { content: string; actions?: { url: string; label: string }[] };
     truncateFrom?: TruncateTarget;
   };
@@ -38,6 +41,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const content = String(body.content || "").slice(0, 100_000);
   const imageIds = Array.isArray(body.imageIds) ? body.imageIds.filter((x) => typeof x === "string").slice(0, 20) : [];
   if (!content.trim() && !imageIds.length) return errorResponse(new HttpError(400, "Message is empty."));
+  const voiceDuration = requestedVoiceSeconds(content) ?? body.voiceDurationSeconds;
+  try {
+    if (detectVoiceRequest(content) || body.voiceDurationSeconds !== undefined) validateVoiceInput("Voice request", voiceDuration);
+  } catch (error) { return errorResponse(error); }
 
   if (body.truncateFrom && typeof body.truncateFrom === "object") {
     await truncateMessagesFrom(chatId, body.truncateFrom);
@@ -78,6 +85,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           ownerId: who.ownerId,
           chatId,
           content,
+          voiceDurationSeconds: voiceDuration,
           imageIds,
           provider: body.provider,
           timeZone: typeof body.timeZone === "string" ? body.timeZone.slice(0, 64) : undefined,

@@ -1,11 +1,14 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { CodeJobCard } from "./code-job-card";
+import { VoiceMessage } from "./voice-message";
 import { AlertTriangle, Bot, Check, CheckCircle2, Code2, Compass, Copy, Download, ExternalLink, Eye, GitBranch, Grid3X3, PauseCircle, PawPrint, Pencil, RotateCcw, Sparkles, Square } from "lucide-react";
 import { FoxMark } from "./fox-mark";
 import { activitySources, visibleTrail, websiteUrl } from "./activity";
 import { AgentTrail } from "./activity-trail";
 import { ImageGallery } from "../chat/image-gallery";
 import { RichMessageContent } from "../ui-renderer/dynamic-ui-renderer";
+import { ChatComposition } from "./chat-composition";
+import { hasChatLayoutImages, splitChatLayouts } from "@/lib/chat-layout";
 import { ThinkingPanel } from "./thinking-panel";
 import { ChatVideos } from "./chat-videos";
 import { ComicCardView } from "./comic-card";
@@ -40,9 +43,11 @@ function useCopy() {
 function ScrapedImageStrip({
   images,
   query,
+  galleryOnly = false,
 }: {
   images: NonNullable<Msg["scrapedImages"]>;
   query?: string;
+  galleryOnly?: boolean;
 }) {
   const [showGallery, setShowGallery] = useState(false);
   const preview = images.slice(0, 4);
@@ -50,7 +55,7 @@ function ScrapedImageStrip({
   return (
     <div className="mt-2 w-full">
       {/* Mini horizontal strip (up to 4 thumbnails) */}
-      <div className="flex gap-2 overflow-x-auto pb-1">
+      {!galleryOnly && <div className="flex gap-2 overflow-x-auto pb-1">
         {preview.map((img, i) => (
           <button
             key={i}
@@ -80,7 +85,7 @@ function ScrapedImageStrip({
             +{images.length - 4} more
           </button>
         )}
-      </div>
+      </div>}
 
       {/* "View all images" button */}
       <button
@@ -297,6 +302,8 @@ export const MessageBubble = memo(function MessageBubble({
   const finalUrl = agent?.url || msg.actions?.[0]?.url;
   const hasTrail = !!agent && Boolean(agent.trail?.length || activitySources(agent.trail, finalUrl).length);
   const showMeta = !msg.pending && Boolean(msg.content || agent);
+  const composition = splitChatLayouts(msg.content, streaming);
+  const composedImages = hasChatLayoutImages(composition);
 
   const metaContent = showMeta ? (
     <>
@@ -409,11 +416,14 @@ export const MessageBubble = memo(function MessageBubble({
           />
         )}
 
+        {msg.voice && !msg.pending && <VoiceMessage voice={msg.voice} />}
+        {msg.voiceError && <p role="alert" className="my-2 text-sm text-[var(--sk-danger)]">{msg.voiceError.code === "rate_limited" ? "Rate limited" : msg.voiceError.code === "duration_limit" ? "Duration limit reached" : "Generation failed"}: {msg.voiceError.message}</p>}
         {msg.content && (
           <div>
-            <RichMessageContent
+            <ChatComposition
               messageId={msg.id}
-              text={msg.content}
+              segments={composition}
+              images={msg.scrapedImages}
               streaming={streaming}
               uiImages={msg.uiImages}
               onSendMessage={streaming ? undefined : onSendMessage}
@@ -435,7 +445,7 @@ export const MessageBubble = memo(function MessageBubble({
 
         {/* Scraped image strip + "View all images" button — shown for chat-mode image searches */}
         {msg.scrapedImages?.length ? (
-          <ScrapedImageStrip images={msg.scrapedImages} query={msg.imageQuery} />
+          <ScrapedImageStrip images={msg.scrapedImages} query={msg.imageQuery} galleryOnly={composedImages} />
         ) : null}
 
         {msg.error && (

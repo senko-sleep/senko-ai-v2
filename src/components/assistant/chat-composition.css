@@ -1,0 +1,14 @@
+.sk-chat-composition { container-type: inline-size; min-width: 0; }
+.sk-chat-piece { min-width: 0; overflow-wrap: anywhere; }
+.sk-chat-row { display: flex; }
+.sk-chat-row > .sk-chat-piece { flex: var(--chat-weight, 1) 1 0%; }
+.sk-chat-column { display: flex; flex-direction: column; }
+.sk-chat-column > .sk-chat-piece { width: 100%; }
+.sk-chat-grid { display: grid; grid-template-columns: repeat(var(--chat-columns, 2), minmax(0, 1fr)); }
+.sk-chat-grid > .sk-chat-piece { grid-column: span min(var(--chat-span, 1), var(--chat-columns, 2)); }
+@container (max-width: 480px) {
+  .sk-chat-row { flex-direction: column; }
+  .sk-chat-row > .sk-chat-piece { width: 100%; flex-basis: auto; }
+  .sk-chat-grid { grid-template-columns: repeat(min(2, var(--chat-columns, 2)), minmax(0, 1fr)); }
+  .sk-chat-grid > .sk-chat-piece { grid-column: span min(var(--chat-span, 1), 2, var(--chat-columns, 2)); }
+}

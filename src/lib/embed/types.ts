@@ -20,4 +20,12 @@ export interface SiteEmbedCard {
   note?: string;
   /** Pages visited before embedding (homepage -> newest video page). */
   path?: string[];
+  /** The kind of site asked for ("anime", "manga"), when we picked the site ourselves. */
+  topic?: string;
+  /** What they wanted to do there ("read", "watch"). */
+  purpose?: string;
+  /** Live mode only: the chat's live browser couldn't open it, so nothing is showing it yet. */
+  liveUnavailable?: boolean;
+  /** Sites tried first that couldn't be shown, and why ("x.com: HTTP 503"). */
+  skipped?: string[];
 }

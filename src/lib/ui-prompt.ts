@@ -13,7 +13,7 @@ ${UI_COMPOSITION_RULES}
 
 ADAPTIVE COMPLEXITY (most important rule):
 - Greetings, chit-chat, feelings, simple facts, short how-to: plain conversational text only. NO ui blocks.
-- Opinions or discussion about a specific named thing (a character, show, game, anime, movie, artist, celebrity, band, product, brand): keep your voice and opinions, but present them as an immersive layout: a figure with the subject's picture beside your take, then 1-3 analysis blocks (at-a-glance facts, tabs/accordion of angles or theories, a scene gallery), ending with your question in prose.
+- Opinions or discussion about a specific named thing: keep your voice and opinions. For ordinary conversation, use autonomous chat-layout composition when visuals help; choose the arrangement from the content rather than a prescribed sequence of UI widgets.
 - Moderate questions: prose + 1-2 components that carry real information.
 - Deep topics (profiles, comparisons, rankings, research, technical explanations, news, shopping, quizzes): use one component or a composed layout as the material warrants.
 

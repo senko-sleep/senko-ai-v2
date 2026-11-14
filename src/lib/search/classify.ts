@@ -17,6 +17,8 @@ const HOSTS: [SearchCategory, RegExp][] = [
   ["social", /(?:^|\.)(?:twitter|x|facebook|instagram|threads|bsky|mastodon|linkedin|snapchat)\.[a-z.]+$/i],
 ];
 
+/** Encyclopedias and dictionaries (not community wikis, which can host explicit content). */
+const REFERENCE = /(?:^|\.)(?:wikipedia|wikimedia|wiktionary|britannica)\.[a-z.]+$/i;
 const ADULT_TEXT = /\b18\+|\b(?:porn\w*|hentai|xxx|nsfw|rule\s?34|r34|nude|naked|sex(?:ual)?|erotic\w*|lewd|explicit|uncensored|adult\s+(?:comics?|games?|videos?|content))\b/i;
 const COMIC_TEXT = /\b(?:manga|manhwa|manhua|webtoons?|comics?|doujin(?:shi)?|chapter\s+\d+|read\s+online)\b/i;
 const VIDEO_TEXT = /\b(?:watch|video|episode|stream(?:ing)?)\b/i;
@@ -31,6 +33,12 @@ export function hostOf(url: string): string {
   }
 }
 
+/** The category the host alone says (a Reddit thread is "forum" whatever its title). */
+export function hostCategory(url: string): SearchCategory | null {
+  const host = hostOf(url);
+  return HOSTS.find(([, re]) => re.test(host))?.[0] ?? null;
+}
+
 /** The category from the host first, then from what the title and snippet say. */
 export function categorize(url: string, title: string, snippet: string): SearchCategory {
   const host = hostOf(url);
@@ -38,8 +46,10 @@ export function categorize(url: string, title: string, snippet: string): SearchC
   // An adult result on a mixed site (Reddit, Pixiv, Twitter) is still adult.
   for (const [cat, re] of HOSTS) {
     if (!re.test(host)) continue;
-    // On a known site only the title counts (a store's genre list says "Erotica").
-    if (cat !== "adult" && ADULT_TEXT.test(title) && cat !== "docs" && cat !== "code" && cat !== "news") return "adult";
+    // On a known site only the title counts (a store's genre list says "Erotica"). An
+    // encyclopedia's article *about* an adult topic ("Hentai - Wikipedia") is still reference
+    // material, not an adult site: it mustn't be offered as one.
+    if (cat !== "adult" && ADULT_TEXT.test(title) && cat !== "docs" && cat !== "code" && cat !== "news" && !REFERENCE.test(host)) return "adult";
     return cat;
   }
   if (ADULT_TEXT.test(text) || /(?:porn|hentai|xxx|sex|nsfw|r34)/i.test(host)) return "adult";

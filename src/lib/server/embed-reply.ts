@@ -9,9 +9,11 @@ import type { MessageMeta } from "./chats";
 import type { SafeSearch } from "@/lib/content-policy";
 import type { ChatVideo } from "@/lib/chat-video";
 import type { SiteEmbedCard, EmbedMode } from "@/lib/embed/types";
-import { detectEmbedRequest, type EmbedRequest } from "@/lib/embed/intent";
+import { detectEmbedRequest, type EmbedFollowContext, type EmbedRequest } from "@/lib/embed/intent";
 import { kindOf, youtubeEmbed } from "@/lib/agent/page-videos";
-import { categorize } from "@/lib/search/classify";
+import { categorize, hostCategory, queryTerms, relevance } from "@/lib/search/classify";
+import { ADULT_SEARCH } from "@/lib/search/intent";
+import type { SearchCategory } from "@/lib/search/types";
 import { GALLERY_SITES } from "@/lib/comics/types";
 import { assertPublicHttpUrl } from "./net-guard";
 import { fetchUpstream } from "./upstream-fetch";
@@ -31,6 +33,8 @@ export interface EmbedContext {
   signal?: AbortSignal;
   chatId?: string;
   ownerId?: string;
+  /** What the chat did recently: earlier results to pick from, hosts already shown. */
+  follow?: EmbedFollowContext;
   /** Tests: replace the network pieces. */
   deps?: Partial<EmbedDeps>;
 }
@@ -53,6 +57,20 @@ export interface EmbedDeps {
   youtube: (name: string, latest: boolean, signal?: AbortSignal) => Promise<{ video: ChatVideo; channel?: string; published?: string } | null>;
   /** Open the URL in the chat's real browser; returns the videos found there when asked. */
   openLive: (chatId: string, ownerId: string, url: string, findVideos: boolean) => Promise<{ url: string; title?: string; videos: ChatVideo[] }>;
+  /** Web results for a query (finding sites of a kind). */
+  search: (query: string, safe: SafeSearch, signal?: AbortSignal) => Promise<SiteHit[]>;
+  /** The fixed legal limits on adult requests (no minors, no real people). */
+  allowed: (query: string, signal?: AbortSignal) => Promise<{ allowed: boolean; reason?: string }>;
+  /** 0..1, for random picks (tests pin it). */
+  random: () => number;
+}
+
+/** A search result considered as a site to embed. */
+export interface SiteHit {
+  title: string;
+  url: string;
+  snippet?: string;
+  category?: string;
 }
 
 // ── Page facts ──────────────────────────────────────────────────────────────
@@ -291,7 +309,19 @@ async function openLive(chatId: string, ownerId: string, url: string, findVideos
   return { url: page.url(), title: await page.title().catch(() => undefined), videos: videos.slice(0, 2) };
 }
 
-const DEFAULT_DEPS: EmbedDeps = { probe, findSite, youtube, openLive };
+async function search(query: string, safe: SafeSearch, signal?: AbortSignal): Promise<SiteHit[]> {
+  const { searchWeb, bingProvider, ddgProvider, googleApiProvider, proxyProvider } = await import("./web-search");
+  const providers = [googleApiProvider, bingProvider, ddgProvider, ...(process.env.SEARCH_API_URL ? [proxyProvider] : [])];
+  const run = await searchWeb(query, { safe, count: 12, signal, providers, checkLinks: false });
+  return run.results;
+}
+
+async function allowed(query: string, signal?: AbortSignal) {
+  const { searchAllowed } = await import("./search-reply");
+  return searchAllowed(query, signal);
+}
+
+const DEFAULT_DEPS: EmbedDeps = { probe, findSite, youtube, openLive, search, allowed, random: Math.random };
 
 // ── The turn ────────────────────────────────────────────────────────────────
 
@@ -345,24 +375,73 @@ async function youtubeTurn(req: EmbedRequest, d: EmbedDeps, ctx: EmbedContext): 
   return { content, meta: { videos: [hit.video] } };
 }
 
-export async function runEmbedTurn(req: EmbedRequest, ctx: EmbedContext): Promise<EmbedTurn> {
-  const d: EmbedDeps = { ...DEFAULT_DEPS, ...ctx.deps };
-  const { step, signal } = ctx;
+// ── Picking a site of a kind ────────────────────────────────────────────────
 
-  if (isYouTube(req.url) || (!req.url && (req.youtube || req.video))) return youtubeTurn(req, d, ctx);
+/** Results that are about sites, not sites of the kind (an encyclopedia article on "hentai", a news story, a thread). */
+const NOT_A_SITE: ReadonlySet<SearchCategory> = new Set<SearchCategory>(["wiki", "news", "forum", "social", "shopping", "docs", "code"]);
+/** "Top 10 best anime sites", "sites like X", "X alternatives": pages that list sites rather than being one. */
+const LISTICLE = /\b(?:\d+\s+)?(?:best|top|greatest|safest|legal|free)\b[^|]{0,48}\b(?:sites|websites|apps|alternatives|places|platforms)\b|\balternatives?\s+(?:to|for)\b|\b(?:sites|websites)\s+like\b|\breview(?:s|ed)?\b|\bvs\.?\s/i;
 
-  // 1. Find the real site.
-  const path: string[] = [];
-  let url = req.url;
-  let why: string | undefined;
-  step({ id: 1, label: `Opening ${req.url ? hostOf(req.url) : req.asked}`, status: "running" });
-  if (!url) {
-    url = (await d.findSite(req.name || req.asked, ctx.safe, signal).catch(() => null)) || undefined;
-    if (!url) {
-      step({ id: 1, label: `Couldn't find a site called ${req.asked}`, status: "error" });
-      return { content: `I couldn't find a website called "${req.asked}". Send me the address (like example.com)?`, meta: {} };
+/** The query that finds sites of a kind: what they'd type to find one, not what they said to us. */
+export function siteQuery(topic: string, purpose?: string): string {
+  return purpose ? `${purpose} ${topic} online` : `${topic} website`;
+}
+
+/**
+ * Sites (one per host) worth embedding for "<topic>", best first. Uses only what the results say
+ * about themselves: their category, title, snippet and host.
+ */
+export function rankSites(hits: SiteHit[], topic: string, opts: { exclude?: string[]; homepage?: boolean } = {}): SiteHit[] {
+  const terms = queryTerms(topic);
+  const exclude = new Set((opts.exclude ?? []).map((h) => h.replace(/^www\./, "").toLowerCase()));
+  const seen = new Set<string>();
+  const scored: { hit: SiteHit; score: number }[] = [];
+  hits.forEach((h, rank) => {
+    let u: URL;
+    try {
+      u = new URL(h.url);
+    } catch {
+      return;
     }
-  }
+    const host = u.hostname.replace(/^www\./, "").toLowerCase();
+    if (seen.has(host) || exclude.has(host) || !/^https?:$/.test(u.protocol)) return;
+    const category = (h.category as SearchCategory | undefined) ?? categorize(h.url, h.title, h.snippet || "");
+    const byHost = hostCategory(h.url);
+    if (NOT_A_SITE.has(category) || (byHost && NOT_A_SITE.has(byHost)) || LISTICLE.test(h.title)) return;
+    const match = terms.length ? relevance(terms, { title: h.title, url: h.url, snippet: h.snippet || "" }, category) : 1;
+    if (terms.length && match < (terms.length <= 2 ? 0.75 : 0.5)) return;
+    seen.add(host);
+    const slugHit = terms.some((t) => host.replace(/[^a-z0-9]/g, "").includes(t.replace(/[^a-z0-9]/g, ""))) ? 0.3 : 0;
+    // Picking from results the user saw: a site's own front page beats a deep page on it.
+    const shallow = !opts.homepage && u.pathname.split("/").filter(Boolean).length <= 1 ? 0.15 : 0;
+    scored.push({ hit: opts.homepage ? { ...h, url: `${u.origin}/` } : h, score: match + slugHit + shallow - rank * 0.04 });
+  });
+  return scored.sort((a, b) => b.score - a.score).map((s) => s.hit);
+}
+
+/** The order to try sites in: the chosen one first (random among the best few when they left it to us). */
+export function pickOrder(sites: SiteHit[], pick: "random" | "best" | undefined, random: () => number): SiteHit[] {
+  if (pick !== "random" || sites.length < 2) return sites;
+  const pool = Math.min(sites.length, 5);
+  const i = Math.min(pool - 1, Math.floor(random() * pool));
+  return [sites[i], ...sites.filter((_, j) => j !== i)];
+}
+
+// ── Opening one site ────────────────────────────────────────────────────────
+
+type Opened =
+  | { ok: true; p: Probe; url: string; path: string[]; why?: string }
+  | { ok: false; reason: string; content: string };
+
+/**
+ * Loads `url` the way the embed will see it: follows "Redirecting..." hops, and when the user
+ * typed the address (`typed`), recovers from parked or dead domains. Refuses fake human checks
+ * and adult sites under SafeSearch.
+ */
+async function openSite(url: string, typed: string | undefined, d: EmbedDeps, ctx: EmbedContext): Promise<Opened> {
+  const { signal } = ctx;
+  const path: string[] = [];
+  let why: string | undefined;
   let p = await d.probe(url, signal);
   // "Redirecting..." pages that hop with JS (a server fetch doesn't run it).
   for (let hop = 0; hop < 2 && p.ok; hop++) {
@@ -371,54 +450,149 @@ export async function runEmbedTurn(req: EmbedRequest, ctx: EmbedContext): Promis
     path.push(p.finalUrl);
     p = await d.probe(next, signal);
   }
-  if (p.ok && isParked(p.html) && req.url) {
+  if (p.ok && isParked(p.html)) {
+    if (!typed) return { ok: false, reason: "parked domain", content: `${hostOf(url)} is a parked domain.` };
     // imhentai.com is a parked domain; the site people mean is imhentai.xxx.
-    const real = await d.findSite(slugOf(hostOf(req.url)), ctx.safe, signal).catch(() => null);
+    const real = await d.findSite(slugOf(hostOf(typed)), ctx.safe, signal).catch(() => null);
     if (real && hostOf(real) !== hostOf(p.finalUrl)) {
-      why = `${hostOf(req.url)} is a parked domain, so I opened the real site, ${hostOf(real)}`;
+      why = `${hostOf(typed)} is a parked domain, so I opened the real site, ${hostOf(real)}`;
       path.push(p.finalUrl);
       p = await d.probe(real, signal);
       url = real;
     }
   }
-  if (!p.ok && !p.challenged && p.status === 0 && req.url && !/^https?:\/\/www\./i.test(url!)) {
-    const www = url!.replace(/^https?:\/\//i, "https://www.");
+  if (!p.ok && !p.challenged && p.status === 0 && typed && !/^https?:\/\/www\./i.test(url)) {
+    const www = url.replace(/^https?:\/\//i, "https://www.");
     const again = await d.probe(www, signal);
     if (again.ok || again.challenged) p = again;
   }
-  if (!p.ok && !p.challenged && req.url) {
+  if (!p.ok && !p.challenged && typed) {
     // The address they typed is dead: find the site by its name instead.
-    const real = await d.findSite(slugOf(hostOf(req.url)), ctx.safe, signal).catch(() => null);
-    if (real && hostOf(real) !== hostOf(url!)) {
+    const real = await d.findSite(slugOf(hostOf(typed)), ctx.safe, signal).catch(() => null);
+    if (real && hostOf(real) !== hostOf(url)) {
       const again = await d.probe(real, signal);
       if (again.ok || again.challenged) {
-        why = `${hostOf(req.url)} didn't load, so I opened ${hostOf(real)}`;
+        why = `${hostOf(typed)} didn't load, so I opened ${hostOf(real)}`;
         p = again;
         url = real;
       }
     }
   }
   if (!p.ok && !p.challenged) {
-    step({ id: 1, label: `${hostOf(url!)} didn't answer`, status: "error", detail: p.error || `HTTP ${p.status}` });
-    return { content: `I couldn't open ${hostOf(url!)} (${p.error || `it answered HTTP ${p.status}`}). Is the address right?`, meta: {} };
+    const reason = p.error || `HTTP ${p.status}`;
+    return { ok: false, reason, content: `I couldn't open ${hostOf(url)} (${p.error ? p.error.replace(/[.\s]+$/, "") : `it answered HTTP ${p.status}`}). Is the address right?` };
   }
   const host = hostOf(p.finalUrl);
-  step({ id: 1, label: `Opened ${host}`, status: "done", detail: p.challenged ? "Bot check in the way" : pageTitle(p.html), url: p.finalUrl });
-
   // A fake "verify you're human" page (Win+R, paste, Enter) is malware bait: never embed it.
   const fake = detectFakeVerification({ html: p.html });
   if (fake) {
-    step({ id: 1, label: `Blocked ${host}: fake human check`, status: "error", detail: fake.signals.join(", ") });
-    return { content: `I didn't embed ${host}. ${fake.reason} Don't follow any steps it shows, and don't paste or run anything from it.`, meta: {} };
+    return { ok: false, reason: `fake human check (${fake.signals.join(", ")})`, content: `I didn't embed ${host}. ${fake.reason} Don't follow any steps it shows, and don't paste or run anything from it.` };
+  }
+  // SafeSearch: adult sites only when it's off.
+  if (ctx.safe !== "off" && categorize(p.finalUrl, pageTitle(p.html) || "", "") === "adult") {
+    return { ok: false, reason: "adult site (SafeSearch)", content: `SafeSearch is set to ${ctx.safe}, so I can't embed ${host} (it's an adult site). You can turn it off in Settings.` };
+  }
+  return { ok: true, p, url, path, why };
+}
+
+/** "Find me a random hentai site" / "a manga site so I can read": choose one, then open it. */
+async function topicTurn(req: EmbedRequest, d: EmbedDeps, ctx: EmbedContext): Promise<EmbedTurn> {
+  const { step, signal } = ctx;
+  const topic = (req.topic || "").trim();
+  const label = topic ? `${topic} site` : "site";
+  const aLabel = `${/^[aeiou]/i.test(label) ? "an" : "a"} ${label}`;
+
+  if (topic && ADULT_SEARCH.test(topic)) {
+    if (ctx.safe !== "off") {
+      return { content: `SafeSearch is set to ${ctx.safe}, so I can't embed ${topic} sites (they're adult sites). You can turn it off in Settings.`, meta: {} };
+    }
+    const check = await d.allowed(topic, signal).catch(() => ({ allowed: true }));
+    if (!check.allowed) return { content: (check as { reason?: string }).reason || "I can't embed that.", meta: {} };
   }
 
-  // 2. SafeSearch: adult sites only when it's off.
-  const title = pageTitle(p.html);
-  if (ctx.safe !== "off" && categorize(p.finalUrl, title || "", "") === "adult") {
-    return { content: `SafeSearch is set to ${ctx.safe}, so I can't embed ${host} (it's an adult site). You can turn it off in Settings.`, meta: {} };
+  // Results already on screen come first: no second search for what the chat just found.
+  const earlier = ctx.follow?.results ?? [];
+  let sites = rankSites(earlier, topic, { exclude: req.exclude });
+  let source: "earlier" | "search" = "earlier";
+  if (sites.length) {
+    step({ id: 1, label: topic ? `Picking ${aLabel} from the results above` : "Picking one of the results above", status: "running" });
+  } else {
+    if (!topic) {
+      step({ id: 1, label: "No earlier results to pick from", status: "error" });
+      return { content: "There aren't any results above for me to pick from. What kind of site should I find?", meta: {} };
+    }
+    source = "search";
+    const query = siteQuery(topic, req.purpose);
+    step({ id: 1, label: `Searching for ${aLabel}`, status: "running", detail: `"${query}"` });
+    const found = await d.search(query, ctx.safe, signal).catch(() => [] as SiteHit[]);
+    sites = rankSites(found, topic, { exclude: req.exclude, homepage: true });
+    // Every match was already shown: showing one again beats showing none.
+    if (!sites.length && req.exclude?.length) sites = rankSites(found, topic, { homepage: true });
+    if (!sites.length) {
+      step({ id: 1, label: found.length ? `None of the results is ${aLabel}` : "The search engines didn't answer", status: "error", detail: `"${query}"` });
+      return {
+        content: found.length
+          ? `I searched "${query}" but none of the results was an actual ${label} I could open (just articles and lists about them). Got one in mind? Send me the address.`
+          : `I couldn't reach the search engines to find ${aLabel} just now. Try again, or send me the address of one.`,
+        meta: {},
+      };
+    }
   }
 
-  // 3. Pre-navigate to the video they asked for.
+  const order = pickOrder(sites, req.pick, d.random).slice(0, 4);
+  const skipped: string[] = [];
+  // A site behind a bot check can only be shown in the live browser, not embedded. Since we're
+  // choosing, keep it as a fallback and prefer one that really embeds.
+  let botChecked: { opened: Extract<Opened, { ok: true }>; skippedBefore: string[] } | null = null;
+  const done = (opened: Extract<Opened, { ok: true }>, before: string[]) => {
+    step({ id: 1, label: `Opened ${hostOf(opened.p.finalUrl)}`, status: "done", detail: source === "earlier" ? "From the results above" : opened.p.challenged ? "Bot check in the way" : pageTitle(opened.p.html), url: opened.p.finalUrl });
+    const why = before.length ? `${before.map((s) => s.split(":")[0]).join(" and ")} couldn't be embedded, so I went with ${hostOf(opened.p.finalUrl)}` : undefined;
+    return finishEmbed(req, { ...opened, why }, d, ctx, { skipped: before, picked: source });
+  };
+  for (const site of order) {
+    if (signal?.aborted) break;
+    const host = hostOf(site.url);
+    step({ id: 1, label: `Opening ${host}`, status: "running", url: site.url });
+    const opened = await openSite(site.url, undefined, d, ctx);
+    if (!opened.ok) {
+      skipped.push(`${host}: ${opened.reason}`);
+      continue;
+    }
+    // The page itself may say it's a directory of sites ("Best Porn Sites List") even when its
+    // search result didn't: they asked for a site of the kind, not a list of them.
+    const shownTitle = pageTitle(opened.p.html) || "";
+    if (!opened.p.challenged && LISTICLE.test(shownTitle) && order.length > 1) {
+      skipped.push(`${host}: a list of sites, not one`);
+      continue;
+    }
+    if (opened.p.challenged) {
+      botChecked ??= { opened, skippedBefore: [...skipped] };
+      skipped.push(`${host}: bot check (live browser only)`);
+      continue;
+    }
+    return done(opened, skipped);
+  }
+  if (botChecked && !signal?.aborted) return done(botChecked.opened, botChecked.skippedBefore);
+  step({ id: 1, label: `None of the ${order.length} ${label}s would load`, status: "error", detail: skipped.join("; ") });
+  return {
+    content: `I tried ${order.length} ${label}${order.length === 1 ? "" : "s"} but none would load here (${skipped.join("; ")}). Want me to try a different kind of site, or do you have one in mind?`,
+    meta: {},
+  };
+}
+
+/** Pre-navigate to a video if asked, pick how to show the page, and write the reply. */
+async function finishEmbed(
+  req: EmbedRequest,
+  opened: Extract<Opened, { ok: true }>,
+  d: EmbedDeps,
+  ctx: EmbedContext,
+  extra: { skipped?: string[]; picked?: "earlier" | "search" } = {},
+): Promise<EmbedTurn> {
+  const { step, signal } = ctx;
+  const { p, why } = opened;
+  const path = [...opened.path];
+  const host = hostOf(p.finalUrl);
+
   let page = p;
   let videos: ChatVideo[] = [];
   if (req.video && p.ok) {
@@ -444,11 +618,12 @@ export async function runEmbedTurn(req: EmbedRequest, ctx: EmbedContext): Promis
     step({ id: 2, label: link ? `Opened "${pageTitle(page.html) || hostOf(link)}"` : `No video links on ${host}'s front page`, status: link ? "done" : "error", url: link });
   }
 
-  // 4. How to show it.
-  const mode: EmbedMode =page.challenged ? "live" : allowsFraming(page.headers) ? "direct" : "proxy";
+  // How to show it.
+  const mode: EmbedMode = page.challenged ? "live" : allowsFraming(page.headers) ? "direct" : "proxy";
   let embedUrl = cleanChallengeUrl(page.finalUrl);
   let embedTitle = page.challenged ? undefined : pageTitle(page.html);
   let note = why;
+  let liveOpened = false;
   if (mode === "live") {
     note = [note, `${host} shows a bot check to servers, so it's open in your live browser instead`].filter(Boolean).join(". ");
     if (ctx.chatId && ctx.ownerId) {
@@ -462,22 +637,75 @@ export async function runEmbedTurn(req: EmbedRequest, ctx: EmbedContext): Promis
         const clean = cleanChallengeUrl(live.url);
         step({ id: 3, label: `Opened ${hostOf(clean)} in the live browser`, status: "done", url: clean });
         embedUrl = clean;
+        liveOpened = true;
         if (live.title && !CHALLENGE_TITLE.test(live.title)) embedTitle = live.title;
         if (!videos.length) videos = live.videos;
       }
     }
+    if (!liveOpened) note = [why, `${host} shows a bot check to servers and the live browser couldn't open it`].filter(Boolean).join(". ");
   }
-  const card: SiteEmbedCard = { url: embedUrl, asked: req.asked, host: hostOf(embedUrl), title: embedTitle, mode, note, path: path.length ? path : undefined };
+  const card: SiteEmbedCard = {
+    url: embedUrl,
+    asked: req.asked,
+    host: hostOf(embedUrl),
+    title: embedTitle,
+    mode,
+    note,
+    path: path.length ? path : undefined,
+    topic: req.topic || undefined,
+    purpose: req.purpose,
+    skipped: extra.skipped?.length ? extra.skipped : undefined,
+    liveUnavailable: mode === "live" && !liveOpened ? true : undefined,
+  };
   const what = req.video ? (videos.length ? `the ${req.video === "latest" ? "newest " : ""}video from **${card.host}**` : `**${embedTitle || card.host}**`) : `**${card.host}**`;
-  const lead = mode === "live" ? `I opened ${what} in your live browser` : `Here's ${what}, embedded`;
-  const tail = mode === "live" ? " Tap **Show live browser** on the card to watch it there." : " Use the ⛶ button for fullscreen.";
-  const content = `${lead}~${why ? ` (${why}.)` : ""}${tail}`;
+  const chose = extra.picked
+    ? extra.picked === "earlier" ? "picked from the results above: " : req.pick === "random" ? "picked one at random: " : ""
+    : "";
+  let content: string;
+  if (mode === "live" && !liveOpened) {
+    // Nothing is embedded: say so instead of pointing at a frame that can't show it.
+    content = `${cap(chose)}${what} only loads in a real browser (it shows servers a bot check), and the live browser couldn't open it here${why ? ` (${why})` : ""}. The ↗ button on the card opens it in a new tab.`;
+  } else if (mode === "live") {
+    content = `${cap(`${chose}I opened ${what} in your live browser`)}~${why ? ` (${why}.)` : ""} Tap **Show live browser** on the card to watch it there.`;
+  } else {
+    content = `${cap(`${chose}here's ${what}, embedded`)}~${why ? ` (${why}.)` : ""}${req.purpose ? ` You can ${req.purpose} right in the frame.` : ""} Use the ⛶ button for fullscreen.`;
+  }
   return { content, meta: { embed: card, videos: videos.length ? videos : undefined } };
+}
+
+function cap(s: string): string {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
+export async function runEmbedTurn(req: EmbedRequest, ctx: EmbedContext): Promise<EmbedTurn> {
+  const d: EmbedDeps = { ...DEFAULT_DEPS, ...ctx.deps };
+  const { step, signal } = ctx;
+
+  if (isYouTube(req.url) || (!req.url && (req.youtube || req.video) && req.topic === undefined)) return youtubeTurn(req, d, ctx);
+  if (!req.url && req.topic !== undefined) return topicTurn(req, d, ctx);
+
+  // Find the real site.
+  let url = req.url;
+  step({ id: 1, label: `Opening ${req.url ? hostOf(req.url) : req.asked}`, status: "running" });
+  if (!url) {
+    url = (await d.findSite(req.name || req.asked, ctx.safe, signal).catch(() => null)) || undefined;
+    if (!url) {
+      step({ id: 1, label: `Couldn't find a site called ${req.asked}`, status: "error" });
+      return { content: `I couldn't find a website called "${req.asked}". Send me the address (like example.com)?`, meta: {} };
+    }
+  }
+  const opened = await openSite(url, req.url, d, ctx);
+  if (!opened.ok) {
+    step({ id: 1, label: /fake|SafeSearch/.test(opened.reason) ? `Didn't embed ${hostOf(url)}` : `${hostOf(url)} didn't answer`, status: "error", detail: opened.reason });
+    return { content: opened.content, meta: {} };
+  }
+  step({ id: 1, label: `Opened ${hostOf(opened.p.finalUrl)}`, status: "done", detail: opened.p.challenged ? "Bot check in the way" : pageTitle(opened.p.html), url: opened.p.finalUrl });
+  return finishEmbed(req, opened, d, ctx);
 }
 
 /** The embed flow for one chat message, or null if it isn't an embed request. */
 export async function embedTurn(text: string, ctx: EmbedContext): Promise<EmbedTurn | null> {
-  const req = detectEmbedRequest(text);
+  const req = detectEmbedRequest(text, ctx.follow);
   if (!req) return null;
   return runEmbedTurn(req, ctx);
 }

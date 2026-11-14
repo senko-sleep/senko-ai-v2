@@ -17,6 +17,9 @@ export interface UpstreamOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Default GET. POST carries `body` (an embedded page's API calls and form posts). */
+  method?: "GET" | "POST";
+  body?: BodyInit;
 }
 
 const CHALLENGE_STATUS = new Set([403, 429, 503]);
@@ -35,7 +38,7 @@ export async function fetchUpstream(url: string, o: UpstreamOptions = {}): Promi
   const headers = { "User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9", ...(o.headers || {}) };
   const timeout = AbortSignal.timeout(o.timeoutMs ?? 15_000);
   const signal = o.signal ? AbortSignal.any([o.signal, timeout]) : timeout;
-  const res = await fetch(url, { headers, signal, redirect: "follow" });
+  const res = await fetch(url, { method: o.method ?? "GET", body: o.method === "POST" ? o.body : undefined, headers, signal, redirect: "follow" });
   const finalUrl = res.url || url;
   const type = res.headers.get("content-type") || "";
   // Only a page can be a bot check: anything else streams straight through.

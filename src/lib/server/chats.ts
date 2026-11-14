@@ -2,6 +2,7 @@
 import { HttpError } from "./identity";
 import { json, newId, q, q1, toBuffer } from "./db";
 import type { ImagePart, LlmMessage } from "@/lib/llm";
+import { toolNote } from "./turn-context";
 
 export interface MessageMeta {
   provider?: string;
@@ -30,6 +31,9 @@ export interface MessageMeta {
   search?: import("@/lib/search/types").SearchCard;
   /** A website embedded live in the reply ("send me an embed of example.com"). */
   embed?: import("@/lib/embed/types").SiteEmbedCard;
+  /** The reply as a voice message in Senko's voice (the content is its transcript). */
+  voice?: import("./voice").VoiceMeta;
+  voiceError?: { code: string; message: string; retryAfter?: number };
   /** What Senko did and thought before answering (the "Thought for Ns" dropdown). */
   thinking?: {
     steps: { id: number; label: string; status: "running" | "done" | "error"; detail?: string; url?: string }[];
@@ -234,9 +238,11 @@ export async function toLlmHistory(ownerId: string, msgs: StoredMessage[], maxIm
       const attached = m.imageIds.map((id) => images.get(id)).filter((x): x is ImagePart => !!x);
       const dropped = m.imageIds.length - attached.length;
       const note = dropped > 0 ? `\n[${dropped} earlier image(s) were shared here; not re-sent to save space]` : "";
+      // What the reply's tool card really showed (results, the embedded site), not just its summary line.
+      const tool = m.role === "assistant" ? toolNote(m.meta) : "";
       return {
         role: m.role,
-        content: (m.content || (attached.length ? "(image)" : "")) + note,
+        content: (m.content || (attached.length ? "(image)" : "")) + note + (tool ? `\n${tool}` : ""),
         ...(attached.length ? { images: attached } : {}),
       };
     });

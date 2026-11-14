@@ -31,6 +31,7 @@ const SITE_WORDS: { id: ComicSourceId; re: RegExp }[] = [
   { id: "hentaiera", re: /\b(?:(?:on|from|at|via|using)\s+(?:the\s+)?)?hentai[\s-]?era(?:\.com)?\b/i },
   { id: "hentaifox", re: /\b(?:(?:on|from|at|via|using)\s+(?:the\s+)?)?hentai[\s-]?fox(?:\.com)?\b/i },
 ];
+const SITE_ASK = new RegExp(`\\b${KIND}\\s+(?:web\\s?)?(?:sites?|pages?)\\b|\\b(?:web\\s?)?sites?\\s+(?:to|for|where)\\b.*\\b${KIND}\\b`, "i");
 const ADULT_SITES = new Set<ComicSourceId>(["ehentai", "imhentai", "hentaiera", "hentaifox"]);
 
 /** Porn wording: adult comics (SafeSearch off, subject checked for minors / real people). */
@@ -69,6 +70,8 @@ export function detectComicRequest(text: string): ComicRequest | null {
   if (!KIND_RE.test(raw) && MEDIA.test(raw)) return null;
   const t = explicit && !KIND_RE.test(raw) ? `${raw.replace(EXPLICIT, " ")} manga` : raw.replace(EXPLICIT, " ");
   if (!t || t.length > 300 || !KIND_RE.test(t) || NOT_READ.test(t)) return null;
+  // "a manga website so I can read" asks for a site (the embed flow), not for a title to look up.
+  if (SITE_ASK.test(t)) return null;
   if (!WANT.test(t.replace(KIND_RE, ""))) return null;
   const rest = t.replace(FILLER, " ");
 
@@ -82,6 +85,8 @@ export function detectComicRequest(text: string): ComicRequest | null {
   // Include the common "pic one" typo without stripping words from real titles.
   const namedTitle = new RegExp(`\\b${KIND}\\b\\s+(?:called|named|titled)\\s+`, "i").test(rest);
   if (!namedTitle && /^(?:pick|pic|choose|select)\s+(?:one|it|something|anything)(?:\s+(?:for\s+me|please|pls|and|make\s+it|it|as|to\s+read))*$/i.test(query)) return null;
+  // "a hentai website" leaves just the site noun: that's a site request, not a title.
+  query = tidy(query.replace(/\b(?:random|any|good|new)\b|\b(?:web\s?)?sites?\b|\bwebpages?\b/gi, " "));
   if (!query || query.length < 2 || /^(?:me|a|an|it|one|good|some|new|this|that)$/i.test(query)) return null;
   return explicit ? { query: query.slice(0, 80), source, explicit } : { query: query.slice(0, 80), source };
 }

@@ -52,10 +52,5 @@ export function subjectSearchQuery(subject: string): string {
 }
 
 export function visualAnswerNote(subject: string): string {
-  return `VISUAL ANSWER — the user is talking about "${subject}". Keep your personality, opinions and casual voice exactly as usual, but deliver it as an immersive, magazine-style layout instead of a wall of text. Mix short prose with \`\`\`ui blocks:
-1. Open with 1-2 lines of genuine reaction in plain prose.
-2. A figure block with your main take or who they are, a picture of the subject beside it ("imageRef" from the research dossier if one is listed, otherwise "imageQuery": "<subject> <series/context> official art").
-3. Analysis that fits THIS topic, 1-3 more blocks you choose. Ideas: key_value "At a glance" (series, role, debut, creator... only facts from research); tabs or accordion with 2-4 angles worth discussing (e.g. competing interpretations, lore/theories, why fans love or hate it, your verdict); a mosaic gallery of 3-4 different scenes/art (each with its own imageQuery or imageRef); a callout quote (verbatim only); probability_bars or a chart ONLY when it fits, labelled as your subjective take.
-4. Close with your follow-up question or reaction in prose.
-Write the text inside the blocks in your own voice too, not like an encyclopedia. Use 3-5 blocks total. Never invent facts, quotes or image URLs.`;
+  return `VISUAL ANSWER — the user is talking about "${subject}". Compose the conversation itself using chat-layout text, image, row, column and grid primitives. Choose a fresh arrangement around what you actually want to say: a figure beside an opinion, images between relevant paragraphs, an asymmetric comparison, or another composition of your own. You decide the number, order, proportions and grouping of images and text without asking the user. There is no required opening, hero, section sequence, UI card or block count. Keep your natural voice and distinguish opinions from researched facts. Use specific imageQuery searches for relevant pictures of ${subject}; never invent facts, quotes or image URLs.`;
 }

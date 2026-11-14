@@ -28,8 +28,6 @@ import { Separator } from "@/components/ui/separator";
 import { useBrowserInfo } from "@/hooks/use-browser-info";
 import { useLocation } from "@/hooks/use-location";
 import { usePermissions } from "@/hooks/use-permissions";
-import { audioManager } from "@/lib/audio-manager";
-import { VOICE_PRESETS } from "@/lib/voice-synth";
 import { themes } from "@/lib/themes";
 import type { AppSettings } from "@/types/chat";
 
@@ -390,29 +388,8 @@ export function SettingsPanel({
             Voice
           </h3>
           <div className="glass-panel rounded-xl p-4 space-y-3">
-            <div className="flex flex-col gap-1">
-              {Object.entries(VOICE_PRESETS).map(([key, preset]) => (
-                <Button
-                  key={key}
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    updateSetting("voicePreset", key);
-                    audioManager?.setVoice(key);
-                  }}
-                  className={`h-8 justify-start rounded-lg px-3 text-[12px] font-medium transition-all ${
-                    settings.voicePreset === key
-                      ? "bg-[var(--senko-accent)]/15 text-[var(--senko-accent)]"
-                      : "text-zinc-500 hover:bg-white/5 hover:text-zinc-400"
-                  }`}
-                >
-                  {preset.name}
-                </Button>
-              ))}
-            </div>
-            <p className="text-[10px] text-zinc-600 leading-relaxed">
-              Powered by ElevenLabs. Click the speaker icon on any message to hear it spoken.
-            </p>
+            <p className="text-xs text-zinc-400">The server selects an available speech engine. Each audio message identifies the actual voice, including fallback voices.</p>
+            <p className="text-[10px] text-zinc-600 leading-relaxed">Choose an audio duration in the chat composer when requesting a voice message. Use the audio player to play, pause, seek, or download.</p>
           </div>
         </section>
       </div>

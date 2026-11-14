@@ -5,12 +5,15 @@
 const nextConfig = {
   reactCompiler: true,
   devIndicators: false,
+  outputFileTracingIncludes: { "/api/*": ["./scripts/windows-voice.ps1", "./scripts/senko-voice*.mjs", "./voice/senko/voicebank.json", "./node_modules/@echogarden/espeak-ng-emscripten/**/*", "./node_modules/ffmpeg-static/ffmpeg*"] },
   // Lets a second dev server (e.g. for screenshot tests) run beside the main one.
   ...(process.env.NEXT_DIST_DIR ? { distDir: process.env.NEXT_DIST_DIR } : {}),
   // Prisma Compute deploys the standalone server; the deploy workflow sets this.
   ...(process.env.NEXT_OUTPUT_STANDALONE === "1" ? { output: "standalone" } : {}),
   // Playwright and esbuild ship native binaries; load them from node_modules at runtime instead of bundling them.
   serverExternalPackages: [
+    "@echogarden/espeak-ng-emscripten",
+    "ffmpeg-static",
     "playwright",
     "playwright-core",
     "esbuild",

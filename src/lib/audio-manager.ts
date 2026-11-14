@@ -17,7 +17,9 @@ class AudioManager {
   constructor() {
     if (voiceSynth) {
       voiceSynth.subscribe((synthState) => {
-        if (synthState === "speaking") {
+        if (synthState === "loading") {
+          this.setState("loading", this.currentMessageId);
+        } else if (synthState === "speaking") {
           this.setState("playing", this.currentMessageId);
         } else if (synthState === "paused") {
           this.setState("paused", this.currentMessageId);

@@ -68,7 +68,12 @@ export function route<Ctx>(
 }
 
 export function errorResponse(e: unknown): Response {
-  if (e instanceof HttpError) return Response.json({ error: e.message }, { status: e.status });
+  if (e instanceof HttpError) {
+    const detail = e as HttpError & { code?: string; retryAfter?: number };
+    return Response.json({ error: e.message, code: detail.code, retryAfter: detail.retryAfter }, {
+      status: e.status, headers: detail.retryAfter ? { "Retry-After": String(detail.retryAfter) } : undefined,
+    });
+  }
   console.error("[api]", e);
   const msg = e instanceof Error ? e.message : String(e);
   return Response.json({ error: `Server error: ${msg}` }, { status: 500 });

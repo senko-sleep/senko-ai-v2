@@ -1,0 +1,15 @@
+{
+  "sentence": "Hey, welcome back. I think a memorable character needs a little courage, a little chaos, and someone who sees them clearly.",
+  "heldOut": [
+    "The little fox waited by the window while the rain tapped softly on the glass.",
+    "A good story gives every choice a consequence, even when nobody else is watching.",
+    "Would you trust a hero who always knows exactly what to say?",
+    "Please bring a blue notebook and three clean glasses to the kitchen table.",
+    "You do not have to be perfect to make something worth sharing.",
+    "Some characters hide their fear behind a joke. Others find the courage to ask for help."
+  ],
+  "moods": ["neutral", "soft", "excited", "sleepy", "sassy"],
+  "maxAggregateWordErrorRate": 0.2,
+  "maxCaseWordErrorRate": 0.4,
+  "note": "ASR intelligibility thresholds measure recognition, not subjective voice quality or similarity to any character. Evaluation uses a separate pretrained recognizer, not a speech-generation model."
+}

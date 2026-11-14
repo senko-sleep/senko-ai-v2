@@ -80,177 +80,74 @@ function cleanTextForTTS(text: string): string {
 // VOICE SYNTHESIZER CLASS — ElevenLabs via /api/tts proxy
 // ═══════════════════════════════════════════════════════════════════════════
 
-export type SynthState = "idle" | "speaking" | "paused";
+export type SynthState = "idle" | "loading" | "speaking" | "paused";
 type StateListener = (state: SynthState) => void;
 
 class VoiceSynthesizer {
   private currentPreset: VoicePreset = VOICE_PRESETS.senko;
   private state: SynthState = "idle";
-  private listeners: Set<StateListener> = new Set();
+  private listeners = new Set<StateListener>();
   private currentAudio: HTMLAudioElement | null = null;
   private currentObjectUrl: string | null = null;
-  private stopRequested = false;
-
-  private setState(state: SynthState) {
-    this.state = state;
-    this.listeners.forEach((l) => l(state));
-  }
-
-  subscribe(listener: StateListener): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-
-  getState(): SynthState { return this.state; }
-
-  setVoice(presetKey: string) {
-    if (VOICE_PRESETS[presetKey]) {
-      this.currentPreset = VOICE_PRESETS[presetKey];
-    }
-  }
-
-  getVoice(): VoicePreset { return this.currentPreset; }
-
-  getAvailableVoices(): { key: string; preset: VoicePreset }[] {
-    return Object.entries(VOICE_PRESETS).map(([key, preset]) => ({ key, preset }));
-  }
-
-  private revokeObjectUrl() {
-    if (this.currentObjectUrl) {
-      URL.revokeObjectURL(this.currentObjectUrl);
-      this.currentObjectUrl = null;
-    }
-  }
-
-  // -- Web Speech API fallback (free, built into browser) -------------------
-  private currentUtterance: SpeechSynthesisUtterance | null = null;
-
-  private speakWithWebSpeech(text: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!window.speechSynthesis) {
-        reject(new Error("Web Speech API not available"));
-        return;
-      }
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 1.05;
-      utterance.pitch = 1.1;
-      utterance.volume = 1;
-      // Pick a female voice if available
-      const voices = window.speechSynthesis.getVoices();
-      const female = voices.find(
-        (v) => v.lang.startsWith("en") && /female|woman|girl|zira|hazel|susan|samantha/i.test(v.name)
-      ) || voices.find((v) => v.lang.startsWith("en")) || voices[0];
-      if (female) utterance.voice = female;
-
-      this.currentUtterance = utterance;
-      utterance.onend = () => { this.currentUtterance = null; resolve(); };
-      utterance.onerror = (e) => { this.currentUtterance = null; reject(new Error(e.error)); };
-      window.speechSynthesis.speak(utterance);
-    });
-  }
+  private controller: AbortController | null = null;
+  private finishPlayback: (() => void) | null = null;
+  private job = 0;
+  private setState(state: SynthState) { this.state = state; this.listeners.forEach(l => l(state)); }
+  subscribe(listener: StateListener) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
+  getState() { return this.state; }
+  setVoice(key: string) { if (VOICE_PRESETS[key]) this.currentPreset = VOICE_PRESETS[key]; }
+  getVoice() { return this.currentPreset; }
+  getAvailableVoices() { return []; } // Engine availability and selection are server-owned.
 
   async speak(text: string): Promise<void> {
-    this.stop();
-    this.stopRequested = false;
-
+    if (this.state !== "idle") this.stop();
     const clean = cleanTextForTTS(text);
     if (!clean) return;
-
-    this.setState("speaking");
-
+    const job = ++this.job;
+    const controller = new AbortController();
+    this.controller = controller;
+    let url: string | undefined;
+    this.setState("loading");
     try {
-      const res = await fetch("/api/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: clean,
-          voiceId: this.currentPreset.voiceId,
-          stability: this.currentPreset.stability,
-          similarityBoost: this.currentPreset.similarityBoost,
-          style: this.currentPreset.style,
-        }),
-      });
-
+      const res = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: clean }), signal: controller.signal });
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: res.statusText }));
-        const status = res.status;
-        // 429 = quota exceeded, 401/403 = key invalid — fall back to Web Speech
-        if (status === 429 || status === 401 || status === 403) {
-          console.warn(`[VoiceSynth] ElevenLabs ${status}, falling back to Web Speech API`);
-          if (this.stopRequested) { this.setState("idle"); return; }
-          await this.speakWithWebSpeech(clean);
-          return;
-        }
-        throw new Error(err.error || `TTS request failed: ${status}`);
+        const error = await res.json().catch(() => ({}));
+        throw new Error(error.error || `Voice generation failed (${res.status})`);
       }
-
-      if (this.stopRequested) { this.setState("idle"); return; }
-
       const blob = await res.blob();
-      if (this.stopRequested) { this.setState("idle"); return; }
-
-      const url = URL.createObjectURL(blob);
+      if (controller.signal.aborted || job !== this.job) return;
+      url = URL.createObjectURL(blob);
       this.currentObjectUrl = url;
-
       const audio = new Audio(url);
       this.currentAudio = audio;
-
       await new Promise<void>((resolve, reject) => {
+        this.finishPlayback = resolve;
+        audio.onplaying = () => { if (job === this.job) this.setState("speaking"); };
         audio.onended = () => resolve();
-        audio.onerror = () => reject(new Error("Audio playback error"));
+        audio.onerror = () => reject(new Error("Audio playback failed"));
         audio.play().catch(reject);
       });
-    } catch (err) {
-      if (!this.stopRequested) {
-        console.error("[VoiceSynth] ElevenLabs error:", err);
-        throw err;
-      }
+    } catch (error) {
+      if (!controller.signal.aborted) throw error;
     } finally {
-      this.revokeObjectUrl();
-      this.currentAudio = null;
-      if (!this.stopRequested) this.setState("idle");
+      if (url) URL.revokeObjectURL(url);
+      if (job === this.job) {
+        this.currentAudio = null; this.currentObjectUrl = null; this.controller = null; this.finishPlayback = null;
+        this.setState("idle");
+      }
     }
   }
-
-  pause() {
-    if (this.state !== "speaking") return;
-    if (this.currentAudio) {
-      this.currentAudio.pause();
-    } else if (this.currentUtterance && window.speechSynthesis) {
-      window.speechSynthesis.pause();
-    }
-    this.setState("paused");
-  }
-
-  resume() {
-    if (this.state !== "paused") return;
-    if (this.currentAudio) {
-      this.currentAudio.play().catch(() => {});
-    } else if (window.speechSynthesis) {
-      window.speechSynthesis.resume();
-    }
-    this.setState("speaking");
-  }
-
+  pause() { if (this.state === "speaking") { this.currentAudio?.pause(); this.setState("paused"); } }
+  resume() { if (this.state === "paused") void this.currentAudio?.play().catch(() => this.stop()); }
   stop() {
-    this.stopRequested = true;
-    if (this.currentAudio) {
-      this.currentAudio.pause();
-      this.currentAudio = null;
-    }
-    if (window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-    }
-    this.currentUtterance = null;
-    this.revokeObjectUrl();
+    this.job++;
+    this.controller?.abort(); this.controller = null;
+    this.currentAudio?.pause(); this.currentAudio = null;
+    this.finishPlayback?.(); this.finishPlayback = null;
+    if (this.currentObjectUrl) URL.revokeObjectURL(this.currentObjectUrl);
+    this.currentObjectUrl = null;
     this.setState("idle");
   }
-
-  async toggle(text: string): Promise<void> {
-    if (this.state === "speaking") { this.stop(); }
-    else { await this.speak(text); }
-  }
+  async toggle(text: string) { if (this.state !== "idle") this.stop(); else await this.speak(text); }
 }
-
-// Singleton instance
 export const voiceSynth = typeof window !== "undefined" ? new VoiceSynthesizer() : null;

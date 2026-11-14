@@ -1,0 +1,27 @@
+{
+  "scope": "Chat composition acceptance: unequal columns, interleaved images/text, mobile stacking, full gallery",
+  "message": {
+    "id": "chat-composition-acceptance",
+    "role": "assistant",
+    "content": "I love how much personality they fit into these designs.\n\n```chat-layout\n{\"type\": \"row\", \"gap\": 24, \"children\": [{\"type\": \"text\", \"weight\": 2, \"text\": \"## Same family, different directions\\n\\nEevee and its evolutions are a great example of how one character design can branch into very different personalities.\\n\\n**Eevee** keeps the warm, soft silhouette. The evolutions change its shapes and colors to suit each type.\"}, {\"type\": \"image\", \"image\": 0, \"alt\": \"Eevee\", \"aspect\": \"square\", \"caption\": \"The starting point\"}]}\n```\n\n```chat-layout\n{\"type\": \"grid\", \"columns\": 3, \"gap\": 16, \"children\": [{\"type\": \"image\", \"image\": 1, \"alt\": \"Vaporeon\", \"aspect\": \"square\", \"caption\": \"Vaporeon: fins and flowing lines\"}, {\"type\": \"text\", \"text\": \"### Water and electricity\\n\\nVaporeon looks smooth and aquatic, while Jolteon uses sharp angles to suggest electricity.\\n\\nThe pictures sit beside the comparison they explain.\"}, {\"type\": \"image\", \"image\": 2, \"alt\": \"Jolteon\", \"aspect\": \"square\", \"caption\": \"Jolteon: a spiky silhouette\"}]}\n```\n\nWhich direction would you pick?",
+    "scrapedImages": [
+      {
+        "url": "/test-fixtures/ui-generation/assets/133.png",
+        "alt": "Eevee"
+      },
+      {
+        "url": "/test-fixtures/ui-generation/assets/134.png",
+        "alt": "Vaporeon"
+      },
+      {
+        "url": "/test-fixtures/ui-generation/assets/135.png",
+        "alt": "Jolteon"
+      },
+      {
+        "url": "/test-fixtures/ui-generation/assets/136.png",
+        "alt": "Flareon"
+      }
+    ],
+    "imageQuery": "Eevee evolutions"
+  }
+}

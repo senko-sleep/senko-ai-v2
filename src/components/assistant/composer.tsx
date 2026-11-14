@@ -14,6 +14,8 @@ export interface Attachment {
 
 export function Composer({
   value,
+  voiceDuration = 30,
+  onVoiceDurationChange,
   onChange,
   onSubmit,
   onStop,
@@ -28,6 +30,8 @@ export function Composer({
   footer,
 }: {
   value: string;
+  voiceDuration?: number;
+  onVoiceDurationChange?: (seconds: number) => void;
   onChange: (v: string) => void;
   onSubmit: () => void;
   onStop: () => void;
@@ -41,6 +45,18 @@ export function Composer({
   inputRef: RefObject<HTMLTextAreaElement | null>;
   footer?: React.ReactNode;
 }) {
+  const [durationOptions, setDurationOptions] = useState([5, 15, 30, 60, 120]);
+  useEffect(() => {
+    const ctl = new AbortController();
+    void fetch("/api/tts", { signal: ctl.signal }).then(r => r.ok ? r.json() : null).then(data => {
+      if (!data?.limits) return;
+      const { minSeconds, maxSeconds, defaultSeconds } = data.limits;
+      const options = [...new Set([minSeconds, defaultSeconds, 5, 15, 30, 60, 120, maxSeconds])].filter(n => n >= minSeconds && n <= maxSeconds).sort((a, b) => a - b);
+      setDurationOptions(options);
+      if (!options.includes(voiceDuration)) onVoiceDurationChange?.(defaultSeconds);
+    }).catch(() => {});
+    return () => ctl.abort();
+  }, [voiceDuration, onVoiceDurationChange]);
   const fileRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
@@ -181,6 +197,7 @@ export function Composer({
         />
 
         <div className="flex shrink-0 items-center gap-1.5">
+          {onVoiceDurationChange && /\b(?:voice|audio|podcast|out loud|aloud)\b/i.test(value) && <label className="text-xs text-[var(--sk-muted)]">Audio limit <select aria-label="Voice duration" disabled={busy} value={voiceDuration} onChange={e => onVoiceDurationChange(Number(e.target.value))} className="rounded bg-[var(--sk-surface)] p-1">{durationOptions.map(seconds => <option key={seconds} value={seconds}>{seconds}s</option>)}</select></label>}
           {footer}
           {busy ? (
             <button

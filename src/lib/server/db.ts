@@ -12,6 +12,15 @@ interface Driver {
 }
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS voice_usage (
+  owner_id TEXT PRIMARY KEY,
+  attempts BIGINT[] NOT NULL
+);
+CREATE TABLE IF NOT EXISTS voice_slots (
+  slot TEXT PRIMARY KEY,
+  token TEXT NOT NULL,
+  expires_at BIGINT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS owners (
   id TEXT PRIMARY KEY,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()

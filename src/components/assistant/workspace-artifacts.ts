@@ -134,7 +134,7 @@ export function extractCodeArtifacts(
     let localIndex = 0;
     while ((match = fenceRegex.exec(m.content)) !== null) {
       const rawLang = (match[1] || "").trim().toLowerCase();
-      if (rawLang === "ui" || rawLang === "senko-ui" || rawLang === "widget") continue;
+      if (rawLang === "ui" || rawLang === "senko-ui" || rawLang === "widget" || rawLang === "chat-layout") continue;
       const code = (match[2] || "").replace(/\n$/, "");
       if (code.trim().length < 16) continue;
       const lineCount = code.split("\n").length;

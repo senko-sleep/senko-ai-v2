@@ -7,6 +7,8 @@ import { AUTH_COOKIE, PROXY_TOKEN_PARAM, accessKey, liveToken, verifyDeviceToken
 const PUBLIC_API = new Set(["/api/health", "/api/access", "/api/link/claim", "/api/me"]);
 const SIGNED_LIVE_PATH = /^\/api\/sessions\/[^/]+\/(stream|input)$/;
 const PROXY_PATH = /^\/api\/(?:proxy|video-proxy)$/;
+/** Proxied scripts carry the token in the path (their relative imports drop the query). */
+const PROXY_SCRIPT_PATH = /^\/api\/proxy\/m\/([^/]+)\//;
 
 // Calls that need the real browser. With AGENT_HOST=sandbox they go to the agent
 // computer (a Vercel Sandbox running this same app); see src/lib/server/agent-host.ts.
@@ -36,10 +38,23 @@ async function forwardToAgentHost(req: NextRequest): Promise<NextResponse | null
 
 export async function proxy(req: NextRequest) {
   const path = req.nextUrl.pathname;
+  // A proxied page shows its router the site's real path ("/browse?__sp=<real url>"). A reload
+  // or Back inside the embed asks us for that path: send it through the proxy again, never
+  // to the app's own pages.
+  const sp = req.nextUrl.searchParams.get("__sp");
+  if (sp && !path.startsWith("/api/") && /^https?:\/\//i.test(sp)) {
+    const to = new URL("/api/proxy", req.url);
+    to.searchParams.set("url", sp);
+    const pt = req.nextUrl.searchParams.get(PROXY_TOKEN_PARAM);
+    if (pt) to.searchParams.set(PROXY_TOKEN_PARAM, pt);
+    return NextResponse.rewrite(to);
+  }
   // The stream and input handlers validate the chat-scoped token on direct links.
   const signedLive = SIGNED_LIVE_PATH.test(path) && (req.method === "OPTIONS" || liveToken(req));
   // Sandboxed embed pages send no cookie; their proxy requests carry a signed token instead.
-  const signedProxy = PROXY_PATH.test(path) && (await verifyProxyToken(req.nextUrl.searchParams.get(PROXY_TOKEN_PARAM)));
+  const scriptToken = PROXY_SCRIPT_PATH.exec(path)?.[1];
+  const signedProxy = (PROXY_PATH.test(path) && (await verifyProxyToken(req.nextUrl.searchParams.get(PROXY_TOKEN_PARAM))))
+    || (!!scriptToken && (await verifyProxyToken(decodeURIComponent(scriptToken))));
   if (accessKey() && path.startsWith("/api/") && !PUBLIC_API.has(path) && !signedLive && !signedProxy) {
     const deviceId = await verifyDeviceToken(req.cookies.get(AUTH_COOKIE)?.value);
     if (!deviceId) {
@@ -54,5 +69,5 @@ export async function proxy(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/api/:path*"],
+  matcher: ["/api/:path*", { source: "/((?!_next/).*)", has: [{ type: "query", key: "__sp" }] }],
 };

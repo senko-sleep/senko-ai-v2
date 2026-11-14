@@ -121,6 +121,7 @@ export default function AssistantApp() {
 
   // ---- UI ----------------------------------------------------------------
   const [input, setInput] = useState("");
+  const [voiceDuration, setVoiceDuration] = useState(30);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [busy, setBusy] = useState(false);
   const [streamingId, setStreamingId] = useState<string | null>(null);
@@ -655,10 +656,21 @@ export default function AssistantApp() {
   }, [newChat, sidebarOpen]);
 
   // ---- auto-scroll -------------------------------------------------------
+  // Follow new content while the reader is at the bottom. Whether they are is decided by their
+  // own scrolling *before* the update: measuring after it would stop following whenever one
+  // update adds a lot at once (an embed card or a gallery is 500px+).
+  const pinnedRef = useRef(true);
+  const autoScrollUntil = useRef(0);
+  const onListScroll = useCallback(() => {
+    const el = listRef.current;
+    if (!el || Date.now() < autoScrollUntil.current) return; // our own smooth scroll, still moving
+    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
+  }, []);
   useEffect(() => {
     const el = listRef.current;
-    if (!el) return;
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    if (!el || !pinnedRef.current) return;
+    autoScrollUntil.current = Date.now() + 900;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
   // ---- attachments ---------------------------------------------------------
@@ -724,6 +736,7 @@ export default function AssistantApp() {
             provider,
             truncateFrom: opts?.truncateFrom,
             timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            voiceDurationSeconds: voiceDuration,
           }),
           signal: ctl.signal,
         });
@@ -847,7 +860,7 @@ export default function AssistantApp() {
         void refreshChats(); // the title may have been set from this message
       }
     },
-    [patch, provider, refreshChats]
+    [patch, provider, refreshChats, voiceDuration]
   );
 
   // ---- you driving the browser -------------------------------------------------
@@ -1318,6 +1331,8 @@ export default function AssistantApp() {
         reply.actions = [cmd];
       }
       setMessages((ms) => [...ms, user, reply]);
+      pinnedRef.current = true;
+      autoScrollUntil.current = Date.now() + 900;
       requestAnimationFrame(() => listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" }));
 
       let chatId: string;
@@ -1377,6 +1392,8 @@ export default function AssistantApp() {
       }
 
       setMessages([...prior, user, reply]);
+      pinnedRef.current = true;
+      autoScrollUntil.current = Date.now() + 900;
       requestAnimationFrame(() => listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" }));
 
       let chatId: string;
@@ -1668,6 +1685,8 @@ export default function AssistantApp() {
   const composer = (
     <Composer
       value={input}
+      voiceDuration={voiceDuration}
+      onVoiceDurationChange={setVoiceDuration}
       onChange={setInput}
       onSubmit={() => void send(input)}
       onStop={stop}
@@ -1921,7 +1940,7 @@ export default function AssistantApp() {
               />
             </div>
           ) : (
-              <div ref={listRef} className="sk-scroll min-h-0 flex-1 overflow-y-auto" aria-live="polite" aria-busy={busy}>
+              <div ref={listRef} onScroll={onListScroll} className="sk-scroll min-h-0 flex-1 overflow-y-auto" aria-live="polite" aria-busy={busy}>
                 <div className="mx-auto w-full max-w-[700px] space-y-5 px-4 pb-6 pt-4 sm:px-6">
                   {chatLoading ? (
                     <div className="flex justify-center pt-12 text-[var(--sk-faint)]">

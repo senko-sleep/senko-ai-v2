@@ -22,6 +22,10 @@ const LEAD = new RegExp(
       "please\\s+",
       "pls\\s+",
       "i\\s+(?:want|need|wanna)\\s+(?:you\\s+to\\s+)?",
+      // Conversational glue a follow-up starts with ("now ...", "ok so ...", "no I meant ...").
+      "(?:no|nah|nope)[,.!]*\\s+",
+      "i\\s+(?:mean|meant)[,:]?\\s+",
+      "(?:now|also|and|then|next|alright|ok\\s+so|so|actually|instead|just)[,.!]*\\s+",
     ].join("|") +
     ")",
   "i",
@@ -42,6 +46,9 @@ const IMAGE_ASK = /\b(?:pics?|pictures?|images?|photos?|wallpapers?|gifs?|collag
 function tidy(s: string): string {
   return s
     .replace(/[“”"`]/g, "")
+    // Search engines can't pick at random: "a random hentai site" searches "hentai site".
+    .replace(/^(?:(?:a|an|some|one)\s+)?(?:random|any|good|cool|nice)\s+/i, "")
+    .replace(/^(?:a|an|some|one)\s+(?=.*\b(?:web\s?)?sites?$)/i, "")
     .replace(/\s+(?:for\s+me|please|pls|plz|thanks|thank\s+you|rn|now)\s*$/gi, "")
     .replace(/\s+(?:on|in|using|with)\s+(?:google|bing|duckduckgo|ddg|the\s+(?:web|internet))\s*$/i, "")
     .replace(/\s*\b(?:results?|links?)\s*$/i, "")

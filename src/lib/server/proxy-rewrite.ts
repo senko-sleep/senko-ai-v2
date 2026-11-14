@@ -21,7 +21,36 @@ function originOf(url: string): string {
 
 /** Proxied URL for a sub-resource (image, script, stylesheet, media, XHR). `ref` = the page's origin, sent as Referer. */
 export function proxyAsset(absUrl: string, ref?: string): string {
+  const script = scriptPath(absUrl);
+  if (script) return script;
   return `/api/proxy?asset=1${ref ? `&ref=${encodeURIComponent(ref)}` : ""}&url=${encodeURIComponent(absUrl)}`;
+}
+
+/**
+ * Scripts are served at a path that mirrors the site's own (/api/proxy/m/<token>/<origin>/<path>)
+ * so a module's relative imports ("./chunk-123.js") resolve back into the proxy instead of onto
+ * our server. "_" stands for the token until withProxyToken stamps it.
+ */
+export function scriptPath(absUrl: string): string | null {
+  try {
+    const u = new URL(absUrl);
+    if (!/^https?:$/.test(u.protocol) || !/\.m?js$/i.test(u.pathname)) return null;
+    return `/api/proxy/m/_/${encodeURIComponent(u.origin)}${u.pathname}${u.search}`;
+  } catch {
+    return null;
+  }
+}
+
+/** The page URL a /api/proxy/m/... script path stands for (null if it isn't one). */
+export function scriptPathTarget(pathname: string, search: string): { token: string; url: string } | null {
+  const m = /^\/api\/proxy\/m\/([^/]+)\/([^/]+)(\/.*)?$/.exec(pathname);
+  if (!m) return null;
+  try {
+    const origin = new URL(decodeURIComponent(m[2])).origin;
+    return { token: decodeURIComponent(m[1]), url: origin + (m[3] || "/") + search };
+  } catch {
+    return null;
+  }
 }
 
 /** Proxied URL for a page (navigation, iframes). */
@@ -38,6 +67,7 @@ export function withProxyToken(text: string, token: string | undefined): string 
   if (!token) return text;
   const t = encodeURIComponent(token);
   return text
+    .replace(/\/api\/proxy\/m\/_\//g, `/api/proxy/m/${t}/`)
     .replace(/(\/api\/(?:video-)?proxy\?)(?!pt=)/g, `$1pt=${t}&`)
     .replace(/(<form\b[^>]*\saction="\/api\/proxy"[^>]*>)/gi, `$1<input type="hidden" name="pt" value="${t}"/>`);
 }
@@ -169,6 +199,48 @@ export function proxyClientScript(pageUrl: string): string {
   var PAGE_ORIGIN = ${js(originOf(pageUrl))};
   // Sandboxed (opaque origin): location.origin is "null", so build it from the URL.
   var SELF = location.protocol + '//' + location.host;
+  var TOKEN = new URLSearchParams(location.search).get('pt') || '_';
+  // Client-side routers read location.pathname, which here is "/api/proxy": they match no route
+  // and draw nothing. Show the page its real path instead. "__sp" (the real page) keeps the URL
+  // proxied: a reload or Back on it is sent through the proxy again (see src/proxy.ts).
+  var origReplaceState = history.replaceState;
+  function framePath(real){
+    try {
+      var u = new URL(real);
+      return u.pathname + (u.search ? u.search + '&' : '?') + '__sp=' + encodeURIComponent(real) + (TOKEN !== '_' ? '&pt=' + encodeURIComponent(TOKEN) : '') + u.hash;
+    } catch(e){ return null; }
+  }
+  try { var fp = framePath(PAGE_BASE); if (fp) origReplaceState.call(history, history.state, '', fp); } catch(e){}
+  // The sandbox makes localStorage / sessionStorage / document.cookie throw SecurityError, and
+  // many sites touch them first thing, so their scripts die before drawing anything. Give the
+  // page per-load, in-memory stand-ins (nothing reaches our origin's storage or cookies).
+  (function(){
+    function memStorage(){
+      var d = {};
+      return {
+        get length(){ return Object.keys(d).length; },
+        key: function(i){ return Object.keys(d)[i] === undefined ? null : Object.keys(d)[i]; },
+        getItem: function(k){ k = String(k); return Object.prototype.hasOwnProperty.call(d, k) ? d[k] : null; },
+        setItem: function(k, v){ d[String(k)] = String(v); },
+        removeItem: function(k){ delete d[String(k)]; },
+        clear: function(){ d = {}; }
+      };
+    }
+    ['localStorage', 'sessionStorage'].forEach(function(name){
+      try { window[name].length; } catch(e) {
+        try { Object.defineProperty(window, name, { value: memStorage(), configurable: true }); } catch(e2) {}
+      }
+    });
+    try { document.cookie; } catch(e) {
+      var jar = {};
+      try {
+        Object.defineProperty(Document.prototype, 'cookie', { configurable: true,
+          get: function(){ return Object.keys(jar).map(function(k){ return k + '=' + jar[k]; }).join('; '); },
+          set: function(v){ var p = String(v).split(';')[0]; var i = p.indexOf('='); if (i > 0) { var k = p.slice(0, i).trim(); if (/max-age=0|expires=thu, 01 jan 1970/i.test(v)) delete jar[k]; else jar[k] = p.slice(i + 1).trim(); } }
+        });
+      } catch(e2) {}
+    }
+  })();
   window.addEventListener('message', function(e){ if (e.source === window.parent && e.data && e.data.senkoEmbedCmd === 'back') history.back(); });
   var AD_HOSTS = ${JSON.stringify(AD_HOSTS)};
   function isAd(u){ try { var h = new URL(u).hostname; return AD_HOSTS.some(function(d){ return h===d || h.endsWith('.'+d); }); } catch(e){ return false; } }
@@ -178,6 +250,10 @@ export function proxyClientScript(pageUrl: string): string {
     if (!raw || /^(data:|blob:|javascript:|about:|mailto:|tel:|#)/i.test(raw)) return null;
     if (raw.indexOf('/api/proxy') === 0 || raw.indexOf(SELF + '/api/proxy') === 0) return null;
     if (raw.indexOf(SELF + '/') === 0) raw = raw.slice(SELF.length); // a relative URL the browser already resolved against us
+    // Built from location.href (the real path plus our markers): drop the markers again.
+    if (raw.charAt(0) === '/' && /[?&]__sp=/.test(raw)) {
+      try { var cu = new URL(raw, PAGE_ORIGIN); cu.searchParams.delete('__sp'); cu.searchParams.delete('pt'); raw = cu.pathname + cu.search + cu.hash; } catch(e){}
+    }
     try {
       if (raw.indexOf('//') === 0) return location.protocol + raw;
       if (raw.charAt(0) === '/') return PAGE_ORIGIN + raw;
@@ -185,9 +261,15 @@ export function proxyClientScript(pageUrl: string): string {
       return new URL(raw, PAGE_BASE).href;
     } catch(e){ return null; }
   }
-  function assetUrl(raw){ var r = resolveAgainstPage(raw); if (!r || isAd(r)) return null; return '/api/proxy?asset=1&ref=' + encodeURIComponent(PAGE_ORIGIN) + '&url=' + encodeURIComponent(r); }
+  function assetUrl(raw){
+    var r = resolveAgainstPage(raw); if (!r || isAd(r)) return null;
+    try { var u = new URL(r); if (/\\.m?js$/i.test(u.pathname)) return '/api/proxy/m/' + encodeURIComponent(TOKEN) + '/' + encodeURIComponent(u.origin) + u.pathname + u.search; } catch(e){}
+    return '/api/proxy?asset=1&ref=' + encodeURIComponent(PAGE_ORIGIN) + '&url=' + encodeURIComponent(r);
+  }
   function pageUrl(raw){ var r = resolveAgainstPage(raw); if (!r || isAd(r)) return null; return '/api/proxy?url=' + encodeURIComponent(r); }
   function announce(){ try { if (window.parent !== window) window.parent.postMessage({ senkoEmbed: 1, url: PAGE_BASE, title: document.title }, '*'); } catch(e){} }
+  // DOM ready is enough to say the page is up: slow ads and trackers can hold 'load' back for ages.
+  document.addEventListener('DOMContentLoaded', announce);
   window.addEventListener('load', announce);
 
   document.addEventListener('click', function(e){
@@ -285,11 +367,12 @@ export function proxyClientScript(pageUrl: string): string {
     if (document.documentElement) start(); else document.addEventListener('DOMContentLoaded', start);
   }
 
-  // pushState('/video/123') would point the frame at our own server; keep it in the proxy.
+  // pushState('/video/123') would point the frame at our own server: keep the real path for the
+  // page's router, marked so a reload goes back through the proxy.
   ['pushState', 'replaceState'].forEach(function(k){
     var orig = history[k];
     history[k] = function(state, title, url){
-      if (url != null) { var r = resolveAgainstPage(url); if (r) { PAGE_BASE = r; url = '/api/proxy?url=' + encodeURIComponent(r); } }
+      if (url != null) { var r = resolveAgainstPage(url); if (r) { PAGE_BASE = r; url = framePath(r) || ('/api/proxy?url=' + encodeURIComponent(r)); } }
       var out = orig.call(this, state, title, url); announce(); return out;
     };
   });

@@ -33,12 +33,66 @@ function errorPage(url: string, why: string, status = 200): Response {
 </style></head><body><div class="box">
   <h2>Couldn't load this site inline</h2><p>${why.replace(/</g, "&lt;")}</p>
   <p style="margin-top:1rem"><a href="${safe}" target="_blank" rel="noopener">Open in browser instead →</a></p>
-</div></body></html>`;
+</div><script>try{if(parent!==window)parent.postMessage(${JSON.stringify({ senkoEmbedError: 1, url, reason: why }).replace(/</g, "\\u003c")},"*")}catch(e){}</script></body></html>`;
   return new Response(html, { status, headers: { ...HARDEN, "Content-Type": "text/html; charset=utf-8", "X-Senko-Proxy-Error": "1" } });
 }
 
+/** Most sites POST their API calls (GraphQL, JSON) with a Content-Type that needs a preflight. */
+export async function OPTIONS(req: NextRequest) {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": req.headers.get("access-control-request-headers") || "content-type",
+      "Access-Control-Max-Age": "600",
+    },
+  });
+}
+
+const MAX_POST_BYTES = 5 * 1024 * 1024;
+
+/**
+ * An embedded page's POSTs: its own API calls (/api/proxy?asset=1&url=...) and the forms the
+ * client script sends here (the target is the form's hidden "url" field). Only with the signed
+ * token, so this isn't an open POST relay.
+ */
+export async function POST(req: NextRequest) {
+  const type = req.headers.get("content-type") || "";
+  if (Number(req.headers.get("content-length") || 0) > MAX_POST_BYTES) return new Response("too large", { status: 413 });
+  const target = new URL(req.url);
+  let body: BodyInit;
+  let contentType: string | undefined = type || undefined;
+  if (!target.searchParams.get("url") && /application\/x-www-form-urlencoded|multipart\/form-data/i.test(type)) {
+    const fd = await req.formData();
+    for (const k of ["url", PROXY_TOKEN_PARAM]) {
+      const v = fd.get(k);
+      if (typeof v === "string" && v) target.searchParams.set(k, v);
+      fd.delete(k);
+    }
+    if (/urlencoded/i.test(type)) {
+      body = new URLSearchParams([...fd.entries()].filter((e): e is [string, string] => typeof e[1] === "string")).toString();
+    } else {
+      body = fd;
+      contentType = undefined; // fetch writes the multipart boundary itself
+    }
+  } else {
+    const buf = await req.arrayBuffer();
+    if (buf.byteLength > MAX_POST_BYTES) return new Response("too large", { status: 413 });
+    body = buf;
+  }
+  return handle(new NextRequest(target, { headers: req.headers, signal: req.signal }), { body, contentType });
+}
+
 export async function GET(req: NextRequest) {
-  let url = req.nextUrl.searchParams.get("url");
+  return handle(req);
+}
+
+async function handle(req: NextRequest, post?: { body: BodyInit; contentType?: string }): Promise<Response> {
+  // "__sp": a reload / Back of an embedded page at its real path, rewritten here by src/proxy.ts
+  // (the rewrite keeps the original query, so the real URL is in the marker, not in "url").
+  const sp = req.nextUrl.searchParams.get("__sp");
+  let url = req.nextUrl.searchParams.get("url") || (sp && /^https?:\/\//i.test(sp) ? sp : null);
   if (!url) return new Response("url required", { status: 400 });
 
   // SSRF protection: block private IPs, cloud metadata, non-http schemes
@@ -49,6 +103,7 @@ export async function GET(req: NextRequest) {
   // /api/proxy?url=https://site.com/search&key=eevee -> https://site.com/search?key=eevee
   const extra = new URLSearchParams();
   req.nextUrl.searchParams.forEach((val, key) => {
+    if (sp) return; // the marker already is the full real URL
     if (key !== "url" && key !== "asset" && key !== "ref" && key !== PROXY_TOKEN_PARAM) extra.append(key, val);
   });
   if (extra.toString()) url = url + (url.includes("?") ? "&" : "?") + extra.toString();
@@ -62,6 +117,7 @@ export async function GET(req: NextRequest) {
   const tokenOk = await verifyProxyToken(pt);
   const fromApp = req.headers.get("sec-fetch-site") === "same-origin";
   if (!isAsset && !tokenOk && !fromApp) return errorPage(url, "This proxy link only works inside Senko.", 403);
+  if (post && !tokenOk && !fromApp) return new Response("signed token required", { status: 403 });
   const token = tokenOk ? pt! : await signProxyToken();
   const ref = req.nextUrl.searchParams.get("ref") || undefined;
   let referer: string;
@@ -78,9 +134,14 @@ export async function GET(req: NextRequest) {
   if (referer) headers.Referer = referer;
   const range = req.headers.get("range");
   if (range) headers.Range = range;
+  if (post?.contentType) headers["Content-Type"] = post.contentType;
+  if (post && referer) headers.Origin = referer.replace(/\/$/, "");
 
   try {
-    const { res, finalUrl, challenged } = await fetchUpstream(url, { headers, signal: req.signal, timeoutMs: isAsset ? 45_000 : 15_000 });
+    const { res, finalUrl, challenged } = await fetchUpstream(url, {
+      headers, signal: req.signal, timeoutMs: isAsset ? 45_000 : 15_000,
+      ...(post ? { method: "POST" as const, body: post.body } : {}),
+    });
     const redirectBlock = validateOrReject(finalUrl);
     if (redirectBlock) return redirectBlock;
     const contentType = res.headers.get("content-type") || "";

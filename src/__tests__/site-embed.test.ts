@@ -180,3 +180,24 @@ describe("fetchUpstream", () => {
     }
   });
 });
+
+describe("proxy: modern single-page sites", () => {
+  it("serves scripts at a path that mirrors the site, so relative module imports stay proxied", async () => {
+    const { scriptPath, scriptPathTarget, withProxyToken } = await import("@/lib/server/proxy-rewrite");
+    const p = scriptPath("https://www.site.example/assets/index-1.js?v=2")!;
+    expect(p).toBe("/api/proxy/m/_/https%3A%2F%2Fwww.site.example/assets/index-1.js?v=2");
+    expect(proxyAsset("https://www.site.example/assets/index-1.js")).toMatch(/^\/api\/proxy\/m\/_\//);
+    expect(proxyAsset("https://www.site.example/a.png")).toMatch(/^\/api\/proxy\?asset=1/);
+    // "./chunk.js" imported from that module, as the browser resolves it:
+    const chunk = new URL("./chunk-9.js", `http://localhost:3000${withProxyToken(p, "123.abc")}`);
+    expect(scriptPathTarget(chunk.pathname, chunk.search)).toEqual({ token: "123.abc", url: "https://www.site.example/assets/chunk-9.js" });
+  });
+
+  it("gives the page its real path for its router, and stubs the storage the sandbox blocks", () => {
+    const s = proxyClientScript("https://www.site.example/browse?x=1");
+    expect(s).toContain("__sp=");
+    expect(s).toContain("origReplaceState.call(history");
+    expect(s).toMatch(/localStorage', 'sessionStorage'/);
+    expect(s).toContain("Document.prototype, 'cookie'");
+  });
+});

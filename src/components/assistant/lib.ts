@@ -6,6 +6,19 @@ import type { SiteEmbedCard } from "@/lib/embed/types";
 
 export type Mode = "chat" | "agent";
 
+/** A voice message's audio (served by /api/uploads/:audioId). Mirrors VoiceMeta on the server. */
+export interface VoiceNote {
+  audioId: string;
+  mime: string;
+  engine: "senko" | "custom" | "elevenlabs" | "windows";
+  voice: string;
+  emotion?: string;
+  seconds?: number;
+  model?: string;
+  modelKind?: "authored-formant-voicebank";
+  modelFingerprint?: string;
+}
+
 export interface Msg {
   id: string;
   role: "user" | "assistant";
@@ -32,6 +45,9 @@ export interface Msg {
   search?: SearchCard;
   /** A website embedded live in the reply. */
   embed?: SiteEmbedCard;
+  /** The reply as a voice message in Senko's voice (content is the transcript). */
+  voice?: VoiceNote;
+  voiceError?: { code: string; message: string; retryAfter?: number };
   /** Senko's mood line for this reply. */
   mood?: string;
   /** Images scraped from many engines for an image request (first batch). */
@@ -89,6 +105,8 @@ export interface StoredMessage {
     comic?: ComicCard;
     search?: SearchCard;
     embed?: SiteEmbedCard;
+    voice?: VoiceNote;
+    voiceError?: { code: string; message: string; retryAfter?: number };
     thinking?: { steps: AgentStep[]; thoughts?: string; ms?: number };
   };
 }
@@ -108,6 +126,8 @@ export function fromStored(m: StoredMessage): Msg {
     comic: meta.comic,
     search: meta.search,
     embed: meta.embed,
+    voice: meta.voice?.audioId ? meta.voice : undefined,
+    voiceError: meta.voiceError,
     error: meta.error && !m.content ? meta.error : undefined,
     actions: meta.actions,
     suggestAgent: meta.suggestAgent,
@@ -251,8 +271,10 @@ export const AGENT_TAG_RE = /\[\[\s*agent\s*\]\]/gi;
 const MEMORY_TAG_RE = /\[(?:MEMORY|STATUS):[^\]\n]*\]?/gi;
 const IMAGES_TAG_RE = /\[\[\s*images?\s*:[^\]\n]*(?:\]\]?)?/gi;
 const CODE_TAG_RE = /\[\[\s*code\s*:[^\]\n]*(?:\]\]?)?/gi;
+const EMBED_TAG_RE = /\[\[\s*embed\s*:[^\]\n]*(?:\]\]?)?/gi;
+const VOICE_TAG_RE = /\[\[\s*voice\s*(?:\]\]?)?/gi;
 
 /** Hide tags the server strips anyway ([[agent]], [[images: ..]], [MEMORY:..]) while a reply is still streaming. */
 export function stripLiveTags(text: string): string {
-  return text.replace(AGENT_TAG_RE, "").replace(MEMORY_TAG_RE, "").replace(IMAGES_TAG_RE, "").replace(CODE_TAG_RE, "");
+  return text.replace(AGENT_TAG_RE, "").replace(MEMORY_TAG_RE, "").replace(IMAGES_TAG_RE, "").replace(CODE_TAG_RE, "").replace(EMBED_TAG_RE, "").replace(VOICE_TAG_RE, "");
 }
