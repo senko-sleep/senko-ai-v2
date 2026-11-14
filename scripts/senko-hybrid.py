@@ -1,8 +1,12 @@
 """Natural neural speech plus a restrained synthetic texture; no voice cloning or training.
 
-When a director performance plan is supplied, each segment is rendered with its own continuous
-prosody (pace, energy, pitch, timbre blend, pause) and vocal segments are performed as IPA
-vocalizations or synthesized breaths — never read aloud as stage-direction words.
+Context-aware expressive conditioning:
+When a performance plan is supplied, each phrase segment is synthesized with continuous latent
+style conditioning (`condition_style`) and speed inside the Kokoro-82M neural forward pass —
+never post-processing audio with artificial pitch-shifting DSP. Senko's core voice identity
+(50% af_heart, 30% af_bella, 20% af_nicole) remains anchored while pitch tendency, energy,
+warmth, brightness, breathiness, and word-level emphasis modulate the neural style embedding
+and phoneme stress naturally across the utterance.
 """
 import hashlib
 import json
@@ -51,48 +55,12 @@ def hybrid_texture(audio, sample_rate, config, scale=1.0):
     return result.astype(np.float32)
 
 
-def shift_pitch_keep_duration(audio, semitones):
-    """Subtle pitch shift via short-window overlap-add resampling when semitones != 0."""
-    st = max(-3.0, min(3.0, float(semitones or 0.0)))
-    if abs(st) < 0.08 or len(audio) < 600:
-        return np.asarray(audio, dtype=np.float32)
-    ratio = 2.0 ** (st / 12.0)
-    src = np.asarray(audio, dtype=np.float64)
-    win = 960
-    hop_out = 240
-    hop_in = hop_out * ratio
-    window = np.hanning(win)
-    out = np.zeros(len(src) + win, dtype=np.float64)
-    norm = np.zeros(len(src) + win, dtype=np.float64)
-    pos_in = 0.0
-    pos_out = 0
-    idx_base = np.arange(win, dtype=np.float64) * ratio
-    while pos_out + win <= len(src) and int(pos_in + idx_base[-1]) + 1 < len(src):
-        idx = pos_in + idx_base
-        i0 = idx.astype(np.int64)
-        frac = idx - i0
-        grain = (src[i0] * (1.0 - frac) + src[i0 + 1] * frac) * window
-        out[pos_out:pos_out + win] += grain
-        norm[pos_out:pos_out + win] += window * window
-        pos_in += hop_in
-        pos_out += hop_out
-    mask = norm > 1e-6
-    res = np.zeros(len(src), dtype=np.float64)
-    usable = min(len(src), len(out))
-    m = mask[:usable]
-    res[:usable][m] = out[:usable][m] / norm[:usable][m]
-    if not m.all():
-        res[:usable][~m] = src[:usable][~m]
-    return res.astype(np.float32)
-
-
 def synth_breath(sample_rate, kind="exhale", ms=420, energy=0.9):
     """Band-passed shaped airflow for sighs/gasps/exhales when requested by the director."""
     dur = max(0.08, min(1.4, float(ms) / 1000.0))
     n = int(sample_rate * dur)
     rng = np.random.default_rng(1337 + n + (1 if kind == "inhale" else 0))
     noise = rng.standard_normal(n)
-    # Band-limit between ~280 Hz and ~2600 Hz
     lp = 1 - math.exp(-2 * math.pi * 2600 / sample_rate)
     hp = 1 - math.exp(-2 * math.pi * 280 / sample_rate)
     low, high = 0.0, 0.0
@@ -138,27 +106,81 @@ class SenkoHybrid:
         weights = self.config["styleBlend"]
         if abs(sum(weights.values()) - 1) > 1e-6 or any(weight < 0 for weight in weights.values()):
             raise ValueError("Voice blend weights must sum to one")
-        self.voices = {name: self.model.get_voice_style(name).astype(np.float32) for name in weights}
+        style_names = set(weights.keys()) | {"af_jessica", "af_sarah", "af_aoede", "af_nova"}
+        self.voices = {}
+        for name in style_names:
+            try:
+                self.voices[name] = self.model.get_voice_style(name).astype(np.float32)
+            except Exception:
+                pass
         self.style = sum(self.voices[name] * weight for name, weight in weights.items()).astype(np.float32)
         manifest = json.loads((model_dir / "manifest.json").read_text(encoding="utf-8"))
         active_assets = {name: manifest["files"][name] for name in [self.config["modelFile"], "voices-v1.0.bin"]}
         self.fingerprint = hashlib.sha256(json.dumps({"config": self.config, "assets": active_assets}, sort_keys=True).encode()).hexdigest()[:16]
 
-    def blended_style(self, timbre=None):
-        """Modulate Senko's core voice blend continuously from the director's timbre vector."""
-        if not isinstance(timbre, dict) or not {"af_heart", "af_bella", "af_nicole"}.issubset(self.voices):
+    def condition_style(self, prosody=None):
+        """Condition Senko's neural style embedding continuously in latent space.
+
+        Instead of post-processing audio with DSP pitch shifting, pitch tendency, vocal energy,
+        and timbre (warmth, brightness, breathiness) smoothly steer the style embedding while
+        keeping >=68% of Senko's core voice blend so her speaker identity never drifts.
+        """
+        if not isinstance(prosody, dict) or not {"af_heart", "af_bella", "af_nicole"}.issubset(self.voices):
             return self.style
+        timbre = prosody.get("timbre") if isinstance(prosody.get("timbre"), dict) else {}
         base = self.config["styleBlend"]
-        w = float(timbre.get("warmth", 0.5)) - 0.5
-        b = float(timbre.get("brightness", 0.3)) - 0.3
-        a = float(timbre.get("breathiness", 0.2)) - 0.2
-        raw = {
-            "af_heart": max(0.25, base["af_heart"] + 0.22 * w),
-            "af_bella": max(0.10, base["af_bella"] + 0.22 * b),
-            "af_nicole": max(0.08, base["af_nicole"] + 0.22 * a),
+        w = max(-0.5, min(0.5, float(timbre.get("warmth", 0.5)) - 0.5))
+        b = max(-0.5, min(0.5, float(timbre.get("brightness", 0.3)) - 0.3))
+        a = max(-0.5, min(0.5, float(timbre.get("breathiness", 0.2)) - 0.2))
+        pitch = max(-3.0, min(3.0, float(prosody.get("pitch", 0.0)))) / 3.0
+        energy = max(-0.45, min(0.25, float(prosody.get("energy", 1.0)) - 1.0))
+
+        # Core Senko identity shifted along her 3 anchor components
+        raw_core = {
+            "af_heart": max(0.26, base["af_heart"] + 0.18 * w - 0.06 * abs(pitch)),
+            "af_bella": max(0.12, base["af_bella"] + 0.18 * b + 0.06 * max(0.0, energy)),
+            "af_nicole": max(0.08, base["af_nicole"] + 0.18 * a + 0.08 * max(0.0, -pitch)),
         }
-        total = sum(raw.values())
-        return sum(self.voices[k] * (v / total) for k, v in raw.items()).astype(np.float32)
+        core_sum = sum(raw_core.values())
+        core_vec = sum(self.voices[k] * (v / core_sum) for k, v in raw_core.items())
+
+        # Subtle latent expressive coloring (capped at <=26% total so speaker identity is rock-solid)
+        color_weights = {}
+        if pitch > 0.05 and "af_jessica" in self.voices:
+            color_weights["af_jessica"] = 0.13 * pitch
+        if (b > 0.05 or pitch > 0.1) and "af_sarah" in self.voices:
+            color_weights["af_sarah"] = 0.10 * max(0.0, b + 0.5 * pitch)
+        if energy > 0.02 and "af_aoede" in self.voices:
+            color_weights["af_aoede"] = 0.12 * (energy / 0.25)
+        if (pitch < -0.05 or energy < -0.05) and "af_nova" in self.voices:
+            color_weights["af_nova"] = 0.13 * min(1.0, max(0.0, -pitch) * 0.7 + max(0.0, -energy) * 0.8)
+
+        color_total = min(0.26, sum(color_weights.values()))
+        if color_total <= 1e-4 or not color_weights:
+            return core_vec.astype(np.float32)
+        scale = color_total / sum(color_weights.values())
+        color_vec = sum(self.voices[k] * (v * scale) for k, v in color_weights.items())
+        return (core_vec * (1.0 - color_total) + color_vec).astype(np.float32)
+
+    def _phonemize_with_emphasis(self, text, emphasis=None):
+        """Phonemize text and reinforce primary stress on emphasized words so Kokoro's neural prosody highlights them naturally."""
+        base_phon = self.model.tokenizer.phonemize(text, self.config["language"])
+        if not emphasis or not isinstance(emphasis, list):
+            return base_phon
+        targets = {str(w).strip().lower() for w in emphasis if str(w).strip()}
+        if not targets:
+            return base_phon
+        # Emphasize matching words by ensuring primary stress mark on their stressed syllable
+        for target in targets:
+            if len(target) < 2:
+                continue
+            w_phon = self.model.tokenizer.phonemize(target, self.config["language"]).strip()
+            if not w_phon:
+                continue
+            stressed = w_phon.replace("ˌ", "ˈ", 1) if "ˈ" not in w_phon and "ˌ" in w_phon else (f"ˈ{w_phon}" if "ˈ" not in w_phon else w_phon)
+            if stressed != w_phon:
+                base_phon = re.sub(rf"(?<!\S){re.escape(w_phon)}(?=[.!?,;:…\s]|$)", stressed, base_phon, count=1)
+        return base_phon
 
     def _split_phonemes(self, phonemes):
         batches, current = [], ""
@@ -194,9 +216,8 @@ class SenkoHybrid:
             prosody = seg.get("prosody") or {}
             pace = max(0.75, min(1.3, float(prosody.get("pace", 1.0)))) * delivery["speed"]
             energy = max(0.55, min(1.2, float(prosody.get("energy", 1.0)))) * delivery["gain"]
-            pitch = max(-3.0, min(3.0, float(prosody.get("pitch", 0.0))))
             pause_ms = max(0, min(1500, int(prosody.get("pauseAfterMs", 0))))
-            style = self.blended_style(prosody.get("timbre"))
+            style = self.condition_style(prosody)
             seg_chunks = []
 
             if seg.get("kind") == "vocal":
@@ -206,7 +227,7 @@ class SenkoHybrid:
                         v_audio, sample_rate = self.model.create(ipa, voice=style, speed=pace, lang=self.config["language"], is_phonemes=True)
                         v_audio = np.asarray(v_audio, dtype=np.float32).reshape(-1)
                         if len(v_audio) and np.isfinite(v_audio).all():
-                            seg_chunks.append(fade_edges(shift_pitch_keep_duration(v_audio, pitch) * energy, sample_rate))
+                            seg_chunks.append(fade_edges(v_audio * energy, sample_rate))
                     except Exception:
                         pass
                 breath = seg.get("breath")
@@ -217,13 +238,13 @@ class SenkoHybrid:
                 if raw_text:
                     if raw_text[-1] not in ".!?,;:…":
                         raw_text += "."
-                    phonemes = self.model.tokenizer.phonemize(raw_text, self.config["language"])
+                    phonemes = self._phonemize_with_emphasis(raw_text, prosody.get("emphasis"))
                     for batch in self._split_phonemes(phonemes):
                         b_audio, sample_rate = self.model.create(batch, voice=style, speed=pace, lang=self.config["language"], is_phonemes=True)
                         b_audio = np.asarray(b_audio, dtype=np.float32).reshape(-1)
                         if not len(b_audio) or not np.isfinite(b_audio).all():
                             raise ValueError("The neural model returned invalid audio")
-                        seg_chunks.append(fade_edges(shift_pitch_keep_duration(b_audio, pitch) * energy, sample_rate))
+                        seg_chunks.append(fade_edges(b_audio * energy, sample_rate))
 
             if seg_chunks:
                 dry_seg = np.concatenate(seg_chunks)
@@ -315,7 +336,7 @@ def main():
     audio, sample_rate, meta = model.render(
         request["text"],
         request.get("emotion", "neutral"),
-        request.get("durationSeconds", 30),
+        request.get("durationSeconds", 60),
         progress=lambda value: print(json.dumps({"type": "progress", "progress": value}), flush=True),
         plan=request.get("plan"),
     )

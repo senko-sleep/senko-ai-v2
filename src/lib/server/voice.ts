@@ -41,8 +41,8 @@ export interface VoiceMeta {
   modelFingerprint?: string;
   /** Who the director had her perform as, when it wasn't simply herself. */
   character?: string;
-  /** "director" (LLM-directed acting) or "neutral" (punctuation timing only). */
-  performance?: "director" | "neutral";
+  /** "director" (LLM-planned contextual delivery), "contextual", or "neutral" (continuous linguistic contour). */
+  performance?: "director" | "contextual" | "neutral";
 }
 
 export interface SynthRequest {
@@ -69,7 +69,7 @@ export interface SynthResult {
   modelKind?: "authored-formant-voicebank" | "pretrained-neural-blend";
   modelFingerprint?: string;
   character?: string;
-  performance?: "director" | "neutral";
+  performance?: "director" | "contextual" | "neutral";
 }
 
 export interface VoiceEngine {

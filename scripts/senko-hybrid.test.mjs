@@ -47,18 +47,19 @@ test("directed performance plan renders dynamic prosody, vocal IPA, and synthesi
     version: 2,
     voice: "senko",
     source: "director",
-    character: "bratty tsundere",
+    character: "Senko — warm, playful, then gentle",
     segments: [
-      { kind: "vocal", description: "short annoyed huff", text: "Hmph!", ipa: "hˈʌmf", emotion: "annoyed", prosody: { pace: 1.05, energy: 1.0, pitch: 0.2, pauseAfterMs: 160, timbre: { warmth: 0.4, brightness: 0.5, breathiness: 0.1 } } },
-      { kind: "speech", text: "Don't think I'm doing this because I like you!", emotion: "defensive", delivery: "sharp and energetic", prosody: { pace: 1.08, energy: 1.06, pitch: 0.5, pauseAfterMs: 320, timbre: { warmth: 0.35, brightness: 0.55, breathiness: 0.1 } } },
-      { kind: "speech", text: "But... maybe I'll chat a bit.", emotion: "shy", delivery: "soft, hesitant", prosody: { pace: 0.9, energy: 0.82, pitch: 0.8, pauseAfterMs: 180, timbre: { warmth: 0.6, brightness: 0.2, breathiness: 0.45 } } },
-      { kind: "vocal", description: "pouty exhale", text: "", breath: { kind: "exhale", ms: 350 }, emotion: "flustered", prosody: { pace: 0.95, energy: 0.85, pitch: 0, pauseAfterMs: 0, timbre: { warmth: 0.5, brightness: 0.3, breathiness: 0.4 } } },
+      { kind: "vocal", description: "short annoyed huff", text: "Hmph!", ipa: "hˈʌmf", emotion: "annoyed", prosody: { pace: 1.05, energy: 1.0, pitch: 0.2, pauseAfterMs: 140, timbre: { warmth: 0.4, brightness: 0.5, breathiness: 0.1 } } },
+      { kind: "speech", text: "Wait, you actually passed the exam!", emotion: "excited", delivery: "bright, celebratory", prosody: { pace: 1.12, energy: 1.1, pitch: 1.8, pauseAfterMs: 280, emphasis: ["passed"], timbre: { warmth: 0.45, brightness: 0.68, breathiness: 0.12 } } },
+      { kind: "speech", text: "I knew you could do it.", emotion: "warm, soft", delivery: "gentle, grounded", prosody: { pace: 0.9, energy: 0.84, pitch: -1.2, pauseAfterMs: 160, emphasis: ["knew"], timbre: { warmth: 0.72, brightness: 0.2, breathiness: 0.4 } } },
+      { kind: "vocal", description: "soft relieved exhale", text: "", breath: { kind: "exhale", ms: 320 }, emotion: "relieved", prosody: { pace: 0.95, energy: 0.85, pitch: 0, pauseAfterMs: 0, timbre: { warmth: 0.5, brightness: 0.3, breathiness: 0.4 } } },
     ],
   };
-  const result = await hybridSpeech({ text: "Don't think I'm doing this because I like you! But... maybe I'll chat a bit. *pouts*", plan, durationSeconds: 15 });
+  const result = await hybridSpeech({ text: "Wait, you actually passed the exam! I knew you could do it. *sighs*", plan, durationSeconds: 15 });
   const decoded = inspectWav(result.audio);
   assert.ok(decoded.seconds > 2 && decoded.seconds <= 15.05);
   assert.equal(result.segments, 4);
   assert.equal(result.performance, "director");
-  assert.equal(result.character, "bratty tsundere");
+  assert.equal(result.character, "Senko — warm, playful, then gentle");
+  assert.ok(result.textureCorrelation > 0.99);
 });

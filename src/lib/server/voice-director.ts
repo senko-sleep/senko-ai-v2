@@ -1,13 +1,15 @@
 // The voice director: an LLM decides how Senko performs a transcript (see lib/voice/performance).
 import { complete } from "@/lib/llm";
-import { DIRECTOR_SYSTEM, directorPrompt, neutralPlan, parseDirectorPlan, type PerformancePlan } from "@/lib/voice/performance";
+import { DIRECTOR_SYSTEM, directorPrompt, neutralPlan, parseDirectorPlan, type PerformancePlan, type UserVocalCues } from "@/lib/voice/performance";
 
 export interface DirectOptions {
-  /** The user's latest message (where requests like "be a bratty tsundere" live, in any wording). */
+  /** The user's latest message (where conversational context and tone live). */
   request?: string;
   /** A few recent turns, formatted "user: …" / "senko: …". */
   recent?: string[];
-  /** Senko's status-tag mood. */
+  /** Optional vocal cues observed from user voice input (accounted for with ambiguity). */
+  vocalCues?: UserVocalCues;
+  /** Senko's internal mood note. */
   mood?: string;
   personality?: string;
   provider?: string;
@@ -15,14 +17,14 @@ export interface DirectOptions {
 }
 
 /**
- * Ask the director for a performance. Any failure (timeout, malformed JSON, changed words)
- * falls back to neutral punctuation timing; audio is never blocked on the director.
+ * Ask the contextual speech planner for a performance. Any failure (timeout, malformed JSON, changed words)
+ * falls back to continuous linguistic prosody (`neutralPlan`); audio is never blocked on the director.
  */
 export async function directPerformance(transcript: string, o: DirectOptions = {}): Promise<PerformancePlan> {
   if (process.env.SENKO_VOICE_DIRECTOR === "0") return neutralPlan(transcript);
   const timeout = AbortSignal.timeout(Number(process.env.SENKO_VOICE_DIRECTOR_TIMEOUT_MS) || 45_000);
   const system = o.personality ? `${DIRECTOR_SYSTEM}\n\nSenko's personality, for reference:\n${o.personality.slice(0, 1500)}` : DIRECTOR_SYSTEM;
-  const user = directorPrompt(transcript, { request: o.request, recent: o.recent, mood: o.mood });
+  const user = directorPrompt(transcript, { request: o.request, recent: o.recent, mood: o.mood, vocalCues: o.vocalCues });
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const answer = await complete(

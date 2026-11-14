@@ -21,7 +21,7 @@ export interface VoiceNote {
   modelFingerprint?: string;
   segments?: number;
   character?: string;
-  performance?: "director" | "neutral";
+  performance?: "director" | "contextual" | "neutral";
 }
 
 export interface Msg {
