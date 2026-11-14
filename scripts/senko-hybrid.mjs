@@ -10,7 +10,7 @@ export function hybridPython() {
 export function hybridAvailable() {
   return existsSync(hybridPython()) && ["kokoro-v1.0.onnx", "voices-v1.0.bin", "manifest.json"].every(name => existsSync(path.resolve(process.cwd(), ".data/voice/models/senko-hybrid-v1", name)));
 }
-export async function hybridSpeech({ text, emotion, plan, durationSeconds = 30, signal, onProgress }) {
+export async function hybridSpeech({ text, emotion, plan, durationSeconds = 60, signal, onProgress }) {
   signal?.throwIfAborted();
   const dir = await mkdtemp(path.join(tmpdir(), "senko-hybrid-"));
   try {
@@ -19,7 +19,7 @@ export async function hybridSpeech({ text, emotion, plan, durationSeconds = 30, 
     const meta = await new Promise((resolve, reject) => {
       let idleTimer, timedOut = false, pending = "";
       const child = execFile(hybridPython(), [path.resolve(process.cwd(), "scripts/senko-hybrid.py"), request, output],
-        { signal, timeout: 240000, windowsHide: true, maxBuffer: 65536, env: { ...process.env, PYTHONUTF8: "1" } }, (error, stdout, stderr) => {
+        { signal, timeout: 600000, windowsHide: true, maxBuffer: 65536, env: { ...process.env, PYTHONUTF8: "1" } }, (error, stdout, stderr) => {
           clearTimeout(idleTimer);
           if (error) {
             console.warn("[voice] Neural inference failed", stderr.slice(-1500));

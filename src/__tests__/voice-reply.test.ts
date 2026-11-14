@@ -4,7 +4,7 @@ import { suggestedVoiceSeconds, requestedVoiceSeconds } from "@/lib/voice/intent
 
 describe("spoken replies before synthesis", () => {
   it("gives audio stories a longer default without changing ordinary replies or explicit budgets", () => {
-    expect(suggestedVoiceSeconds("send me an audio bedtime story about a girl in Japan")).toBe(120);
+    expect(suggestedVoiceSeconds("send me an audio bedtime story about a girl in Japan")).toBe(600);
     expect(suggestedVoiceSeconds("send me an audio message about cats")).toBeUndefined();
     expect(suggestedVoiceSeconds("write a story about cats")).toBeUndefined();
     expect(requestedVoiceSeconds("send me a ten second story")).toBeUndefined();
@@ -12,8 +12,16 @@ describe("spoken replies before synthesis", () => {
   });
   it("rewrites a plot summary that is too short for a requested story", async () => {
     const rewrite = vi.fn(async () => "Aoi smiled. ".repeat(70));
-    await expect(prepareSpokenReply("Aoi came out. The end.", 192, 1500, rewrite, 138)).resolves.toContain("Aoi smiled.");
+    await expect(prepareSpokenReply("Aoi came out. The end.", 192, 15000, rewrite, 138)).resolves.toContain("Aoi smiled.");
     expect(rewrite).toHaveBeenCalledWith(expect.stringContaining("too short"));
+  });
+  it("runs an earnest narrative polish pass on story drafts before synthesis", async () => {
+    const rewrite = vi.fn();
+    const polish = vi.fn(async (draft: string) => `${draft} Beneath the cherry blossoms, Haru finally spoke from the heart. `.repeat(3));
+    const polished = await prepareSpokenReply("In Tokyo, Haru opened her sketchbook and smiled at Yuki.", 500, 15000, rewrite, 20, polish);
+    expect(polish).toHaveBeenCalledTimes(1);
+    expect(rewrite).not.toHaveBeenCalled();
+    expect(polished).toContain("Beneath the cherry blossoms");
   });
   it.each([
     "I can't actually send audio, so read this in your head.",

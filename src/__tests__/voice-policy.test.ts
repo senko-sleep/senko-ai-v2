@@ -10,10 +10,10 @@ beforeAll(async () => {
 afterEach(() => vi.unstubAllEnvs());
 
 it("validates duration, raw text and estimated speech before spending quota", () => {
-  expect(validateVoiceInput("Hello there")).toBe(30);
+  expect(validateVoiceInput("Hello there")).toBe(60);
   expect(validateVoiceInput("Hello there", 5)).toBe(5);
-  for (const duration of [0, 4, 121, "30", NaN]) expect(() => validateVoiceInput("Hello", duration)).toThrow("Choose a voice duration");
-  expect(() => validateVoiceInput("x".repeat(1501), 120)).toThrow("1500");
+  for (const duration of [0, 4, 1801, "30", NaN]) expect(() => validateVoiceInput("Hello", duration)).toThrow("Choose a voice duration");
+  expect(() => validateVoiceInput("x".repeat(15001), 1200)).toThrow("15000");
   expect(() => validateVoiceInput("long sentence ".repeat(20), 5)).toThrow("estimated");
 });
 

@@ -80,9 +80,9 @@ export interface VoiceEngine {
 }
 
 export const VOICE_PROFILE = profile;
-/** The longest text one voice message speaks (about two minutes). */
-export const MAX_SPEECH_CHARS = 1500;
-const MAX_AUDIO_BYTES = 12 * 1024 * 1024;
+/** The longest text one voice message speaks (up to 15,000 characters). */
+export const MAX_SPEECH_CHARS = 15000;
+const MAX_AUDIO_BYTES = 64 * 1024 * 1024;
 const AUDIO_MIME = /^audio\/(?:mpeg|mp3|wav|x-wav|wave|ogg|opus|webm|mp4|aac|flac|x-flac)$/i;
 
 // ── Text that can be heard ──────────────────────────────────────────────────
@@ -309,7 +309,7 @@ export async function synthesizeVoice(r: SynthRequest, engines = voiceEngines())
 /** Store audio in the uploads table; /api/uploads/<id> serves it (with Range for seeking). */
 export async function saveAudio(ownerId: string, mime: string, data: Buffer): Promise<string> {
   if (!AUDIO_MIME.test(mime)) throw new HttpError(415, `Unsupported audio type ${mime}.`);
-  if (data.length > MAX_AUDIO_BYTES) throw new HttpError(413, "Audio is larger than 12 MB.");
+  if (data.length > MAX_AUDIO_BYTES) throw new HttpError(413, "Audio is larger than 64 MB.");
   const id = newId("a_");
   await q("INSERT INTO images (id, owner_id, mime, data) VALUES ($1, $2, $3, $4)", [id, ownerId, mime, data]);
   return id;

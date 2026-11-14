@@ -44,7 +44,7 @@ export function createVoiceService({ config, synthesize, fetchImpl = fetch }) {
       let input;
       try { input = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
       catch { return json(400, { error: "Invalid JSON" }); }
-      if (!input || typeof input.text !== "string" || !input.text.trim() || input.text.length > 1800) return json(400, { error: "text must contain 1–1800 characters" });
+      if (!input || typeof input.text !== "string" || !input.text.trim() || input.text.length > 15000) return json(400, { error: "text must contain 1–15000 characters" });
       if (input.voice !== "senko-v1") return json(400, { error: "Unknown voice identity" });
       let result;
       if (synthesize) {

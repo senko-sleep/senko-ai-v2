@@ -1,18 +1,18 @@
 import { q, newId } from "./db";
 import { HttpError } from "./identity";
 
-const setting = (name: string, fallback: number, max = 10000) => {
+const setting = (name: string, fallback: number, max = 1000000) => {
   const n = Number(process.env[`SENKO_VOICE_${name}`]);
   return Number.isFinite(n) && n >= 1 ? Math.min(max, Math.floor(n)) : fallback;
 };
 export function voiceLimits() {
-  const maxSeconds = setting("MAX_SECONDS", 120, 120);
-  const minSeconds = Math.min(maxSeconds, setting("MIN_SECONDS", 5, 120));
+  const maxSeconds = setting("MAX_SECONDS", 1200, 1800);
+  const minSeconds = Math.min(maxSeconds, setting("MIN_SECONDS", 5, 1800));
   return {
-    minSeconds, maxSeconds, defaultSeconds: Math.max(minSeconds, Math.min(maxSeconds, setting("DEFAULT_SECONDS", 30, 120))),
-    maxChars: setting("MAX_CHARS", 1500, 1500), perMinute: setting("PER_MINUTE", 3), perHour: setting("PER_HOUR", 20),
+    minSeconds, maxSeconds, defaultSeconds: Math.max(minSeconds, Math.min(maxSeconds, setting("DEFAULT_SECONDS", 60, 1800))),
+    maxChars: setting("MAX_CHARS", 15000, 15000), perMinute: setting("PER_MINUTE", 3), perHour: setting("PER_HOUR", 20),
     perUser: setting("PER_USER_CONCURRENT", 1, 8), global: setting("GLOBAL_CONCURRENT", 2, 32),
-    queue: setting("QUEUE_PER_USER", 2, 10), globalQueue: setting("GLOBAL_QUEUE", 32, 128), timeoutMs: setting("TIMEOUT_MS", 180000, 240000),
+    queue: setting("QUEUE_PER_USER", 2, 10), globalQueue: setting("GLOBAL_QUEUE", 32, 128), timeoutMs: setting("TIMEOUT_MS", 600000, 900000),
   };
 }
 export class VoiceError extends HttpError {

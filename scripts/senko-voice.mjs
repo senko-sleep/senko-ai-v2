@@ -2,7 +2,7 @@ import { Worker } from "node:worker_threads";
 import path from "node:path";
 
 /** CPU synthesis runs in a terminable worker, away from the app event loop. */
-export async function senkoSpeech({ text, emotion, bank, maxSeconds = 120, signal }) {
+export async function senkoSpeech({ text, emotion, bank, maxSeconds = 1200, signal }) {
   signal?.throwIfAborted();
   const worker = new Worker(path.resolve(process.cwd(), "scripts/senko-voice-worker.mjs"), {
     workerData: { text, emotion, bank, maxSeconds }, resourceLimits: { maxOldGenerationSizeMb: 192 },

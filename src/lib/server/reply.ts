@@ -375,16 +375,16 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
     // Told up front, so the words are written to be heard (no markdown, links or cards).
     const requestedSeconds = o.voiceDurationSeconds ?? voiceLimits().defaultSeconds;
     const story = !!suggestedVoiceSeconds(o.content);
-    const minWords = story && requestedSeconds >= 60 ? Math.floor(requestedSeconds * 1.15) : 0;
-    const maxWords = Math.max(5, Math.floor(requestedSeconds * (story ? 1.6 : 1.4)));
-    const extra = [voiceAsk ? `${VOICE_REPLY_NOTE}\nHARD SPEAKING BUDGET: write ${minWords ? `between ${minWords} and` : "at most"} ${maxWords} words for a ${requestedSeconds}-second maximum, including pauses. Use ${requestedSeconds <= 5 ? "one short sentence" : story && requestedSeconds >= 60 ? "several short paragraphs with a developed scene, character dialogue and a satisfying ending; this must be a full short story, not a plot summary" : "two or three connected sentences"}. Keep the requested topic coherent. Never exceed ${voiceLimits().maxChars} characters.` : "", pageNote].filter(Boolean).join("\n\n");
+    const minWords = story && requestedSeconds >= 60 ? Math.min(450, Math.floor(requestedSeconds * 1.15)) : 0;
+    const maxWords = Math.max(5, Math.min(2400, Math.floor(requestedSeconds * (story ? 2.2 : 1.6))));
+    const extra = [voiceAsk ? `${VOICE_REPLY_NOTE}\nSPEAKING BUDGET: write ${minWords ? `between ${minWords} and` : "at most"} ${maxWords} words for a ${requestedSeconds}-second maximum, including pauses. Use ${requestedSeconds <= 5 ? "one short sentence" : story && requestedSeconds >= 60 ? "multiple rich, unhurried paragraphs with atmospheric scene-setting, believable character chemistry, natural back-and-forth dialogue, and an earned emotional resolution; take earnest time so the story genuinely makes sense and feels like a real episode, never a rushed summary" : "two or three connected sentences"}. Keep the requested topic coherent. Never exceed ${voiceLimits().maxChars} characters.` : "", pageNote].filter(Boolean).join("\n\n");
     const [system, compactSystem] = await Promise.all([
       chatSystemPrompt(o.ownerId, extra, { timeZone: o.timeZone, spoken: !!voiceAsk }),
       chatSystemPrompt(o.ownerId, extra, { compact: true, timeZone: o.timeZone, spoken: !!voiceAsk }),
     ]);
     const messages: LlmMessage[] = [{ role: "system", content: system }, ...history];
-    // Think only where it helps, and briefly: a chat answer should start in a second or two.
-    const thinking = wantsDeepThinking(o.content, { visual: !!discussSubject, places: placesAsk, composedUI, attachments: !!o.imageIds?.length }) ? "low" as const : "off" as const;
+    // Think deeply for stories so the plot, character motivation, and pacing make real sense.
+    const thinking = story && voiceAsk ? "medium" as const : wantsDeepThinking(o.content, { visual: !!discussSubject, places: placesAsk, composedUI, attachments: !!o.imageIds?.length }) ? "low" as const : "off" as const;
     o.onMiniAgentStep?.({ id: THINK_STEP, label: "Thinking", status: "running" });
     // compactSystem lets the LLM layer shrink long chats to fit each provider instead of failing.
     if (composedUI) {
@@ -420,17 +420,39 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
     }
     if (!text.trim()) throw new Error("The AI returned an empty reply. Try again.");
     if (voiceAsk && !o.signal?.aborted) {
-      text = await prepareSpokenReply(text, maxWords, voiceLimits().maxChars, async issue => {
-        o.onMiniAgentStep?.({ id: WRITE_STEP, label: "Preparing spoken reply", status: "running" });
-        const correction = `${extra}\nREWRITE REQUIRED: ${issue} Answer the user's latest request directly with a complete short spoken transcript. Audio is attached by the server. Do not discuss your capabilities or offer a text alternative.`;
-        const rewritten = await openStream([{ role: "system", content: `${system}\n\n${correction}` }, ...history], {
-          provider: o.provider, signal: o.signal, compactSystem: `${compactSystem}\n\n${correction}`, thinking: "off",
-        });
-        Object.assign(meta, { provider: rewritten.provider, providerLabel: rewritten.providerLabel, model: rewritten.model });
-        let result = "";
-        for await (const chunk of rewritten.stream) result += chunk;
-        return result;
-      }, minWords);
+      text = await prepareSpokenReply(
+        text,
+        maxWords,
+        voiceLimits().maxChars,
+        async issue => {
+          o.onMiniAgentStep?.({ id: WRITE_STEP, label: "Rewriting spoken transcript", status: "running", detail: issue });
+          const correction = `${extra}\nREWRITE REQUIRED: ${issue} Answer the user's latest request directly with a complete, coherent spoken transcript that fits between ${minWords || 1} and ${maxWords} words (up to ${voiceLimits().maxChars} characters). Audio is attached by the server. Do not discuss your capabilities or offer a text alternative.`;
+          const rewritten = await openStream([{ role: "system", content: `${system}\n\n${correction}` }, ...history], {
+            provider: o.provider, signal: o.signal, compactSystem: `${compactSystem}\n\n${correction}`, thinking: story ? "low" : "off", maxTokens: 6000,
+          });
+          Object.assign(meta, { provider: rewritten.provider, providerLabel: rewritten.providerLabel, model: rewritten.model });
+          let result = "";
+          for await (const chunk of rewritten.stream) result += chunk;
+          return result;
+        },
+        minWords,
+        story && requestedSeconds >= 60 ? async (draft, instructions) => {
+          o.onMiniAgentStep?.({ id: WRITE_STEP + 1, label: "Polishing story & pacing", status: "running" });
+          const polishSystem = `${system}\n\n${instructions}\nKeep the polished story between ${minWords} and ${maxWords} words (maximum ${voiceLimits().maxChars} characters).`;
+          const polishedStream = await openStream([
+            { role: "system", content: polishSystem },
+            ...history,
+            { role: "assistant", content: draft },
+            { role: "user", content: "Now polish and deepen this story draft so the plot, character motivations, dialogue, and emotional arc feel completely natural, unhurried, and coherent when spoken aloud." },
+          ], {
+            provider: o.provider, signal: o.signal, compactSystem: `${compactSystem}\n\n${instructions}`, thinking: "low", maxTokens: 6000,
+          });
+          let polished = "";
+          for await (const chunk of polishedStream.stream) polished += chunk;
+          o.onMiniAgentStep?.({ id: WRITE_STEP + 1, label: "Polished story & pacing", status: "done" });
+          return polished;
+        } : undefined,
+      );
       o.onPreview?.(text);
     }
   } catch (e) {

@@ -264,11 +264,11 @@ class SenkoHybrid:
             "executionProviders": self.session.get_providers(),
         }
 
-    def render(self, text, emotion="neutral", max_seconds=30, progress=None, plan=None):
-        if not isinstance(text, str) or not text.strip() or len(text) > 1500:
-            raise ValueError("Speech text must contain 1–1500 characters")
-        if not isinstance(max_seconds, (int, float)) or not 5 <= max_seconds <= 120:
-            raise ValueError("Voice duration must be 5–120 seconds")
+    def render(self, text, emotion="neutral", max_seconds=60, progress=None, plan=None):
+        if not isinstance(text, str) or not text.strip() or len(text) > 15000:
+            raise ValueError("Speech text must contain 1–15000 characters")
+        if not isinstance(max_seconds, (int, float)) or not 5 <= max_seconds <= 1800:
+            raise ValueError("Voice duration must be 5–1800 seconds")
         mood = select_mood(emotion)
         delivery = self.config["moods"][mood]
         if isinstance(plan, dict) and isinstance(plan.get("segments"), list) and plan["segments"]:

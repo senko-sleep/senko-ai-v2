@@ -20,14 +20,14 @@ export interface DirectOptions {
  */
 export async function directPerformance(transcript: string, o: DirectOptions = {}): Promise<PerformancePlan> {
   if (process.env.SENKO_VOICE_DIRECTOR === "0") return neutralPlan(transcript);
-  const timeout = AbortSignal.timeout(Number(process.env.SENKO_VOICE_DIRECTOR_TIMEOUT_MS) || 20_000);
+  const timeout = AbortSignal.timeout(Number(process.env.SENKO_VOICE_DIRECTOR_TIMEOUT_MS) || 45_000);
   const system = o.personality ? `${DIRECTOR_SYSTEM}\n\nSenko's personality, for reference:\n${o.personality.slice(0, 1500)}` : DIRECTOR_SYSTEM;
   const user = directorPrompt(transcript, { request: o.request, recent: o.recent, mood: o.mood });
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const answer = await complete(
         [{ role: "system", content: system }, { role: "user", content: attempt ? `${user}\n\nYour previous answer was unusable. Return valid JSON whose speech segments contain exactly the transcript's words in order.` : user }],
-        { provider: o.provider, signal: o.signal ? AbortSignal.any([o.signal, timeout]) : timeout, json: true, temperature: 0.7, maxTokens: 4000, thinking: "off", hedge: false },
+        { provider: o.provider, signal: o.signal ? AbortSignal.any([o.signal, timeout]) : timeout, json: true, temperature: 0.7, maxTokens: 12000, thinking: "off", hedge: false },
       );
       const plan = parseDirectorPlan(answer.text, transcript);
       if (plan) return plan;

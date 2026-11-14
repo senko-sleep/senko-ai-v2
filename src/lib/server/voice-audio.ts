@@ -8,7 +8,7 @@ import { VoiceError } from "./voice-policy";
 
 /** Fully decode provider audio to a portable PCM WAV and measure its sample duration. */
 export async function verifyVoiceAudio(audio: Buffer, seconds: number, signal?: AbortSignal) {
-  if (audio.length < 44 || audio.length > 12 * 1024 * 1024) throw new VoiceError(502, "malformed_audio", "The speech engine returned an invalid audio file.");
+  if (audio.length < 44 || audio.length > 64 * 1024 * 1024) throw new VoiceError(502, "malformed_audio", "The speech engine returned an invalid audio file.");
   let wav = audio;
   let dir: string | undefined;
   try {

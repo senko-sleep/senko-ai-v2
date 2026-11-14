@@ -66,8 +66,8 @@ export function buildPerformance(text, mood) {
   return { markup: `<speak>${phrases.map(phrase => phrase.markup).join('<break time="80ms"/>')}</speak>`, phrases };
 }
 
-export async function synthesizeSenko({ text, emotion, bank, maxSeconds = 120 }) {
-  if (typeof text !== "string" || !text.trim() || text.length > 1500) throw new Error("Senko voice input must contain 1–1500 characters");
+export async function synthesizeSenko({ text, emotion, bank, maxSeconds = 1200 }) {
+  if (typeof text !== "string" || !text.trim() || text.length > 15000) throw new Error("Senko voice input must contain 1–15000 characters");
   const model = compileVoicebank(bank, selectMood(emotion));
   const engineModule = await init();
   const synth = new engineModule.eSpeakNGWorker();

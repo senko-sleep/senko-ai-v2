@@ -17,7 +17,7 @@ export const POST = route(async (req, who) => {
       const { value, done } = await reader.read();
       if (done) break;
       bytes += value.byteLength;
-      if (bytes > 16_384) { await reader.cancel(); throw new HttpError(413, "Voice request is too large."); }
+      if (bytes > 131_072) { await reader.cancel(); throw new HttpError(413, "Voice request is too large."); }
       raw += decoder.decode(value, { stream: true });
     }
     raw += decoder.decode();

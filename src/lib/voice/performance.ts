@@ -166,13 +166,13 @@ export function parseDirectorPlan(raw: string, transcript: string): PerformanceP
   let data: unknown;
   try { data = JSON.parse(raw.slice(start, end + 1)); } catch { return null; }
   const obj = data as { character?: unknown; segments?: unknown };
-  if (!Array.isArray(obj.segments) || !obj.segments.length || obj.segments.length > 160) return null;
+  if (!Array.isArray(obj.segments) || !obj.segments.length || obj.segments.length > 400) return null;
   const segments: PerformanceSegment[] = [];
   for (const entry of obj.segments) {
     if (!entry || typeof entry !== "object") return null;
     const s = entry as Record<string, unknown>;
     if (s.kind === "speech") {
-      const text = str(s.text, 1500);
+      const text = str(s.text, 15000);
       if (!words(text).length) continue;
       segments.push({ kind: "speech", text, emotion: str(s.emotion, 120), delivery: str(s.delivery, 200), prosody: prosody(s) });
     } else if (s.kind === "vocal") {
