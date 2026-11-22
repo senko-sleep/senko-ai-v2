@@ -7,7 +7,6 @@
  * stashed item is genuinely deliverable to chat.
  */
 import crypto from "node:crypto";
-import sharp from "sharp";
 import { isLikelyThumbnailUrl, isSearchPageUrl, normalizeUrl } from "./url-utils";
 
 export interface StashedImage {
@@ -165,9 +164,72 @@ export function sniffImageMime(buf: Buffer): string | null {
   return null;
 }
 
+/** Count GIF image descriptor blocks in pure JS (fallback when sharp native binary is unavailable). */
+function parseGifHeader(buf: Buffer): { width: number; height: number; frameCount: number } {
+  if (buf.length < 13) return { width: 0, height: 0, frameCount: 0 };
+  const width = buf.readUInt16LE(6);
+  const height = buf.readUInt16LE(8);
+  let pos = 13;
+  const packed = buf[10];
+  if (packed & 0x80) pos += 3 * (1 << ((packed & 0x07) + 1));
+  let frames = 0;
+  while (pos < buf.length && frames < 10) {
+    const b = buf[pos++];
+    if (b === 0x3b) break; // trailer
+    if (b === 0x2c) {
+      // Image descriptor
+      frames++;
+      if (pos + 9 > buf.length) break;
+      const lct = buf[pos + 8];
+      pos += 9;
+      if (lct & 0x80) pos += 3 * (1 << ((lct & 0x07) + 1));
+      pos++; // LZW min code size
+      while (pos < buf.length) {
+        const len = buf[pos++];
+        if (!len) break;
+        pos += len;
+      }
+    } else if (b === 0x21) {
+      pos++; // extension label
+      while (pos < buf.length) {
+        const len = buf[pos++];
+        if (!len) break;
+        pos += len;
+      }
+    } else {
+      break;
+    }
+  }
+  return { width, height, frameCount: Math.max(1, frames) };
+}
+
+function parsePngDimensions(buf: Buffer): { width: number; height: number } {
+  return buf.length >= 24 ? { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) } : { width: 0, height: 0 };
+}
+
+function parseJpegDimensions(buf: Buffer): { width: number; height: number } {
+  let pos = 2;
+  while (pos + 9 < buf.length) {
+    if (buf[pos] !== 0xff) { pos++; continue; }
+    const marker = buf[pos + 1];
+    if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) {
+      return { height: buf.readUInt16BE(pos + 5), width: buf.readUInt16BE(pos + 7) };
+    }
+    const segLen = buf.readUInt16BE(pos + 2);
+    if (segLen < 2) break;
+    pos += 2 + segLen;
+  }
+  return { width: 1, height: 1 };
+}
+
+function parseWebpHeader(buf: Buffer): { width: number; height: number; animated: boolean } {
+  const animated = buf.includes(Buffer.from("ANIM"));
+  return { width: 1, height: 1, animated };
+}
+
 /**
- * Inspect raw image bytes using sharp + magic-byte verification to determine real format,
- * dimensions, and whether the media is genuinely animated (multi-frame).
+ * Inspect raw image bytes using sharp (loaded lazily so hosts without native libvips
+ * never crash at module import time) with a pure-JS header/frame-count fallback.
  */
 export async function inspectMediaBuffer(buf: Buffer): Promise<{
   mime: string;
@@ -178,38 +240,64 @@ export async function inspectMediaBuffer(buf: Buffer): Promise<{
   animated: boolean;
 }> {
   const sniffed = sniffImageMime(buf);
-  let meta: sharp.Metadata;
+  let sharpFn: ((input: Buffer, opts?: { animated?: boolean }) => { metadata(): Promise<{ format?: string; width?: number; height?: number; pageHeight?: number; pages?: number }> }) | null = null;
   try {
-    meta = await sharp(buf, { animated: true }).metadata();
+    const mod = await import("sharp");
+    sharpFn = (mod.default || mod) as typeof sharpFn;
   } catch {
-    throw new ImageFetchError("unsupported_format", "Response bytes are not a valid decodable image.");
+    sharpFn = null;
   }
 
-  const fmt = (meta.format || "").toLowerCase();
-  const mimeFromSharp =
-    fmt === "gif" ? "image/gif" :
-    fmt === "png" ? "image/png" :
-    fmt === "jpeg" || fmt === "jpg" ? "image/jpeg" :
-    fmt === "webp" ? "image/webp" :
-    null;
-
-  const mime = mimeFromSharp || sniffed;
-  if (!mime || !SUPPORTED_MIMES.has(mime)) {
-    throw new ImageFetchError(
-      "unsupported_format",
-      `Unsupported image format "${fmt || "unknown"}". Chat attachments support GIF, PNG, JPEG, and WebP.`,
-    );
+  if (sharpFn) {
+    let meta: { format?: string; width?: number; height?: number; pageHeight?: number; pages?: number };
+    try {
+      meta = await sharpFn(buf, { animated: true }).metadata();
+    } catch {
+      throw new ImageFetchError("unsupported_format", "Response bytes are not a valid decodable image.");
+    }
+    const fmt = (meta.format || "").toLowerCase();
+    const mimeFromSharp =
+      fmt === "gif" ? "image/gif" :
+      fmt === "png" ? "image/png" :
+      fmt === "jpeg" || fmt === "jpg" ? "image/jpeg" :
+      fmt === "webp" ? "image/webp" :
+      null;
+    const mime = mimeFromSharp || sniffed;
+    if (!mime || !SUPPORTED_MIMES.has(mime)) {
+      throw new ImageFetchError(
+        "unsupported_format",
+        `Unsupported image format "${fmt || "unknown"}". Chat attachments support GIF, PNG, JPEG, and WebP.`,
+      );
+    }
+    const width = meta.width || 0;
+    const height = meta.pageHeight || meta.height || 0;
+    if (width < 1 || height < 1) {
+      throw new ImageFetchError("unsupported_format", "Image has invalid zero dimensions.");
+    }
+    const frameCount = Math.max(1, meta.pages ?? 1);
+    const animated = (mime === "image/gif" || mime === "image/webp") && frameCount > 1;
+    return { mime, format: fmt || mime.slice(6), width, height, frameCount, animated };
   }
 
-  const width = meta.width || 0;
-  const height = meta.pageHeight || meta.height || 0;
-  if (width < 1 || height < 1) {
-    throw new ImageFetchError("unsupported_format", "Image has invalid zero dimensions.");
+  // Pure-JS fallback (e.g. Wasmer/Edge runtimes without sharp native binaries)
+  if (!sniffed || !SUPPORTED_MIMES.has(sniffed)) {
+    throw new ImageFetchError("unsupported_format", "Response bytes are not a supported image (GIF, PNG, JPEG, WebP).");
   }
-
-  const frameCount = Math.max(1, meta.pages ?? 1);
-  const animated = (mime === "image/gif" || mime === "image/webp") && frameCount > 1;
-  return { mime, format: fmt || mime.slice(6), width, height, frameCount, animated };
+  if (sniffed === "image/gif") {
+    const g = parseGifHeader(buf);
+    if (g.width < 1 || g.height < 1) throw new ImageFetchError("unsupported_format", "Invalid GIF header.");
+    return { mime: "image/gif", format: "gif", width: g.width, height: g.height, frameCount: g.frameCount, animated: g.frameCount > 1 };
+  }
+  if (sniffed === "image/png") {
+    const p = parsePngDimensions(buf);
+    return { mime: "image/png", format: "png", width: Math.max(1, p.width), height: Math.max(1, p.height), frameCount: 1, animated: false };
+  }
+  if (sniffed === "image/jpeg") {
+    const j = parseJpegDimensions(buf);
+    return { mime: "image/jpeg", format: "jpeg", width: Math.max(1, j.width), height: Math.max(1, j.height), frameCount: 1, animated: false };
+  }
+  const w = parseWebpHeader(buf);
+  return { mime: "image/webp", format: "webp", width: w.width, height: w.height, frameCount: w.animated ? 2 : 1, animated: w.animated };
 }
 
 function classifyHttpError(status: number, url: string, retryAfter?: string | null): ImageFetchError {

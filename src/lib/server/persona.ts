@@ -125,16 +125,22 @@ export function currentTimeLine(timeZone?: string): string {
 }
 
 export async function chatSystemPrompt(ownerId: string, extra = "", opts: { compact?: boolean; timeZone?: string; spoken?: boolean } = {}): Promise<string> {
-  const [personality, memories] = await Promise.all([
-    opts.compact ? Promise.resolve(COMPACT_PERSONALITY) : personalityFor(ownerId),
+  const [savedPersonality, memories] = await Promise.all([
+    personalityFor(ownerId),
     memoriesFor(ownerId),
   ]);
+  const isCustom = savedPersonality !== defaultPersonality();
+  // Always honor a user's custom Settings personality even in compact mode; only use COMPACT_PERSONALITY
+  // as a shorter version of the default persona when shrinking for smaller-context models.
+  const personality = opts.compact && !isCustom ? COMPACT_PERSONALITY : savedPersonality;
   const level = await safeSearchFor(ownerId);
   const list = opts.compact ? memories.slice(0, 40) : memories;
   const mem = list.length
     ? `THINGS I REMEMBER ABOUT YOU (persistent memory, shared across your devices):\n${list.map((m) => `- ${m.key}: ${m.value}`).join("\n")}`
     : "THINGS I REMEMBER ABOUT YOU: nothing saved yet.";
-  return [opts.spoken ? extra : "", personality, opts.spoken ? "" : TOOLS, opts.spoken ? "" : CHAT_LAYOUT_SYSTEM, contentGuidance(level), mem, currentTimeLine(opts.timeZone), opts.spoken ? "" : extra].filter(Boolean).join("\n\n");
+  const voiceAnchor =
+    "PERSONALITY REMINDER: Stay fully in character using the personality and voice defined at the top of this prompt — talk naturally like Senko (warm, expressive, casual friend, with your [STATUS:mood:feeling] last line), never like a stiff generic assistant.";
+  return [opts.spoken ? extra : "", personality, opts.spoken ? "" : TOOLS, opts.spoken ? "" : CHAT_LAYOUT_SYSTEM, contentGuidance(level), mem, currentTimeLine(opts.timeZone), opts.spoken ? "" : extra, opts.spoken ? "" : voiceAnchor].filter(Boolean).join("\n\n");
 }
 
 /** Short version of the voice for agent summaries (keeps agent prompts small). */

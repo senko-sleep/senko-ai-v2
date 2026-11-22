@@ -7,7 +7,7 @@ import { validateVoiceInput } from "@/lib/server/voice-policy";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 900;
+export const maxDuration = 300;
 
 /**
  * POST { content, imageIds?, provider?, record?, truncateFrom? }
