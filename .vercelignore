@@ -1,1 +1,10 @@
 search-api
+.data
+.next-test
+.next-voice
+artifacts
+test-results
+scratch
+*.html
+probe-*.js
+test-*.js
