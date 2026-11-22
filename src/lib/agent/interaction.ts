@@ -52,7 +52,7 @@ export interface PageState {
 
 export interface DomObservation {
   elements: ObservedElement[];
-  images: { url: string; alt: string; col: number; row: number; animated?: boolean }[];
+  images: { url: string; alt: string; col: number; row: number; animated?: boolean; thumbnail?: boolean; sourceUrl?: string }[];
   text: string;
   pageText?: string;
   atBottom: boolean;
@@ -340,26 +340,73 @@ export const PAGE_SCRIPT = async (arg: ScriptArg): Promise<unknown> => {
       }
     }
     const atBottom = window.scrollY + vh >= document.documentElement.scrollHeight - 20;
-    // Search results show small previews (often stills of GIFs); the link around one usually
-    // carries the original file (Google: /imgres?imgurl=..., others link the file itself).
-    const originalOf = (img: HTMLImageElement) => {
-      const href = (img.closest("a") as HTMLAnchorElement | null)?.href || "";
-      const q = /[?&](?:imgurl|mediaurl|img_url)=([^&]+)/i.exec(href)?.[1];
-      if (q) { try { return decodeURIComponent(q); } catch { /* keep looking */ } }
-      return /^https?:\/\/[^?#]+\.(?:gif|webp|png|jpe?g)(?:[?#]|$)/i.test(href) ? href : "";
+    // Search results show small static previews (often stills of GIFs); extract the real
+    // direct media URL and source page when present (Bing a[m] JSON, Google /imgres?imgurl=,
+    // data-original/data-gif attributes, or direct media anchor links).
+    const resolveImageMeta = (img: HTMLImageElement): { original: string; sourceUrl: string } => {
+      const a = img.closest("a") as HTMLAnchorElement | null;
+      const href = a?.href || "";
+      let original = "";
+      let sourceUrl = "";
+
+      // Bing Images embeds {"murl":"<direct media>","purl":"<source page>"} in a[m].
+      const mAttr = a?.getAttribute("m") || img.closest("[m]")?.getAttribute("m") || "";
+      if (mAttr && mAttr.startsWith("{")) {
+        try {
+          const parsed = JSON.parse(mAttr) as { murl?: string; purl?: string };
+          if (typeof parsed.murl === "string" && /^https?:\/\//.test(parsed.murl)) original = parsed.murl;
+          if (typeof parsed.purl === "string" && /^https?:\/\//.test(parsed.purl)) sourceUrl = parsed.purl;
+        } catch { /* ignore malformed m attribute */ }
+      }
+
+      if (!original && href) {
+        const q = /[?&](?:imgurl|mediaurl|img_url)=([^&]+)/i.exec(href)?.[1];
+        if (q) { try { original = decodeURIComponent(q); } catch { /* keep looking */ } }
+        const refQ = /[?&](?:imgrefurl|rurl)=([^&]+)/i.exec(href)?.[1];
+        if (refQ && !sourceUrl) { try { sourceUrl = decodeURIComponent(refQ); } catch { /* ignore */ } }
+      }
+
+      if (!original && /^https?:\/\/[^?#]+\.(?:gif|webp|png|jpe?g)(?:[?#]|$)/i.test(href)) {
+        original = href;
+      }
+
+      if (!original) {
+        for (const attr of ["data-gif", "data-original", "data-full-url", "data-src", "data-media-url"]) {
+          const val = img.getAttribute(attr) || a?.getAttribute(attr) || "";
+          if (/^https?:\/\//.test(val)) { original = val; break; }
+        }
+      }
+
+      if (!sourceUrl && href && /^https?:\/\//.test(href) && !/\.(?:gif|webp|png|jpe?g)(?:[?#]|$)/i.test(href)) {
+        sourceUrl = href;
+      }
+      return { original, sourceUrl };
     };
-    const images = Array.from(document.images).map((img) => ({ img, original: originalOf(img) })).filter(({ img, original }) => {
+    const isThumbUrl = (u: string) =>
+      /\/\/(?:tse\d*\.mm\.bing\.net|th\.bing\.com|encrypted-tbn\d*\.gstatic\.com|external-content\.duckduckgo\.com)\//i.test(u) ||
+      /\/(?:thumb|thumbs|thumbnail|thumbnails|preview|previews)\//i.test(u);
+    const images = Array.from(document.images).map((img) => ({ img, ...resolveImageMeta(img) })).filter(({ img, original }) => {
       const rect = img.getBoundingClientRect();
       return img.complete && img.naturalWidth >= 80 && img.naturalHeight >= 60 && rect.width >= 60 && rect.height >= 40
         && rect.bottom > 0 && rect.top < vh * 1.5 && rect.right > 0 && rect.left < vw
         && getComputedStyle(img).visibility !== "hidden" && (/^https?:\/\//.test(img.currentSrc || img.src) || /^https?:\/\//.test(original));
-    }).slice(0, 24).map(({ img, original }) => {
+    }).slice(0, 24).map(({ img, original, sourceUrl }) => {
       const rect = img.getBoundingClientRect();
       const col = Math.min(3, Math.max(0, Math.floor(rect.left / (vw / 4))));
       const row = Math.min(3, Math.max(0, Math.floor(rect.top / (vh / 4))));
       const url = original || img.currentSrc || img.src;
-      const animated = /\.gif(?:[?#]|$)|giphy\.com|tenor\.com|redgifs|gfycat/i.test(url) || /\bgif\b/i.test(img.alt || "");
-      return { url, alt: (img.alt || img.title || "").slice(0, 160), col, row, ...(animated ? { animated: true } : {}) };
+      const thumbnail = isThumbUrl(url);
+      // Only mark animated when the resolved URL itself is a direct .gif or known animated GIF CDN (never from alt text on a static thumbnail).
+      const animated = !thumbnail && (/\.gif(?:[?#]|$)/i.test(url) || /\/\/(?:media\d*\.giphy\.com|i\.giphy\.com|media\d*\.tenor\.com|c\.tenor\.com)\//i.test(url));
+      return {
+        url,
+        alt: (img.alt || img.title || "").slice(0, 160),
+        col,
+        row,
+        ...(animated ? { animated: true } : {}),
+        ...(thumbnail ? { thumbnail: true } : {}),
+        ...(sourceUrl ? { sourceUrl: sourceUrl.slice(0, 300) } : {}),
+      };
     });
     return {
       elements: out, images, text: text.slice(0, 1400), pageText, atBottom, more,
@@ -575,12 +622,12 @@ export function formatAccessibilitySnapshot(nodes: AccessibilityNode[]): string 
  */
 export async function settlePage(page: Page, opts: { navigated: boolean; signal?: AbortSignal }): Promise<void> {
   const run = () =>
-    pageCall(page, { cmd: "settle", quietMs: opts.navigated ? 350 : 250, maxMs: opts.navigated ? 4000 : 1500 });
-  if (opts.navigated) await page.waitForLoadState("domcontentloaded", { timeout: 20_000 }).catch(() => {});
+    pageCall(page, { cmd: "settle", quietMs: opts.navigated ? 180 : 120, maxMs: opts.navigated ? 1800 : 800 });
+  if (opts.navigated) await page.waitForLoadState("domcontentloaded", { timeout: 15_000 }).catch(() => {});
   if (opts.signal?.aborted) return;
   await run().catch(async () => {
     // The document was replaced mid-wait (a navigation): wait for the new one and settle it.
-    await page.waitForLoadState("domcontentloaded", { timeout: 20_000 }).catch(() => {});
+    await page.waitForLoadState("domcontentloaded", { timeout: 15_000 }).catch(() => {});
     await run().catch(() => {});
   });
 }
@@ -619,9 +666,9 @@ const lastPointer = new WeakMap<Page, { x: number; y: number }>();
 export function glideMs(page: Page, x: number, y: number): number {
   const from = lastPointer.get(page);
   lastPointer.set(page, { x, y });
-  if (!from) return 260;
+  if (!from) return 110;
   const dist = Math.hypot(x - from.x, y - from.y);
-  return dist < 4 ? 0 : Math.round(Math.min(560, 200 + dist * 0.3));
+  return dist < 4 ? 0 : Math.round(Math.min(220, 80 + dist * 0.14));
 }
 
 const pause = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));

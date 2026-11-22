@@ -112,3 +112,46 @@ export function imageSearchIntent(goal: string): ImageSearchIntent | null {
   if (!query || query.length > 120) return null;
   return { query, engine, simple: !tail };
 }
+
+export interface MediaDeliverableSpec {
+  /** Requested number of distinct media items (null if unspecified). */
+  count: number | null;
+  /** True when the user specifically asked for animated GIFs. */
+  requireAnimated: boolean;
+  /** True when the user asked to send/deliver the images/GIFs directly into chat (not just browse). */
+  deliverToChat: boolean;
+  /** True when the user asked for a collage rather than separate chat images. */
+  isCollage: boolean;
+}
+
+const WORD_NUMS: Record<string, number> = {
+  one: 1, a: 1, an: 1, two: 2, both: 2, couple: 2, three: 3, four: 4, five: 5,
+  six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+};
+
+/**
+ * Parse media deliverable requirements from a natural-language goal so the runner can
+ * validate animated GIFs, track partial progress (e.g. 3/5 delivered), and verify chat delivery.
+ */
+export function parseMediaDeliverable(goal: string): MediaDeliverableSpec {
+  const g = (goal || "").trim();
+  const isCollage = /\bcollage\b/i.test(g);
+  const requireAnimated = /\bgifs?\b|\banimated\b/i.test(g);
+  const mentionsMedia = /\b(gifs?|images?|pictures?|pics?|photos?|wallpapers?|memes?)\b/i.test(g);
+  const deliverToChat =
+    mentionsMedia &&
+    !isCollage &&
+    /\b(send|attach|post|drop|deliver|share|put)\b[^.?!\n]{0,60}\b(chat|here|directly|me|them|gifs?|images?|pictures?|pics?|photos?)\b/i.test(g);
+
+  let count: number | null = null;
+  const numMatch = g.match(
+    /\b(\d{1,2}|one|two|both|three|four|five|six|seven|eight|nine|ten)\s+(?:[a-z0-9-]+,?\s+){0,4}(?:gifs?|images?|pictures?|pics?|photos?|wallpapers?|memes?)\b/i,
+  );
+  if (numMatch) {
+    const raw = numMatch[1].toLowerCase();
+    const n = /^\d+$/.test(raw) ? Number(raw) : WORD_NUMS[raw];
+    if (Number.isInteger(n) && n >= 1 && n <= 20) count = n;
+  }
+
+  return { count, requireAnimated, deliverToChat, isCollage };
+}

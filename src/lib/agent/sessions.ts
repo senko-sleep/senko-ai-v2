@@ -97,7 +97,7 @@ const encodesHere = () => { const c = browserMode()?.channel; return !c || LOCAL
 const smallHost = () => isLowMemoryHost() && encodesHere();
 const FPS_CAP = () => Math.min(240, Math.max(1, Number(process.env.LIVE_FPS) || (smallHost() ? 30 : 60)));
 // Text needs a clean JPEG: 60 smeared small code / UI text into blocks.
-const QUALITY = () => Math.min(95, Math.max(20, Number(process.env.LIVE_QUALITY || (smallHost() ? 55 : 82))));
+const QUALITY = () => Math.min(95, Math.max(20, Number(process.env.LIVE_QUALITY || (smallHost() ? 55 : 68))));
 // Live view size relative to the real screen. Smaller frames encode much faster on weak CPUs.
 const SCALE = () => Math.min(1, Math.max(0.3, Number(process.env.LIVE_SCALE || (smallHost() ? 0.75 : 1))));
 const CAST_IDLE_GRACE_MS = 5000;
@@ -411,7 +411,10 @@ export class BrowserSession {
     await this.context.addInitScript(POINTER_SCRIPT);
     await this.context.addInitScript(SELECT_SCRIPT);
     await this.context.route("**/*", (route) => {
-      const url = route.request().url();
+      const req = route.request();
+      const rtype = req.resourceType();
+      if (rtype === "ping" || rtype === "csp_report") return route.abort("blockedbyclient");
+      const url = req.url();
       let host = "";
       try {
         host = new URL(url).hostname;
@@ -420,7 +423,7 @@ export class BrowserSession {
       }
       if (host && isAdHost(host)) return route.abort("blockedbyclient");
       if (isPrivateUrl(url)) {
-        if (route.request().isNavigationRequest()) this.log(`Blocked private network address ${host}`, "warn");
+        if (req.isNavigationRequest()) this.log(`Blocked private network address ${host}`, "warn");
         return route.abort("blockedbyclient");
       }
       return route.continue();
@@ -1072,8 +1075,9 @@ export class BrowserSession {
         // Up to 4K: frames are the viewport's CSS size, which matches the panel (setViewport),
         // so they're drawn 1:1. (The old 1280x800 cap blurred any bigger panel.) Only small
         // hosts scale them down to keep encoding fast.
-        maxWidth: Math.round(Math.min(3840, Math.max(320, Number(process.env.LIVE_MAX_WIDTH) || (smallHost() ? 1280 : 3840))) * SCALE()),
-        maxHeight: Math.round(Math.min(2160, Math.max(240, Number(process.env.LIVE_MAX_HEIGHT) || (smallHost() ? 800 : 2160))) * SCALE()),
+        // Cap default screencast encoding at 1080p (4x faster JPEG encode & stream than 4K).
+        maxWidth: Math.round(Math.min(3840, Math.max(320, Number(process.env.LIVE_MAX_WIDTH) || (smallHost() ? 1280 : 1920))) * SCALE()),
+        maxHeight: Math.round(Math.min(2160, Math.max(240, Number(process.env.LIVE_MAX_HEIGHT) || (smallHost() ? 800 : 1080))) * SCALE()),
         everyNthFrame: 1,
       }), 10_000, "starting the live view");
     } catch {

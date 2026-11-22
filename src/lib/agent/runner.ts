@@ -5,15 +5,17 @@
 // available) plus a direct check of any <video> element.
 import type { Page } from "playwright";
 import { complete, headroom, LlmBusyError, type ImagePart, type LlmMessage, type LlmOptions } from "@/lib/llm";
-import { compactSources, historyLine, imageSearchIntent, isSimpleGoal, parseMediaCommand, shortUrl, type SourcePage } from "./context";
-import { checkpointLease, clearCheckpoint, saveCheckpoint, type Checkpoint } from "./checkpoint";
+import { compactSources, historyLine, imageSearchIntent, isSimpleGoal, parseMediaCommand, parseMediaDeliverable, shortUrl, type SourcePage } from "./context";
+import { checkpointLease, clearCheckpoint, saveCheckpoint, type Checkpoint, type DeliveredMediaMeta } from "./checkpoint";
 import { sessions, type BrowserSession } from "./sessions";
 import { isPrivateUrl } from "./safety";
 import { agentVoice, safeSearchFor } from "@/lib/server/persona";
 import { looksLikeRefusal } from "@/lib/refusal";
 import { IMAGE_CLASSIFIER_NOTE, type SafeSearch } from "@/lib/content-policy";
+import { classifyContentRequest, describeSafeSearchState, normalizeProviderRefusal } from "@/lib/policy-classifier";
 import { saveImage } from "@/lib/server/chats";
-import { stashImage, listStash, clearStash, stashStats } from "./image-store";
+import { searchAllowed } from "@/lib/server/search-reply";
+import { ImageFetchError, stashImage, listStash, clearStash, stashStats } from "./image-store";
 import { makeCollage } from "./collage";
 import type { PageSnap } from "./http-session";
 import { describeRequirements, isModerationNote, onlyPolicyGaps, requirementsComplete, reviewRequirements, taskRequirements, updateRequirements } from "./requirements";
@@ -21,8 +23,10 @@ import { formatAccessibilitySnapshot, glideMs, hadEffect, observeAccessibilitySn
 import { findRoute, fingerprintKey, hostOf, hostsInGoal, learnSearchUrl, loadHostMemory, memoryHints, preferredMethod, recordElement, recordLesson, recordRoute, recordRouteOutcome, recordUrlOutcome, type MemoryRow } from "./nav-memory";
 import { StrategyMonitor } from "./strategy";
 import { diagnoseFailure } from "./recovery";
+import { classifyPage, isSearchPageUrl, normalizeUrl } from "./url-utils";
+import { ModelRotator } from "./model-rotator";
 import { handOffGoogleCaptcha, runSearch } from "./web-search";
-import { detectPageBotChallenge, isGoogleSorryUrl } from "./google-gate";
+import { detectPageBotChallenge, googleAvailable, isGoogleHost, isGoogleSorryUrl, parseResultsUrl } from "./google-gate";
 import { assessAction } from "./risk";
 import { consumeApproval, requestApproval, type ApprovalRequest } from "./approvals";
 import { withTimeout } from "./timeouts";
@@ -160,7 +164,7 @@ interface Observation {
   url: string;
   title: string;
   elements: ObservedElement[];
-  images: { url: string; alt: string; col: number; row: number; animated?: boolean }[];
+  images: { url: string; alt: string; col: number; row: number; animated?: boolean; thumbnail?: boolean; sourceUrl?: string }[];
   text: string;
   /** Page text outside the viewport (start of the page), when it adds something. */
   pageText?: string;
@@ -183,15 +187,16 @@ const EMPTY_DOM: DomObservation = { elements: [], images: [], text: "", atBottom
 
 /**
  * What the page looks like structurally: its controls and their state. Live text (clocks,
- * viewer counts, video time) is left out, so a ticking page doesn't look "changed".
+ * viewer counts, video time) and rotating search tracking params are left out, so a ticking
+ * or re-visited search page doesn't look "changed".
  */
 function observationStateKey(o: Pick<Observation, "url" | "title" | "elements" | "images" | "atBottom"> | null) {
   if (!o) return "blank";
-  return JSON.stringify([o.url, o.title, o.atBottom, o.elements.map((e) => [e.tag, e.text, e.href, e.ctx, e.flags, e.off, e.covered]), o.images.map((i) => i.url)]);
+  return JSON.stringify([normalizeUrl(o.url), o.title, o.atBottom, o.elements.map((e) => [e.tag, e.text, e.href, e.ctx, e.flags, e.off, e.covered]), o.images.map((i) => normalizeUrl(i.url))]);
 }
 
 /** Directly check the main <video>: is it really playing (time advancing, has frames, no error)? */
-export async function videoState(page: Page): Promise<VideoState | null> {
+export async function videoState(page: Page, waitForAdvance = true): Promise<VideoState | null> {
   const read = () =>
     page.evaluate(() => {
       const vids = Array.from(document.querySelectorAll("video"));
@@ -224,6 +229,9 @@ export async function videoState(page: Page): Promise<VideoState | null> {
   // Advanced by about the time that passed (not a jump from seeking): it is playing.
   if (a.advanced != null && a.advanced > 0.3 && a.advanced <= a.elapsed * 2.5 + 0.5 && a.width > 0 && !a.error) {
     return { present: true, playing: true, paused: false, currentTime: a.t, duration: a.duration, width: a.width, readyState: a.readyState, error: a.error, muted: a.muted, fullscreen: a.fullscreen };
+  }
+  if (!waitForAdvance) {
+    return { present: true, playing: !a.paused && a.width > 0 && a.readyState >= 2 && !a.error, paused: a.paused, currentTime: a.t, duration: a.duration, width: a.width, readyState: a.readyState, error: a.error, muted: a.muted, fullscreen: a.fullscreen };
   }
   await page.waitForTimeout(1200);
   const b = (await read().catch(() => null)) || a;
@@ -318,8 +326,10 @@ function formatObservation(o: Observation): string {
     (left ? `\n(+${left} more not listed${o.more?.onScreen ? `, ${o.more.onScreen} of them on screen, mostly site navigation` : ""})` : "");
   const st = o.state;
   const where = st && st.scrollH > st.vh + 40 ? `, scrolled ${Math.round(((st.scrollY + st.vh) / st.scrollH) * 100)}% down` : "";
+  const pageClass = classifyPage({ url: o.url, title: o.title, text: o.text, imageCount: o.images.length });
   return [
     `URL: ${o.url}`,
+    `Page type: ${pageClass.kind}${pageClass.note ? ` — ${pageClass.note}` : ""}`,
     `Title: ${o.title}`,
     `Tabs: ${o.tabs}`,
     o.viewport ? `Viewport: ${o.viewport.width}x${o.viewport.height} CSS px${where}` : "",
@@ -329,7 +339,7 @@ function formatObservation(o: Observation): string {
     o.app ? `Desmos expressions on this page (this is the truth about what is graphed):\n${o.app}` : "",
     `Interactive elements (@x,y = center in the viewport; off-screen ones can be clicked directly, they scroll into view):\n${els || "(none visible)"}`,
     o.a11y ? `ARIA Accessibility Tree (semantic landmarks, roles, states, and [id] references):\n${o.a11y}` : "",
-    `Visible images (use exact URLs; col/row = approx grid position 0-3 from top-left):\n${o.images.map((img, i) => `  [img${i}] col=${img.col} row=${img.row} alt="${img.alt}"${img.animated ? " GIF (animated)" : ""} url=${img.url}`).join("\n") || "(none)"}`,
+    `Visible images (use exact direct media URLs; avoid THUMBNAIL URLs when animated GIFs or full files are needed):\n${o.images.map((img, i) => `  [img${i}] col=${img.col} row=${img.row} alt="${img.alt}"${img.animated ? " [GIF]" : ""}${img.thumbnail ? " [THUMBNAIL - static preview]" : ""} url=${img.url}${img.sourceUrl ? ` source=${shortUrl(img.sourceUrl, 120)}` : ""}`).join("\n") || "(none)"}`,
     `Visible text (on screen now):\n${o.text.slice(0, 1400)}${o.atBottom ? "\n(end of page)" : ""}`,
     o.pageText ? `Other page text (top of the page, off screen):\n${o.pageText.slice(0, 900)}` : "",
   ]
@@ -347,9 +357,10 @@ Reply with ONE JSON object and nothing else:
 {"check": {"ok": true|false, "note": "<did the PREVIOUS step work? judge from the screenshot/page: right page? error? video actually playing?>"}, "requirements":[{"id":"r1","status":"verified|pending|blocked","evidence":"specific observed result"}], "thought": "<one short sentence>", "action": "<name>", ...parameters}
 
 Actions:
-{"action":"search","query":"..."}                     web search (Google; add "engine":"bing" only if the user asks for Bing). Use it when the user didn't name a site, then pick the best match. Search each query once: running it again reopens the same results without a new request, and going back to results is better than searching again.
-{"action":"image_search","query":"...","engine":"google"} IMAGE results (Google Images, or "bing"). Use whenever the user wants pictures/images/pics/photos/wallpapers/gifs of something, never a plain web search. Opens the image grid directly.
+{"action":"search","query":"...","engine":"bing"}       web search (supports "bing", "ddg", or "google"). Prefer going straight to a target website with goto when you know one; for fast captcha-free search use "bing" or "ddg". Search each query once — never gamble time retrying the same search or blocked site.
+{"action":"image_search","query":"...","engine":"bing"} IMAGE results ("bing", "ddg", or "google"). Opens the image grid directly. Use "bing" or "ddg" for fast captcha-free results, or goto a dedicated image/GIF site directly.
 {"action":"goto","url":"https://..."}                 open a URL (any site the user names or pastes)
+{"action":"open_fastest","urls":["https://site1...","https://site2...","https://site3..."]} RACE 2-4 candidate websites in parallel tabs: switches to the FIRST one that loads cleanly (no captcha/403/timeout) and automatically closes all slower or blocked tabs. Use this whenever you have multiple candidate sites so you never waste time waiting on one slow site.
 {"action":"click","id":12}                            click element [12] (also works for [off-screen] elements: it scrolls them into view first)
 {"action":"hover","id":7}                             move the pointer onto [7] without clicking (menus that open on hover)
 {"action":"click","x":640,"y":400}                    click a point in the viewport (CSS px, 0,0 = top-left; size is in the observation). Only for spots with no element id: canvases, maps, "the middle of the page".
@@ -369,7 +380,8 @@ Actions:
 {"action":"desmos","op":"set","expressions":["x^2+y^2+z^2=4"]}  on a Desmos page, write expressions directly as LaTeX: "set" replaces everything, "add" appends, "clear" empties the graph. Much more reliable than typing; the result lists each expression and any Desmos ERROR so you can fix it.
 {"action":"dismiss"}                                  close cookie banners / overlays / modals blocking the page
 {"action":"screenshot","label":"..."}                 save a screenshot to show the user
-{"action":"fetch_image","url":"https://...","alt":"description"} download an image into the session stash. Use direct media URLs (.jpg/.png/.webp/.gif) from the images list. For GIFs, fetch the .gif itself (marked GIF in the list), not a still preview, so it stays animated in the chat.
+{"action":"fetch_image","url":"https://...","alt":"description"} download one image into the session stash. Use direct media URLs (.jpg/.png/.webp/.gif) from the images list. For GIFs, fetch the .gif itself (marked GIF in the list), not a still preview, so it stays animated in the chat.
+{"action":"fetch_images","urls":["https://...","https://..."],"send":true} BATCH download and validate multiple direct media URLs (up to 12) in ONE step, and when "send":true immediately attach all valid results to chat. Always prefer fetch_images over repeated single fetch_image calls when multiple direct URLs are visible on the page.
 {"action":"send_images","ids":["img_..."]} attach selected stashed images to this chat as separate images (omit ids for all stashed images). fetch_image alone does not send images. Use this for "send both images"; a collage is a different deliverable.
 {"action":"send_video"}                               put the video on the current page into the chat so the user can watch it there (works on any site: player, embed or stream). Open the video's own page first; "index":2 picks the second video on the page. Use this whenever the user wants a video "in chat" / "sent" / "here" — a link alone is not sending it.
 {"action":"make_collage","ids":["img_..."],"label":"label"} combine stashed images into a single collage (omit ids to use all stashed images).
@@ -398,16 +410,16 @@ Rules:
 - Finish with done once every part of the goal is reached. For simple browser actions, use 1-3 sentences. For research, lists, or visual requests, give a useful Markdown answer with descriptive clickable source links and concise findings; use a table when comparing sources. Include relevant images from the observed image URLs using ![descriptive caption](exact image URL), with a nearby source-page link. For several images, place 2-4 images together in one paragraph. Never invent image URLs or use a search-page URL as an image. If no usable image URL is available for a requested visual, take a screenshot. Use only sources and images observed during this task. Keep the assistant's own voice described below.
 
 
-IMAGE / COLLAGE WORKFLOW — for goals like "download the top 5 Eevee images and make a collage":
-1. Navigate to an image-rich site. Best picks:
-   - Anime/fan-art: danbooru.donmai.us, safebooru.org, gelbooru.com (general content, no login needed)
-   - Art/illustration: deviantart.com, artstation.com
-   - Stock photos: unsplash.com, pexels.com
-   - General: images.google.com, bing.com/images, pinterest.com
-   Try the next site if one blocks or paywalls you — don't retry the same site more than twice.
-2. For each image you want: use fetch_image with the direct media URL from the images list (not a page link).
-3. When you have enough images in STASH, call make_collage.
-4. Call done once the collage is saved and visible to the user.`;
+IMAGE / GIF / COLLAGE WORKFLOW — for goals like "find 5 animated GIFs and send them to chat" or "make a collage":
+1. Distinguish these stages clearly:
+   - search_results / image_search_results page (NOT downloadable media)
+   - image_preview / [THUMBNAIL] URL (usually a static JPEG/WebP preview, NOT an animated GIF)
+   - direct media URL (.gif/.png/.jpg/.webp — marked [GIF] for animated GIFs)
+   - stashed & validated file (after fetch_image succeeds and verifies format/animation/uniqueness)
+   - delivered chat attachment (ONLY after send_images succeeds)
+2. Before each action, check: What page type am I on? How many valid items are already stashed/delivered vs still needed? Has this URL/search/host already failed? Pick a genuinely different source or query if a host returns HTTP 403/429 or static thumbnails.
+3. For animated GIFs: fetch direct .gif URLs (not [THUMBNAIL] proxy URLs). Open a source page or switch to a GIF-native site (e.g. tenor.com, giphy.com, or a site hosting direct .gif files) if search results only expose static thumbnails.
+4. Preserve partial progress: never clear or discard already-validated images when one candidate fails. Call send_images as soon as you have validated media to deliver, then call done only once the requested count is actually delivered (or report partial delivery/limitations honestly if impossible).`;
 
 function parseJson<T>(text: string): T | null {
   return parseAgentObject(text) as T | null;
@@ -428,9 +440,11 @@ function describe(a: Action, obs: Observation | null): string {
     case "search":
       return `Searching “${a.query}”`;
     case "image_search":
-      return `Searching ${a.engine === "bing" ? "Bing" : "Google"} Images for “${a.query}”`;
+      return `Searching ${a.engine === "bing" ? "Bing" : a.engine === "ddg" ? "DuckDuckGo" : "Google"} Images for “${a.query}”`;
     case "goto":
       return `Opening ${host(a.url)}`;
+    case "open_fastest":
+      return `Racing ${a.urls?.length || 0} sites in parallel tabs`;
     case "click":
       return el || a.id !== undefined ? `Clicking ${name}` : `Clicking at (${Math.round(Number(a.x))}, ${Math.round(Number(a.y))})`;
     case "hover":
@@ -471,6 +485,8 @@ function describe(a: Action, obs: Observation | null): string {
       return "Taking a screenshot";
     case "fetch_image":
       return `Fetching image${a.alt ? ` "${a.alt}"` : ""}`;
+    case "fetch_images":
+      return `Batch fetching ${a.urls?.length || 0} image${a.urls?.length === 1 ? "" : "s"}${a.send ? " and sending to chat" : ""}`;
     case "make_collage":
       return "Building image collage";
     case "send_images":
@@ -502,11 +518,26 @@ export async function runAgent(opts: RunOptions): Promise<void> {
   let session: BrowserSession | null = null;
   const imageIds: string[] = [...(ck?.imageIds || [])];
   const deliveredStash = new Map<string, string>(ck?.deliveredImages || []);
+  const deliveredMeta: DeliveredMediaMeta[] = [...(ck?.deliveredMeta || [])];
+  const deliveredHashes = new Set<string>(deliveredMeta.map((m) => m.hash).filter((h): h is string => !!h));
+  const mediaSpec = parseMediaDeliverable(goal);
   const sentVideos: ChatVideo[] = [];
-  const requestBudget = new InferenceRequestBudget(Math.min(100, Math.max(1, Number(process.env.AGENT_MAX_INFERENCE_REQUESTS) || 32)));
+  const requestBudget = new InferenceRequestBudget(Math.min(200, Math.max(1, Number(process.env.AGENT_MAX_INFERENCE_REQUESTS) || 80)));
   const formatRecovery = new BrowserFormatRecovery();
+  const modelRotator = new ModelRotator();
+  /** Times a declined step has been handed to another model in this task. */
+  let refusalHandoffs = 0;
+  const MAX_REFUSAL_HANDOFFS = 2;
   const aborted = () => signal.aborted;
   let lastProvider: { provider?: string; model?: string } = {};
+
+  // Hard platform boundary (sexual content involving minors): refuse briefly and consistently
+  // before opening a browser or sending inference calls, regardless of model or SafeSearch.
+  const initialPolicy = classifyContentRequest(goal, "off");
+  if (initialPolicy.category === "prohibited") {
+    emit({ type: "done", answer: initialPolicy.briefExplanation || "This request cannot be fulfilled.", imageIds: [] });
+    return;
+  }
 
   // Task progress, saved after every step so a pause or restart continues from here.
   let plan: string[] = ck?.plan ?? [];
@@ -516,8 +547,11 @@ export async function runAgent(opts: RunOptions): Promise<void> {
   let actionsTaken = ck?.actionsTaken ?? 0; // actions run this task, for the early-finish check
   /** The control last clicked or typed into: what an Enter/Space keypress would activate. */
   let lastTouched: ObservedElement | null = null;
+  // Notices loops, dead targets, duplicate searches and failed URLs (in memory, checkpointed across resumes).
+  const strategy = new StrategyMonitor();
+  strategy.restore(ck?.strategy);
   const saveProgress = (reason?: string) =>
-    saveCheckpoint(chatId, { goal, plan, history: history.slice(-30), actionsTaken, requirements, sources: [...visitedSources.entries()], imageIds, deliveredImages: [...deliveredStash], reason }, progressLease).catch(() => {});
+    saveCheckpoint(chatId, { goal, plan, history: history.slice(-30), actionsTaken, requirements, sources: [...visitedSources.entries()], imageIds, deliveredImages: [...deliveredStash], deliveredMeta, strategy: strategy.serialize(), reason }, progressLease).catch(() => {});
 
   /** Steps before this index go without screenshots (vision models were unavailable). */
   let visionOffUntil = -1;
@@ -566,7 +600,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       emit({ type: "status", text });
       session?.log(text, "warn");
     };
-    const llmOpts: LlmOptions = {
+    const buildLlmOpts = (): LlmOptions => ({
       provider,
       signal,
       json: true,
@@ -578,13 +612,16 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       fast: process.env.AGENT_FAST !== "0",
       priority: "interactive",
       eager: true,
+      // Avoid 2x-3x speculative hedge burn once a healthy model is responding or budget is below 60%.
+      hedge: !lastProvider.model && requestBudget.fractionRemaining > 0.6,
       requestBudget,
-      excludeModels: formatRecovery.excludedModels,
+      excludeModels: [...new Set([...formatRecovery.excludedModels, ...modelRotator.excludedModels])],
       ...extra,
-    };
+    });
+    let resetRotationOnce = false;
     for (;;) {
       try {
-        const r = await complete(messages, llmOpts);
+        const r = await complete(messages, buildLlmOpts());
         lastProvider = { provider: r.providerLabel, model: r.model };
         return r.text;
       } catch (e) {
@@ -592,6 +629,13 @@ export async function runAgent(opts: RunOptions): Promise<void> {
         const msg = e instanceof Error ? e.message : String(e);
         if (e instanceof InferenceBudgetExceeded) throw new AgentPause(`${msg} Progress is saved. Resume starts a new bounded execution.`, "quota");
         if (/^No AI provider is configured/.test(msg)) throw e;
+        // If task-local model rotation excluded every configured model (e.g. single-model setup),
+        // reset the rotation exclusions once so the task can continue cleanly.
+        if (!resetRotationOnce && modelRotator.excludedModels.length > 0 && /excluded by this task|no .*model|all .*models/i.test(msg)) {
+          resetRotationOnce = true;
+          modelRotator.resetIfExhausted();
+          continue;
+        }
         // Vision models are the scarcest: drop the screenshot for this and the next few steps
         // (not for the whole task) and let a text model answer from the page text.
         if (messages.some((m) => m.images?.length)) {
@@ -637,15 +681,17 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       await page.waitForTimeout(1500);
       await settlePage(page, { navigated: true, signal });
     }
-    // A fresh page that renders its text late: wait while the text is still growing.
+    // A fresh page that renders its text late: wait briefly while the text is still growing.
     let prev = -1;
-    for (let i = 0; i < 4 && !aborted(); i++) {
+    for (let i = 0; i < 2 && !aborted(); i++) {
       const len = await page.evaluate(() => document.body?.innerText.length || 0).catch(() => 0);
-      if (len > 400 || (len > 0 && len === prev)) break;
+      if (len > 300 || (len > 0 && len === prev)) break;
       prev = len;
-      await page.waitForTimeout(400);
+      await page.waitForTimeout(250);
     }
   };
+
+  const needsVideoPlaybackCheck = /\b(play|pause|watch|video|stream|episode|youtube|mute|unmute|fullscreen|audio|music)\b/i.test(goal);
 
   /**
    * Look at the page: DOM, tabs, video and app state in parallel (one round trip each), then a
@@ -660,7 +706,8 @@ export async function runAgent(opts: RunOptions): Promise<void> {
     const a11yJob = wantA11y
       ? observeAccessibilitySnapshot(p, 70).then(formatAccessibilitySnapshot).catch(() => undefined)
       : Promise.resolve(undefined);
-    const [r, tabList, video, app, title, a11y] = await Promise.all([dom, s.tabs(), videoState(p), desmosState(p), p.title().catch(() => ""), a11yJob]);
+    const desmosJob = /desmos\.com/i.test(p.url()) ? desmosState(p) : Promise.resolve(null);
+    const [r, tabList, video, app, title, a11y] = await Promise.all([dom, s.tabs(), videoState(p, needsVideoPlaybackCheck), desmosJob, p.title().catch(() => ""), a11yJob]);
     const tabs = tabList.map((t) => `${t.index + 1}. ${t.title.slice(0, 50)}${t.active ? " (active)" : ""}`).join(" | ");
     const base: Observation = {
       ...EMPTY_DOM,
@@ -689,8 +736,6 @@ export async function runAgent(opts: RunOptions): Promise<void> {
     memRows = loaded.flatMap((x) => x.rows);
     return loaded.map(({ h, rows }) => memoryHints(rows, { host: h, elements: obs?.elements || [], goal })).filter(Boolean).join("\n\n");
   };
-  // Notices loops, dead targets and wasted steps (in memory, no extra AI calls).
-  const strategy = new StrategyMonitor();
   const taskStart = Date.now();
 
   const makePlan = (startObs: Observation | null) =>
@@ -768,7 +813,8 @@ export async function runAgent(opts: RunOptions): Promise<void> {
     if (imageIntent) {
       const action = { action: "image_search" as const, query: imageIntent.query, engine: imageIntent.engine };
       const st = step(describe(action, null));
-      const r = await runSearch(session, { query: imageIntent.query, kind: "images", engine: imageIntent.engine, level: safeLevel, signal, status: (text) => emit({ type: "status", text }) }).catch((e) => ({ ok: false, result: `Failed: ${friendlyError(e)}` }));
+      const r = await runSearch(session, { query: imageIntent.query, kind: "images", engine: imageIntent.engine, level: safeLevel, signal, status: (text) => emit({ type: "status", text }) }).catch((e) => ({ ok: false, engine: imageIntent.engine, result: `Failed: ${friendlyError(e)}` }));
+      strategy.recordSearch(r.engine || imageIntent.engine, "images", imageIntent.query);
       if (r.ok) st.done(r.result);
       else st.fail(r.result);
       history.push(historyLine(history.length + 1, action, r.result));
@@ -838,6 +884,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
     const visualGoal =
       /\b(images?|pictures?|photos?|pics?|gifs?|videos?|watch|play|colou?rs?|green|red|blue|pink|yellow|purple|orange|black|white|looks?|see|screenshot|icons?|logos?|thumbnails?|wallpapers?|memes?)\b/i.test(goal);
     let lastOk: boolean = true;
+    let lastActionName: string = "";
     let sinceShot = 99;
     let lastShotKey = "";
     let completionChecks = 0;
@@ -867,12 +914,15 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       const s = session;
       const page = s.pages.length ? s.active() : await s.openTab();
       const blank = page.url() === "about:blank";
-      let withShot: boolean = !blank && i >= visionOffUntil && (visualGoal || !lastOk || sinceShot >= 3);
-      // Adapt to what's left: skip a screenshot that's only a routine check when the vision
-      // models are nearly at their limits (keep it after a failure: that's when it matters).
-      if (withShot && lastOk && i > 0 && (!visualGoal || sinceShot < 2)) {
+      const mediaBatchStep = (lastActionName === "fetch_image" || lastActionName === "fetch_images" || lastActionName === "send_images") && lastOk;
+      // Never force a slow vision-model screenshot on every single routine step (search/goto/scroll/click):
+      // text models see the full DOM + image URLs + [GIF]/[THUMBNAIL] tags 5-8x faster.
+      // Attach a screenshot after a failure (!lastOk) or periodically (every 4 steps) as a visual sanity check.
+      let withShot: boolean = !blank && !mediaBatchStep && !requestBudget.isCritical && i >= visionOffUntil && (!lastOk || sinceShot >= (visualGoal ? 4 : 5));
+      // Adapt to what's left: skip a routine screenshot when vision models are nearly at their limits.
+      if (withShot && lastOk && i > 0) {
         const room = await headroom(true).catch(() => 1);
-        if (room < (visualGoal ? 0.15 : 0.3)) withShot = false;
+        if (room < 0.25) withShot = false;
       }
       // The same page state the model already saw in a screenshot needs no second one
       // (after a successful step); a changed or failed state always gets a fresh look.
@@ -894,26 +944,38 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       sinceShot = obs?.screenshot ? 0 : sinceShot + 1;
       if (obs) visitedSources.set(obs.url, { title: obs.title, images: obs.images });
       const memory = obs ? await siteMemory(obs).catch(() => "") : await (memoryJob ?? "");
-      if (obs) strategy.observe(`${observationStateKey(obs)}|${obs.app || ""}|${obs.text.slice(0, 600).replace(/\d+/g, "#")}`);
+      const pageClass = obs ? classifyPage({ url: obs.url, title: obs.title, text: obs.text, imageCount: obs.images.length }) : null;
+      if (obs) strategy.observe(`${observationStateKey(obs)}|${obs.app || ""}|${obs.text.slice(0, 600).replace(/\d+/g, "#")}`, obs.url, pageClass?.kind);
       const stuckWhy = strategy.stuck();
       if (stuckWhy) throw new AgentPause(`${stuckWhy}, so I stopped instead of going in circles. Take control to help, or press Resume to let me try a different way.`, "stuck");
       const advice = strategy.advice();
 
       emit({ type: "status", text: "Thinking…" });
       const stash = stashStats(chatId);
+      const deliveredValidCount = mediaSpec.requireAnimated
+        ? deliveredMeta.filter((m) => m.animated).length
+        : imageIds.length;
+      const stashedUnsent = stash.images.filter((img) => !deliveredStash.has(img.id) && (!mediaSpec.requireAnimated || img.animated));
+      const mediaProgressLine = (mediaSpec.deliverToChat || mediaSpec.count)
+        ? `MEDIA PROGRESS: Delivered to chat: ${deliveredValidCount}${mediaSpec.count ? `/${mediaSpec.count}` : ""} ${mediaSpec.requireAnimated ? "verified animated GIF(s)" : "verified image(s)"} | Stashed & ready to send: ${stashedUnsent.length}${mediaSpec.count ? ` | Still needed: ${Math.max(0, mediaSpec.count - deliveredValidCount - stashedUnsent.length)}` : ""}`
+        : "";
+      const strategyMem = strategy.memorySummary();
       const userText = [
         chatContext ? `Recent conversation:\n${chatContext}` : "",
         `Goal: ${goal}`,
+        requestBudget.statusSummary(),
+        mediaProgressLine,
         `Task requirements (every item must be verified before completion):\n${describeRequirements(requirements)}`,
         plan.length ? `Plan:\n${plan.map((p, n) => `${n + 1}. ${p}`).join("\n")}` : "",
         history.length ? `Previous steps:\n${history.slice(-10).join("\n")}` : "Previous steps: none yet",
-        stash.count > 0 ? `STASH (${stash.count}/${process.env.AGENT_STASH_MAX ?? 20} images, expires in ~30min):\n${stash.images.map((img) => `  ${img.id} — ${img.alt || img.url} (${(img.bytes / 1024).toFixed(0)} KB)`).join("\n")}` : "STASH: empty",
+        stash.count > 0 ? `STASH (${stash.count}/${process.env.AGENT_STASH_MAX ?? 20} images, expires in ~30min):\n${stash.images.map((img) => `  ${img.id} — ${img.alt || img.url} (${img.mime}, ${img.animated ? `ANIMATED ${img.frameCount} frames` : "static"}, ${img.width}x${img.height}, ${(img.bytes / 1024).toFixed(0)} KB${deliveredStash.has(img.id) ? ", ALREADY SENT" : ""})`).join("\n")}` : "STASH: empty",
         visitedSources.size > (obs ? 1 : 0) ? `Pages seen earlier in this task (for your final answer's links and images):\n${compactSources(visitedSources, obs?.url)}` : "",
         repeats >= 2 ? "WARNING: you are repeating the same action. Try a different approach, or finish with done and explain." : "",
-        safeLevel !== "off" ? `Content preference: the user set SafeSearch to ${safeLevel.toUpperCase()}. Searches here already use it; don't open adult sites${safeLevel === "moderate" ? " unless they name one" : " unless they explicitly ask for one"}.` : "",
+        describeSafeSearchState(safeLevel).note,
+        strategyMem,
         memory,
         advice,
-        obs ? `Current page:\n${formatObservation(obs)}${obs.screenshot ? "\n(Screenshot of the current page attached.)" : ""}` : "Current page: blank tab (start with search or goto).",
+        obs ? `Current page (visited ${strategy.urlVisits(obs.url)}x):\n${formatObservation(obs)}${obs.screenshot ? "\n(Screenshot of the current page attached.)" : ""}` : "Current page: blank tab (start with search or goto).",
       ]
         .filter(Boolean)
         .join("\n\n");
@@ -982,18 +1044,60 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       const targetEl = "id" in d && d.id !== undefined && d.id !== null ? obs?.elements.find((e) => e.id === Number(d.id)) : undefined;
       const targetKey =
         targetEl?.fp ? `el:${fingerprintKey(targetEl.fp)}` :
-        d.action === "goto" ? `goto:${d.url}` :
-        d.action === "search" || d.action === "image_search" ? `search:${String(d.query).toLowerCase()}` :
-        d.action === "press" ? `press:${d.key}@${obs?.url || ""}` : undefined;
-      const targetLabel = targetEl ? `[${targetEl.id}] "${targetEl.text.slice(0, 40)}"` : d.action === "goto" ? `goto ${d.url}` : d.action;
-      // Re-opening the page it's already on is a wasted step (and a sign it lost track).
-      const sameUrl = (u: string) => u.replace(/#.*$/, "").replace(/\/$/, "");
-      if (d.action === "goto" && obs && typeof d.url === "string" && sameUrl(d.url) === sameUrl(obs.url)) {
-        history.push(`${n}. Skipped goto ${d.url}: that page is already open. Work with what's on it, or pick the next step.`);
-        lastOk = false;
-        continue;
+        d.action === "goto" ? `goto:${normalizeUrl(d.url)}` :
+        d.action === "fetch_image" ? `fetch:${normalizeUrl(d.url)}` :
+        d.action === "dismiss" ? `dismiss:${normalizeUrl(obs?.url || "")}` :
+        d.action === "search" || d.action === "image_search" ? `search:${d.engine || "google"}:${d.action}:${String(d.query).trim().toLowerCase()}` :
+        d.action === "press" ? `press:${d.key}@${normalizeUrl(obs?.url || "")}` : undefined;
+      const targetLabel = targetEl ? `[${targetEl.id}] "${targetEl.text.slice(0, 40)}"` : d.action === "goto" ? `goto ${d.url}` : d.action === "fetch_image" ? `fetch_image ${shortUrl(d.url, 80)}` : d.action;
+      // Re-opening the normalized page it's already on or revisiting a page with zero progress is a wasted step.
+      if (d.action === "goto" && typeof d.url === "string") {
+        if (obs && normalizeUrl(d.url) === normalizeUrl(obs.url)) {
+          history.push(`${n}. Skipped goto ${d.url}: that page is already open. Work with what's on it, or pick the next step.`);
+          lastOk = false;
+          continue;
+        }
+        const revisitWhy = strategy.revisitUrlReason(d.url);
+        if (revisitWhy) {
+          history.push(`${n}. Blocked goto ${d.url}: ${revisitWhy}`);
+          lastOk = false;
+          continue;
+        }
       }
-      const deadWhy = ["click", "type", "hover", "goto", "search", "image_search", "press"].includes(d.action) ? strategy.blocked(targetKey) : null;
+      // Deduplicate identical searches that already ran without new progress.
+      if (d.action === "search" || d.action === "image_search") {
+        // Same fixed limits as a chat search: nothing sexual involving minors or real people.
+        const allowed = await searchAllowed(String(d.query), signal).catch(() => ({ allowed: true, reason: undefined as string | undefined }));
+        if (!allowed.allowed) {
+          step("Finished").done("Search limit");
+          await s.persist().catch(() => {});
+          await clearCheckpoint(chatId, progressLease);
+          emit({ type: "done", answer: allowed.reason || "I can't search for that.", imageIds, ...lastProvider });
+          return;
+        }
+        const dupSearch = strategy.duplicateSearchReason(d.engine || "google", d.action === "image_search" ? "images" : "web", String(d.query));
+        if (dupSearch) {
+          history.push(`${n}. Skipped duplicate ${describe(d, obs)}: ${dupSearch}`);
+          lastOk = false;
+          continue;
+        }
+      }
+      // Block retrying already-failed media URLs or rate-limited hosts before spending a network call.
+      if (d.action === "fetch_image") {
+        const failedWhy = strategy.failedUrlReason(String(d.url || ""));
+        if (failedWhy) {
+          history.push(`${n}. Blocked ${describe(d, obs)}: ${failedWhy}`);
+          lastOk = false;
+          continue;
+        }
+        const rlMs = strategy.hostRateLimitRemainingMs(String(d.url || ""));
+        if (rlMs > 0) {
+          history.push(`${n}. Blocked ${describe(d, obs)}: ${hostOf(String(d.url || ""))} is rate-limited (HTTP 429) for ~${Math.ceil(rlMs / 1000)}s. Use a different permitted source.`);
+          lastOk = false;
+          continue;
+        }
+      }
+      const deadWhy = ["click", "type", "hover", "goto", "search", "image_search", "press", "fetch_image", "dismiss"].includes(d.action) ? strategy.blocked(targetKey) : null;
       if (deadWhy) {
         history.push(`${n}. Blocked ${describe(d, obs)}: ${deadWhy}. Pick a different element or method.`);
         lastOk = false;
@@ -1020,6 +1124,56 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       }
 
       if (d.action === "done") {
+        // A refusal inside a JSON done action never reaches the LLM layer's refusal fallback, so
+        // give the step to another configured model here, as chat does. The request and prompt
+        // stay unchanged. If the others decline too, report that briefly and accurately.
+        const rawAnswer = String(d.answer || "Done.");
+        const refusalCheck = normalizeProviderRefusal(rawAnswer, goal, safeLevel, lastProvider.model || lastProvider.provider);
+        if (refusalCheck.normalized && imageIds.length === 0 && !provider && lastProvider.model && refusalHandoffs < MAX_REFUSAL_HANDOFFS && !requestBudget.isCritical) {
+          refusalHandoffs++;
+          const rotation = modelRotator.rotateFrom(lastProvider.model, `${lastProvider.model} declined this step; trying another available model`);
+          if (rotation.reason) s.log(rotation.reason, "warn");
+          lastOk = false;
+          continue;
+        }
+        if (refusalCheck.normalized && imageIds.length === 0) {
+          const fin = step("Finished");
+          fin.done("Provider or policy restriction");
+          await s.persist().catch(() => {});
+          await clearCheckpoint(chatId, progressLease);
+          emit({
+            type: "done",
+            answer: refusalCheck.text,
+            url: d.url || (blank ? undefined : s.active().url()),
+            imageIds,
+            ...lastProvider,
+          });
+          return;
+        }
+        // Programmatic chat-delivery gate: never claim completion while validated media sits
+        // unsent in the stash, or before the requested media count is actually delivered (while budget remains).
+        if (mediaSpec.deliverToChat && completionChecks < 2 && requestBudget.remaining > 2) {
+          const curStash = listStash(chatId);
+          const unsentValid = curStash.filter((img) => !deliveredStash.has(img.id) && (!mediaSpec.requireAnimated || img.animated));
+          if (unsentValid.length > 0) {
+            completionChecks++;
+            lastOk = false;
+            history.push(`${n}. Completion rejected: you have ${unsentValid.length} validated ${mediaSpec.requireAnimated ? "animated GIF(s)" : "image(s)"} in STASH (${unsentValid.map((i) => i.id).join(", ")}) that have NOT been delivered to chat yet. Call send_images before calling done.`);
+            continue;
+          }
+          const deliveredCount = mediaSpec.requireAnimated
+            ? deliveredMeta.filter((m) => m.animated).length
+            : imageIds.length;
+          if (mediaSpec.count && deliveredCount < mediaSpec.count && !requestBudget.isCritical) {
+            const answerAcknowledgesPartial = /\b(only|could not|couldn't|unable|partial|blocked|limit|unavailable|fewer|not available)\b/i.test(String(d.answer || ""));
+            if (!answerAcknowledgesPartial || deliveredCount === 0) {
+              completionChecks++;
+              lastOk = false;
+              history.push(`${n}. Completion rejected: requested ${mediaSpec.count} distinct ${mediaSpec.requireAnimated ? "animated GIFs" : "images"} delivered to chat, but only ${deliveredCount} have been delivered so far. Continue retrieving the remaining ${mediaSpec.count - deliveredCount} or, if genuinely impossible, report the exact limitation and partial count.`);
+              continue;
+            }
+          }
+        }
         // The plan's requirements belong in the audit; it is almost always in by now, so only
         // give it a moment.
         if (!planReady && planJob) await withTimeout(planJob.catch(() => ""), 1000, "");
@@ -1027,8 +1181,9 @@ export async function runAgent(opts: RunOptions): Promise<void> {
         // whose page the model just checked needs no second AI call to confirm it.
         // Same when the agent itself verified every requirement from the page it just saw:
         // a second "are you sure" call only adds seconds.
+        const mediaSatisfied = !mediaSpec.deliverToChat || (!mediaSpec.count ? imageIds.length > 0 : (mediaSpec.requireAnimated ? deliveredMeta.filter((m) => m.animated).length : imageIds.length) >= mediaSpec.count);
         const selfReport = reviewRequirements(requirements, (d as unknown as { requirements?: unknown }).requirements);
-        const selfVerified = lastOk && actionsTaken > 0 && !!obs && completionChecks === 0 && requirementsComplete(selfReport);
+        const selfVerified = mediaSatisfied && lastOk && actionsTaken > 0 && !!obs && completionChecks === 0 && requirementsComplete(selfReport);
         if (selfVerified) requirements = selfReport;
         const quick = selfVerified || (isSimpleGoal(goal) && requirements.length === 1 && lastOk && actionsTaken > 0 && !!obs && completionChecks === 0);
         if (quick && obs && !selfVerified) {
@@ -1096,6 +1251,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       const st = step(describe(d, obs));
       let result = "";
       let ok = true;
+      let actionErrorCode: string | undefined;
       const p = s.active();
       const urlBefore = p.url();
       const nav = watchNavigation(p);
@@ -1112,14 +1268,16 @@ export async function runAgent(opts: RunOptions): Promise<void> {
         switch (d.action) {
           case "search":
           case "image_search": {
+            const kind = d.action === "image_search" ? "images" : "web";
             const r = await runSearch(s, {
               query: String(d.query),
-              kind: d.action === "image_search" ? "images" : "web",
-              engine: d.engine === "bing" ? "bing" : undefined,
+              kind,
+              engine: d.engine === "bing" || d.engine === "ddg" ? d.engine : undefined,
               level: safeLevel,
               signal,
               status: (text) => emit({ type: "status", text }),
             });
+            strategy.recordSearch(r.engine, kind, String(d.query));
             ok = r.ok;
             result = r.result;
             break;
@@ -1136,12 +1294,116 @@ export async function runAgent(opts: RunOptions): Promise<void> {
               result = `Skipped: ${hostOf(url)} asked for human verification earlier, so it is skipped. Use a different site.`;
               break;
             }
-            const resp = await p.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
+            // Intercept Google search/images URLs opened via goto and route them through runSearch
+            // so Google cooldown + automatic instant Bing fallback work in the same step.
+            const googleSearch = parseResultsUrl(url);
+            if (googleSearch?.engine === "google") {
+              const r = await runSearch(s, {
+                query: googleSearch.query,
+                kind: googleSearch.kind,
+                level: safeLevel,
+                signal,
+                status: (text) => emit({ type: "status", text }),
+              });
+              strategy.recordSearch(r.engine, googleSearch.kind, googleSearch.query);
+              ok = r.ok;
+              result = r.result;
+              break;
+            }
+            // If Google is currently cooling down after a robot check, skip hitting google.com homepage
+            // and open Bing directly instead of wasting a turn on a guaranteed captcha.
+            let targetUrl = url;
+            try {
+              const u = new URL(url);
+              if (isGoogleHost(u.hostname) && !googleAvailable("browser")) {
+                targetUrl = /^\/imghp/i.test(u.pathname) ? "https://www.bing.com/images" : "https://www.bing.com";
+              }
+            } catch { /* keep url */ }
+            const resp = await p.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 12_000 });
             const code = resp?.status() || 0;
             result = code >= 400 ? `Loaded ${host(p.url())} but the server answered HTTP ${code}` : `Opened ${host(p.url())}`;
-            if (code >= 400) ok = false;
-            recordUrlOutcome(ownerId, memRows, url, ok, ok ? undefined : `HTTP ${code}`);
-            if (!ok) recordLesson(ownerId, url, `goto ${url.slice(0, 120)}`, false, `HTTP ${code}`);
+            if (code >= 400) {
+              ok = false;
+              if (code === 403) { actionErrorCode = "http_403"; strategy.recordFailedUrl(targetUrl, "http_403", "HTTP 403"); }
+              else if (code === 404 || code === 410) { actionErrorCode = "http_404"; strategy.recordFailedUrl(targetUrl, "http_404", `HTTP ${code}`); }
+              else if (code === 429) { actionErrorCode = "http_429"; strategy.recordFailedUrl(targetUrl, "http_429", "HTTP 429"); }
+            }
+            recordUrlOutcome(ownerId, memRows, targetUrl, ok, ok ? undefined : `HTTP ${code}`);
+            if (!ok) recordLesson(ownerId, targetUrl, `goto ${targetUrl.slice(0, 120)}`, false, `HTTP ${code}`);
+            break;
+          }
+          case "open_fastest": {
+            const candidates = [...new Set((Array.isArray(d.urls) ? d.urls : []).map((u) => {
+              const raw = String(u || "").trim();
+              return !raw ? "" : /^[a-z]+:\/\//i.test(raw) ? raw : `https://${raw}`;
+            }).filter((u) => u && !isPrivateUrl(u) && !skippedHosts.has(hostOf(u))))].slice(0, 4);
+            if (!candidates.length) {
+              ok = false;
+              result = "open_fastest had no usable non-blocked URLs to race.";
+              break;
+            }
+            emit({ type: "status", text: `Racing ${candidates.length} sites in parallel tabs…` });
+            const RACE_TIMEOUT_MS = 10_000;
+            const probePages: Page[] = [];
+            const failures: string[] = [];
+            let winner: { page: Page; url: string } | null = null;
+
+            const tryOne = async (target: string): Promise<{ page: Page; url: string }> => {
+              const tab = await s.context.newPage();
+              probePages.push(tab);
+              try {
+                const resp = await tab.goto(target, { waitUntil: "domcontentloaded", timeout: RACE_TIMEOUT_MS });
+                const code = resp?.status() || 0;
+                if (code >= 400) {
+                  const cat = code === 403 ? "http_403" : code === 404 ? "http_404" : code === 429 ? "http_429" : "network_error";
+                  strategy.recordFailedUrl(target, cat, `HTTP ${code}`);
+                  throw new Error(`${host(target)}: HTTP ${code}`);
+                }
+                const challenge = await detectPageBotChallenge(tab).catch(() => null);
+                if (challenge) {
+                  skippedHosts.add(challenge.host);
+                  throw new Error(`${host(target)}: verification wall`);
+                }
+                return { page: tab, url: tab.url() };
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                if (/timeout/i.test(msg)) strategy.recordFailedUrl(target, "timeout", "slow tab closed");
+                failures.push(msg.slice(0, 80));
+                await tab.close().catch(() => {});
+                throw err;
+              }
+            };
+
+            try {
+              winner = await Promise.any(candidates.map(tryOne));
+            } catch {
+              winner = null;
+            }
+
+            // Close all losing/slow/hung tabs immediately so they don't waste memory or bandwidth.
+            await Promise.all(
+              probePages
+                .filter((tab) => tab !== winner?.page && !tab.isClosed())
+                .map((tab) => tab.close().catch(() => {})),
+            );
+
+            if (!winner) {
+              ok = false;
+              actionErrorCode = "timeout";
+              result = `All ${candidates.length} raced sites failed or timed out (${failures.slice(0, 4).join("; ")}). Try different websites.`;
+              break;
+            }
+
+            // Promote the winning tab to active in the session.
+            const winIdx = s.pages.indexOf(winner.page);
+            if (winIdx >= 0) {
+              await s.switchTab(winIdx).catch(() => {});
+            } else {
+              // If session.pages didn't auto-register the tab yet, navigate active tab or bring winner forward.
+              await winner.page.bringToFront().catch(() => {});
+            }
+            const closedCount = Math.max(0, candidates.length - 1);
+            result = `Opened fastest site ${host(winner.url)} (${winner.url}); closed ${closedCount} slower/blocked tab${closedCount === 1 ? "" : "s"}${failures.length ? ` (${failures.slice(0, 3).join("; ")})` : ""}.`;
             break;
           }
           case "click": {
@@ -1405,6 +1667,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
             break;
           case "dismiss":
             result = await dismissOverlays(p);
+            if (/no obvious overlay buttons found/i.test(result)) effect = false;
             break;
           case "desmos": {
             const list = (Array.isArray(d.expressions) ? d.expressions : []).map(String).filter((x) => x.trim());
@@ -1427,14 +1690,138 @@ export async function runAgent(opts: RunOptions): Promise<void> {
           case "fetch_image": {
             const imgUrl = String(d.url || "").trim();
             if (!imgUrl) { ok = false; result = "fetch_image requires a url"; break; }
+            if (isSearchPageUrl(imgUrl)) {
+              ok = false;
+              actionErrorCode = "search_page";
+              strategy.recordFailedUrl(imgUrl, "search_page", "search result page URL");
+              result = "Could not fetch image: URL is a search-result page, not a direct downloadable media file. Pass a direct media URL (.gif/.png/.jpg/.webp) from the images list or open a source page.";
+              break;
+            }
             try {
               const referer = obs?.url;
-              const stashed = await stashImage(chatId, imgUrl, String(d.alt || ""), referer);
-              result = `Stashed image ${stashed.id} (${(stashed.data.length / 1024).toFixed(0)} KB, alt: "${stashed.alt || "none"}")`;
+              const browserFetch = s.context?.request
+                ? async (u: string, ref?: string) => {
+                    const res = await s.context.request.get(u, {
+                      headers: ref ? { Referer: ref } : undefined,
+                      timeout: 15_000,
+                    });
+                    const body = res.ok() ? Buffer.from(await res.body()) : Buffer.alloc(0);
+                    return {
+                      ok: res.ok(),
+                      status: res.status(),
+                      contentType: res.headers()["content-type"] || "",
+                      data: body,
+                      retryAfter: res.headers()["retry-after"],
+                    };
+                  }
+                : undefined;
+              const stashed = await stashImage(chatId, imgUrl, String(d.alt || ""), referer, {
+                requireAnimated: mediaSpec.requireAnimated,
+                knownHashes: deliveredHashes,
+                browserFetch,
+              });
+              strategy.recordProgress();
+              result = `Stashed validated ${stashed.animated ? `animated ${stashed.mime} (${stashed.frameCount} frames)` : stashed.mime} ${stashed.id} (${stashed.width}x${stashed.height}, ${(stashed.data.length / 1024).toFixed(0)} KB, alt: "${stashed.alt || "none"}")`;
             } catch (e) {
               ok = false;
-              result = `Could not fetch image: ${e instanceof Error ? e.message : String(e)}`;
+              if (e instanceof ImageFetchError) {
+                actionErrorCode = e.code;
+                const cat = e.code === "too_large" || e.code === "invalid_url" ? "unsupported_format" : e.code;
+                strategy.recordFailedUrl(imgUrl, cat, e.message, e.retryAfterMs);
+                result = `Could not fetch image [${e.code}]: ${e.message}`;
+              } else {
+                result = `Could not fetch image: ${e instanceof Error ? e.message : String(e)}`;
+              }
             }
+            break;
+          }
+          case "fetch_images": {
+            const rawUrls = Array.isArray(d.urls) ? [...new Set(d.urls.map((u) => String(u || "").trim()).filter(Boolean))].slice(0, 12) : [];
+            if (!rawUrls.length) { ok = false; result = "fetch_images requires a non-empty urls array"; break; }
+            const referer = obs?.url;
+            const browserFetch = s.context?.request
+              ? async (u: string, ref?: string) => {
+                  const res = await s.context.request.get(u, {
+                    headers: ref ? { Referer: ref } : undefined,
+                    timeout: 15_000,
+                  });
+                  const body = res.ok() ? Buffer.from(await res.body()) : Buffer.alloc(0);
+                  return {
+                    ok: res.ok(),
+                    status: res.status(),
+                    contentType: res.headers()["content-type"] || "",
+                    data: body,
+                    retryAfter: res.headers()["retry-after"],
+                  };
+                }
+              : undefined;
+            const stashedNow: Awaited<ReturnType<typeof stashImage>>[] = [];
+            const failedNotes: string[] = [];
+            for (const imgUrl of rawUrls) {
+              if (aborted()) break;
+              if (isSearchPageUrl(imgUrl)) {
+                strategy.recordFailedUrl(imgUrl, "search_page", "search result page URL");
+                failedNotes.push(`${shortUrl(imgUrl, 60)} [search_page]`);
+                continue;
+              }
+              const alreadyFailed = strategy.failedUrlReason(imgUrl);
+              if (alreadyFailed) {
+                failedNotes.push(`${shortUrl(imgUrl, 60)} [previously failed]`);
+                continue;
+              }
+              if (strategy.hostRateLimitRemainingMs(imgUrl) > 0) {
+                failedNotes.push(`${shortUrl(imgUrl, 60)} [host rate-limited]`);
+                continue;
+              }
+              try {
+                const stashed = await stashImage(chatId, imgUrl, "", referer, {
+                  requireAnimated: mediaSpec.requireAnimated,
+                  knownHashes: deliveredHashes,
+                  browserFetch,
+                });
+                stashedNow.push(stashed);
+              } catch (e) {
+                if (e instanceof ImageFetchError) {
+                  const cat = e.code === "too_large" || e.code === "invalid_url" ? "unsupported_format" : e.code;
+                  strategy.recordFailedUrl(imgUrl, cat, e.message, e.retryAfterMs);
+                  failedNotes.push(`${shortUrl(imgUrl, 60)} [${e.code}]`);
+                } else {
+                  failedNotes.push(`${shortUrl(imgUrl, 60)} [error]`);
+                }
+              }
+            }
+            const deliveredNow: string[] = [];
+            if (d.send && stashedNow.length > 0) {
+              for (const image of stashedNow) {
+                try {
+                  let savedId = deliveredStash.get(image.id);
+                  if (!savedId) {
+                    savedId = await saveImage(ownerId, image.mime, image.data);
+                    deliveredStash.set(image.id, savedId);
+                  }
+                  if (!imageIds.includes(savedId)) imageIds.push(savedId);
+                  if (!deliveredMeta.some((m) => m.imageId === savedId)) {
+                    deliveredMeta.push({ imageId: savedId, url: image.url, hash: image.hash, mime: image.mime, animated: image.animated });
+                  }
+                  if (image.hash) deliveredHashes.add(image.hash);
+                  deliveredNow.push(savedId);
+                  emit({ type: "images", imageIds: [...imageIds] });
+                  await saveProgress();
+                } catch (e) {
+                  failedNotes.push(`${image.id} [chat save failed: ${e instanceof Error ? e.message : String(e)}]`);
+                }
+              }
+            }
+            if (stashedNow.length > 0) strategy.recordProgress();
+            ok = stashedNow.length > 0;
+            const totalDelivered = mediaSpec.requireAnimated
+              ? deliveredMeta.filter((m) => m.animated).length
+              : imageIds.length;
+            result = [
+              `Batch fetched ${stashedNow.length}/${rawUrls.length} validated ${mediaSpec.requireAnimated ? "animated GIF" : "image"}${stashedNow.length === 1 ? "" : "s"}`,
+              deliveredNow.length ? `and attached ${deliveredNow.length} to chat (total delivered: ${totalDelivered}${mediaSpec.count ? `/${mediaSpec.count}` : ""})` : "",
+              failedNotes.length ? `Skipped/failed: ${failedNotes.slice(0, 6).join(", ")}` : "",
+            ].filter(Boolean).join(". ");
             break;
           }
           case "make_collage": {
@@ -1462,15 +1849,50 @@ export async function runAgent(opts: RunOptions): Promise<void> {
             const stash = listStash(chatId);
             const ids = [...new Set(d.ids?.length ? d.ids : stash.map((image) => image.id))];
             const selected = ids.map((id) => stash.find((image) => image.id === id));
-            if (!ids.length || selected.some((image) => !image)) { ok = false; result = "Requested images are absent or expired. Fetch the intended images before attaching them; no substitutes were sent."; break; }
-            for (const image of selected) {
-              let savedId = deliveredStash.get(image!.id);
-              if (!savedId) { savedId = await saveImage(ownerId, image!.mime, image!.data); deliveredStash.set(image!.id, savedId); }
-              if (!imageIds.includes(savedId)) imageIds.push(savedId);
-              emit({ type: "images", imageIds: [...imageIds] });
-              await saveProgress();
+            if (!ids.length || selected.some((image) => !image)) {
+              ok = false;
+              result = "Requested images are absent or expired. Fetch the intended images before attaching them; no substitutes were sent.";
+              break;
             }
-            result = `Attached ${ids.length} selected image${ids.length === 1 ? "" : "s"} to this chat as separate saved images.`;
+            const deliveredNow: string[] = [];
+            const failedNow: string[] = [];
+            for (const image of selected) {
+              if (!image) continue;
+              if (mediaSpec.requireAnimated && !image.animated) {
+                failedNow.push(`${image.id}: static ${image.mime} (not an animated GIF)`);
+                continue;
+              }
+              try {
+                let savedId = deliveredStash.get(image.id);
+                if (!savedId) {
+                  savedId = await saveImage(ownerId, image.mime, image.data);
+                  deliveredStash.set(image.id, savedId);
+                }
+                if (!imageIds.includes(savedId)) imageIds.push(savedId);
+                if (!deliveredMeta.some((m) => m.imageId === savedId)) {
+                  deliveredMeta.push({ imageId: savedId, url: image.url, hash: image.hash, mime: image.mime, animated: image.animated });
+                }
+                if (image.hash) deliveredHashes.add(image.hash);
+                deliveredNow.push(savedId);
+                emit({ type: "images", imageIds: [...imageIds] });
+                await saveProgress();
+              } catch (e) {
+                failedNow.push(`${image.id}: ${e instanceof Error ? e.message : String(e)}`);
+              }
+            }
+            if (deliveredNow.length > 0) strategy.recordProgress();
+            const totalDelivered = mediaSpec.requireAnimated
+              ? deliveredMeta.filter((m) => m.animated).length
+              : imageIds.length;
+            if (deliveredNow.length === 0) {
+              ok = false;
+              result = `Chat attachment failed for all ${ids.length} image(s): ${failedNow.join("; ")}.`;
+            } else if (failedNow.length > 0) {
+              ok = false;
+              result = `Partially attached ${deliveredNow.length}/${ids.length} image(s) to chat (total delivered: ${totalDelivered}${mediaSpec.count ? `/${mediaSpec.count}` : ""}). Failed: ${failedNow.join("; ")}.`;
+            } else {
+              result = `Attached ${deliveredNow.length} verified ${mediaSpec.requireAnimated ? "animated GIF" : "image"}${deliveredNow.length === 1 ? "" : "s"} to this chat (total delivered: ${totalDelivered}${mediaSpec.count ? `/${mediaSpec.count}` : ""}).`;
+            }
             break;
           }
           case "send_video": {
@@ -1612,7 +2034,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
             ok = false;
             result = `Unknown action "${(d as { action: string }).action}"`;
         }
-        if (!["wait", "screenshot", "switch_tab", "close_tab", "fetch_image", "send_images", "send_video", "make_collage", "clear_stash"].includes(d.action) && !(d.action === "examine_images" && (d.click === false || !ok))) {
+        if (!["wait", "screenshot", "switch_tab", "close_tab", "fetch_image", "fetch_images", "send_images", "send_video", "make_collage", "clear_stash"].includes(d.action) && !(d.action === "examine_images" && (d.click === false || !ok))) {
           const active = s.active();
           let navigated = nav.started || active !== p || active.url() !== urlBefore || ["goto", "search", "image_search", "back", "new_tab"].includes(d.action);
           await settle(active, navigated);
@@ -1620,11 +2042,31 @@ export async function runAgent(opts: RunOptions): Promise<void> {
           // other site's check gets a few seconds to clear by itself, then the site is skipped
           // (remembered as a mistake) and the agent goes elsewhere. Nothing waits on the user.
           if (isGoogleSorryUrl(s.active().url())) {
+            const sorryUrl = s.active().url();
             const solved = await handOffGoogleCaptcha(s, signal, (text) => emit({ type: "status", text }));
-            result += solved
-              ? " — Google showed a robot check; it cleared and the page continued."
-              : " — Google showed a robot check. Use the search action (it falls back to Bing) or go to the site directly.";
-            if (!solved) ok = false;
+            if (solved) {
+              result += " — Google showed a robot check; it cleared and the page continued.";
+            } else {
+              // Immediately fall back to Bing in this same step instead of wasting another turn on Google /sorry.
+              let cont: ReturnType<typeof parseResultsUrl> = null;
+              try {
+                const cParam = new URL(sorryUrl).searchParams.get("continue");
+                if (cParam) cont = parseResultsUrl(cParam);
+              } catch { /* ignore */ }
+              if (cont) {
+                const fb = await runSearch(s, { query: cont.query, kind: cont.kind, engine: "bing", level: safeLevel, signal, status: (text) => emit({ type: "status", text }) }).catch(() => null);
+                if (fb?.ok) {
+                  strategy.recordSearch("bing", cont.kind, cont.query);
+                  result += ` — Google showed a robot check; automatically switched to Bing (${fb.result}).`;
+                } else {
+                  result += " — Google showed a robot check; switched to Bing fallback.";
+                  ok = false;
+                }
+              } else {
+                await s.active().goto("https://www.bing.com", { waitUntil: "domcontentloaded", timeout: 20_000 }).catch(() => {});
+                result += " — Google showed a robot check; automatically switched to bing.com.";
+              }
+            }
           } else {
             let challenge = await detectPageBotChallenge(s.active());
             // A check that clears itself (a plain Cloudflare "just a moment") gets a few seconds first.
@@ -1691,6 +2133,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
           resultText: result,
           elementFound: !("id" in d && d.id !== undefined && !targetEl),
           repeatCount: repeats,
+          errorCode: actionErrorCode,
         });
         if (diag) {
           result += ` [${diag.hint}]`;
@@ -1702,6 +2145,13 @@ export async function runAgent(opts: RunOptions): Promise<void> {
         needA11y = false;
       }
       lastOk = ok && effect;
+      lastActionName = d.action;
+      const madeProgress = ok && (d.action === "fetch_image" || d.action === "fetch_images" || d.action === "send_images" || d.action === "send_video");
+      const rotation = modelRotator.recordStep(lastProvider.model, ok, effect, madeProgress);
+      if (rotation.rotated) {
+        session.log(rotation.reason || "Rotating to another model for a fresh approach.", "warn");
+        emit({ type: "status", text: "Switching to another model for a fresh approach…" });
+      }
       if (targetEl && (d.action === "click" || d.action === "type")) lastTouched = targetEl;
       lastActionAttempt.current = repeatSensitiveActions.has(d.action) ? { key, state: stateKey } : null;
       actionsTaken++;

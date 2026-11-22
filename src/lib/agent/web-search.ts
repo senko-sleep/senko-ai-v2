@@ -34,6 +34,10 @@ export const SEARCH_URLS: Record<SearchEngine, Record<SearchKind, (q: string, l:
     web: (q, l) => `https://www.bing.com/search?q=${encodeURIComponent(q)}&${safeParams.bing(l)}`,
     images: (q, l) => `https://www.bing.com/images/search?q=${encodeURIComponent(q)}&${safeParams.bingImages(l)}`,
   },
+  ddg: {
+    web: (q, l) => `https://duckduckgo.com/?q=${encodeURIComponent(q)}&${safeParams.ddg(l)}`,
+    images: (q, l) => `https://duckduckgo.com/?q=${encodeURIComponent(q)}&iax=images&ia=images&${safeParams.ddg(l)}`,
+  },
 };
 
 /** What the search needs from the browser session (kept small so it's easy to test). */
@@ -70,7 +74,7 @@ export interface SearchOutcome {
 // agent never stops for one, it falls back to Bing or skips the site.
 const CAPTCHA_WAIT_MS = () => Math.max(0, Number(process.env.GOOGLE_CAPTCHA_WAIT_MS ?? 0));
 const fmtMin = (ms: number) => (ms < 90_000 ? `${Math.ceil(ms / 1000)}s` : `${Math.ceil(ms / 60_000)} min`);
-const label = (engine: SearchEngine, kind: SearchKind) => `${engine === "google" ? "Google" : "Bing"}${kind === "images" ? " Images" : ""}`;
+const label = (engine: SearchEngine, kind: SearchKind) => `${engine === "google" ? "Google" : engine === "ddg" ? "DuckDuckGo" : "Bing"}${kind === "images" ? " Images" : ""}`;
 
 function sameSearch(url: string, kind: SearchKind, query: string, engine?: SearchEngine) {
   const r = parseResultsUrl(url);
@@ -270,7 +274,10 @@ export async function handOffBotChallenge(
 }
 
 async function openResults(p: Page, engine: SearchEngine, kind: SearchKind, query: string, level: SafeSearch) {
-  await p.goto(SEARCH_URLS[engine][kind](query, level), { waitUntil: "domcontentloaded", timeout: 45_000 });
+  if (engine === "bing" && level === "off") {
+    await p.context().addCookies([{ name: "SRCHHPGUSR", value: "ADLT=OFF", domain: ".bing.com", path: "/" }]).catch(() => {});
+  }
+  await p.goto(SEARCH_URLS[engine][kind](query, level), { waitUntil: "domcontentloaded", timeout: 15_000 });
 }
 
 async function describeResults(p: Page, engine: SearchEngine, kind: SearchKind, query: string, how: string) {
@@ -305,9 +312,9 @@ export async function runSearch(s: SearchSession, opts: SearchOptions): Promise<
     return { ok: true, engine, reused: true, result: (await describeResults(p, engine, kind, query, "Went back to the earlier")) + " (reused, no new search sent)" + note };
   }
 
-  if (engine === "bing") {
-    await openResults(p, "bing", kind, query, level);
-    return { ok: true, engine, reused: false, result: (await describeResults(p, "bing", kind, query, "Opened")) + note };
+  if (engine === "bing" || engine === "ddg") {
+    await openResults(p, engine, kind, query, level);
+    return { ok: true, engine, reused: false, result: (await describeResults(p, engine, kind, query, "Opened")) + note };
   }
 
   // 3. Ask Google, spaced out with every other Google request from this server.

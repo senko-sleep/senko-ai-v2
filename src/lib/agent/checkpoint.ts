@@ -4,6 +4,15 @@
 // restart of the agent computer; an in-memory copy keeps it working without a database.
 import type { SourcePage } from "./context";
 import type { TaskRequirement } from "./requirements";
+import type { StrategySnapshot } from "./strategy";
+
+export interface DeliveredMediaMeta {
+  imageId: string;
+  url: string;
+  hash?: string;
+  mime?: string;
+  animated?: boolean;
+}
 
 export interface Checkpoint {
   v: 1;
@@ -15,6 +24,10 @@ export interface Checkpoint {
   requirements?: TaskRequirement[];
   imageIds?: string[];
   deliveredImages?: [string, string][];
+  /** Durable metadata for already-delivered chat media (hash, animated flag) so resume preserves partial progress. */
+  deliveredMeta?: DeliveredMediaMeta[];
+  /** Durable failure/search/loop memory so resume never repeats failed URLs or duplicate searches. */
+  strategy?: StrategySnapshot;
   /** Why the task stopped last (shown when it resumes). */
   reason?: string;
   updatedAt: number;

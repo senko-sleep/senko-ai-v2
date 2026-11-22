@@ -320,9 +320,9 @@ export async function detectPageBotChallenge(page: {
 }
 
 export type SearchKind = "web" | "images";
-export type SearchEngine = "google" | "bing";
+export type SearchEngine = "google" | "bing" | "ddg";
 
-/** If `url` is a Google or Bing results page, which engine, kind and query it shows. */
+/** If `url` is a Google, Bing, or DuckDuckGo results page, which engine, kind and query it shows. */
 export function parseResultsUrl(url: string): { engine: SearchEngine; kind: SearchKind; query: string } | null {
   try {
     const u = new URL(url);
@@ -336,6 +336,10 @@ export function parseResultsUrl(url: string): { engine: SearchEngine; kind: Sear
     if (/(^|\.)bing\.com$/.test(host)) {
       if (u.pathname === "/search") return { engine: "bing", kind: "web", query };
       if (u.pathname.startsWith("/images/search")) return { engine: "bing", kind: "images", query };
+    }
+    if (/(^|\.)duckduckgo\.com$/.test(host)) {
+      const images = u.searchParams.get("iax") === "images" || u.searchParams.get("ia") === "images";
+      return { engine: "ddg", kind: images ? "images" : "web", query };
     }
   } catch {
     /* not a URL */

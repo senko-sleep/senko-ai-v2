@@ -72,7 +72,7 @@ export const LiveView = memo(function LiveView({
   interactive = false,
   onInput,
   onViewport,
-  pageZoom = 0.75,
+  pageZoom = 0.5,
 }: {
   bus: LiveBus;
   title: string;

@@ -128,7 +128,7 @@ export function BrowserPanel({
   const [showLog, setShowLog] = useState(false);
   const [editingUrl, setEditingUrl] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
-  const [pageZoom, setPageZoom] = useState(75);
+  const [pageZoom, setPageZoom] = useState(50);
   const [minimized, setMinimized] = useState(false);
   const mobileToggleRef = useRef<HTMLButtonElement>(null);
   const narrowViewport = useSyncExternalStore(subscribeToBrowserWidth, () => window.matchMedia(narrowBrowserQuery).matches, () => false);
@@ -372,7 +372,7 @@ export function BrowserPanel({
               <button type="button" className={`${iconBtn} disabled:opacity-40`} aria-label="Zoom out" disabled={pageZoom <= 50} onClick={() => setPageZoom(v => Math.max(50, v - 25))}><Minus size={13} aria-hidden /></button>
               <span className="min-w-9 text-center text-[11px] text-[var(--sk-text)]" aria-live="polite">{pageZoom}%</span>
               <button type="button" className={`${iconBtn} disabled:opacity-40`} aria-label="Zoom in" disabled={pageZoom >= 150} onClick={() => setPageZoom(v => Math.min(150, v + 25))}><Plus size={13} aria-hidden /></button>
-              <button type="button" className="sk-btn h-7 rounded-md px-2 text-[11px] text-[var(--sk-muted)] hover:bg-[var(--sk-hover)]" aria-label="Reset page zoom to 75%" onClick={() => setPageZoom(75)}>Reset</button>
+              <button type="button" className="sk-btn h-7 rounded-md px-2 text-[11px] text-[var(--sk-muted)] hover:bg-[var(--sk-hover)]" aria-label="Reset page zoom to 50%" onClick={() => setPageZoom(50)}>Reset</button>
             </div>
           </details>
           {!controlling && !paused && state.outcome !== "idle" && (

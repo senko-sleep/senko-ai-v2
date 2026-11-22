@@ -3,7 +3,8 @@
 // finishes in a couple of seconds. Anything that needs clicking, logging in or video
 // returns "needs-browser" and the router (layers.ts) escalates to a real browser.
 import { complete, type LlmMessage } from "@/lib/llm";
-import { agentVoice } from "@/lib/server/persona";
+import { agentVoice, safeSearchFor } from "@/lib/server/persona";
+import { safeParams, type SafeSearch } from "@/lib/content-policy";
 import { isPrivateUrl } from "./safety";
 import { describePage, httpSession, type PageSnap } from "./http-session";
 import type { RunOptions } from "./runner";
@@ -81,7 +82,7 @@ async function get(url: string, signal: AbortSignal, init?: RequestInit): Promis
   }
 }
 
-async function search(q: string, signal: AbortSignal): Promise<Hit[]> {
+async function search(q: string, signal: AbortSignal, safe: SafeSearch = "off"): Promise<Hit[]> {
   const hits: Hit[] = [];
   const seen = new Set<string>();
   const add = (title: string, url: string, snippet: string) => {
@@ -90,7 +91,7 @@ async function search(q: string, signal: AbortSignal): Promise<Hit[]> {
     hits.push({ title: decode(title.replace(/<[^>]+>/g, "").trim()), url, snippet: decode(snippet.replace(/<[^>]+>/g, "").trim()).slice(0, 220) });
   };
   try {
-    const html = await get(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, signal);
+    const html = await get(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}&${safeParams.ddg(safe)}`, signal);
     const re = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:class="result__snippet"[^>]*>([\s\S]*?)<\/a>)?/g;
     for (let m; (m = re.exec(html)) && hits.length < 8; ) {
       let url = decode(m[1]);
@@ -104,7 +105,7 @@ async function search(q: string, signal: AbortSignal): Promise<Hit[]> {
   }
   if (hits.length < 3) {
     try {
-      const html = await get(`https://www.bing.com/search?q=${encodeURIComponent(q)}`, signal);
+      const html = await get(`https://www.bing.com/search?q=${encodeURIComponent(q)}&${safeParams.bing(safe)}`, signal);
       const re = /<li class="b_algo"[\s\S]*?<h2[^>]*><a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:<p[^>]*>([\s\S]*?)<\/p>)?/g;
       for (let m; (m = re.exec(html)) && hits.length < 8; ) add(m[2], decode(m[1]), m[3] || "");
     } catch {
@@ -164,6 +165,7 @@ const noBrowserNote = (why?: string) =>
 export async function runLight(opts: RunOptions, mode: { noBrowser?: string } = {}): Promise<"done" | "needs-browser"> {
   const { chatId, goal, ownerId, provider, signal, emit, context } = opts;
   const voice = await agentVoice(ownerId).catch(() => "");
+  const safeLevel = await safeSearchFor(ownerId).catch(() => "off" as SafeSearch);
   const web = httpSession(chatId);
   const notes: string[] = [];
   const sources: string[] = [];
@@ -242,7 +244,7 @@ ${notes.length ? `Notes so far:\n${notes.slice(-6).join("\n\n")}\n\n` : ""}${pag
 
     if (a.action === "search" && a.q) {
       const s = step(`Searching: ${a.q.slice(0, 80)}`);
-      const hits = await search(a.q, signal);
+      const hits = await search(a.q, signal, safeLevel);
       if (!hits.length) {
         s.fail("no results");
         notes.push(`Search "${a.q}": no results.`);

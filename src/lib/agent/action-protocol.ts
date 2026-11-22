@@ -21,8 +21,9 @@ export function parseAgentObject(text: string): Record<string, unknown> | null {
 }
 
 export type BrowserAction =
-  | { action: "search" | "image_search"; query: string; engine?: "google" | "bing" }
+  | { action: "search" | "image_search"; query: string; engine?: "google" | "bing" | "ddg" }
   | { action: "goto"; url: string }
+  | { action: "open_fastest"; urls: string[] }
   | { action: "click"; id?: number; x?: number; y?: number }
   | { action: "hover"; id: number }
   | { action: "type"; id?: number; text: string; submit?: boolean }
@@ -40,6 +41,7 @@ export type BrowserAction =
   | { action: "desmos"; op: "set" | "add" | "clear"; expressions?: string[] }
   | { action: "screenshot"; label?: string }
   | { action: "fetch_image"; url: string; alt?: string }
+  | { action: "fetch_images"; urls: string[]; send?: boolean }
   | { action: "send_images"; ids?: string[] }
   | { action: "send_video"; index?: number }
   | { action: "make_collage"; ids?: string[]; label?: string }
@@ -78,8 +80,10 @@ export function parseBrowserDecision(text: string): BrowserDecision | null {
   const strings = (key: string) => Array.isArray(raw![key]) && (raw![key] as unknown[]).length <= 50 && (raw![key] as unknown[]).every((value) => typeof value === "string" && value.length <= 4096);
   let valid = false;
   switch (action) {
-    case "search": case "image_search": valid = str("query") && optional("engine", () => ["google", "bing"].includes(String(raw!.engine))); break;
+    case "search": case "image_search": valid = str("query") && optional("engine", () => ["google", "bing", "ddg"].includes(String(raw!.engine))); break;
     case "goto": case "fetch_image": valid = str("url"); break;
+    case "open_fastest": valid = strings("urls") && (raw.urls as unknown[]).length >= 2 && (raw.urls as unknown[]).length <= 4; break;
+    case "fetch_images": valid = strings("urls") && (raw.urls as unknown[]).length > 0 && (raw.urls as unknown[]).length <= 12 && optional("send", () => typeof raw!.send === "boolean"); break;
     case "click": valid = optional("id", () => id()) && (id() || (number("x") && number("y") && Number(raw.x) >= 0 && Number(raw.y) >= 0)); break;
     case "hover": valid = id(); break;
     case "type": valid = typeof raw.text === "string" && raw.text.length <= 32_000 && optional("id", () => id()) && optional("submit", () => typeof raw!.submit === "boolean"); break;

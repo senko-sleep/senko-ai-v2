@@ -43,8 +43,8 @@ const MAX_LABEL = 60;
 
 const FINANCIAL = /\b(buy( it)? now|place (your |my |the )?order|pay( now| securely)?|complete (the |your )?(order|purchase|payment)|confirm (the |your )?(order|purchase|payment)|purchase|subscribe|start (my |your )?(free )?trial|donate|upgrade( now)?|add (a )?payment( method)?|submit payment)\b/i;
 const DESTRUCTIVE = /\b(delete|erase|destroy|wipe|deactivate|terminate|permanently|empty (the )?trash|clear all|close (my |your )?account|cancel (my |the |your )?(subscription|account|order|membership)|remove (my |your )?account|discard (changes|draft)|reset (my |your )?(account|data))\b/i;
-const SECURITY = /\b((change|reset|update|set) (my |your |the )?password|(enable|disable|turn (on|off)) (two[- ]?factor|2fa|mfa|two-step)|revoke|authorize|allow access|grant (access|permission)|connect (your |my )?account|(create|generate|reveal) (an? )?(api|secret|access) (key|token)|accept (and|&) continue)\b/i;
-const EXTERNAL = /\b(send( message| email| now)?|post( now)?|publish|tweet|reply|submit (review|comment|post|application)|invite|apply now|book now|reserve|confirm booking)\b/i;
+const SECURITY = /\b((change|reset|update|set) (my |your |the )?password|(enable|disable|turn (on|off)) (two[- ]?factor|2fa|mfa|two-step)|revoke|authorize|allow access|grant (access|permission)|connect (your |my )?account|(create|generate|reveal) (an? )?(api|secret|access) (key|token))\b/i;
+const EXTERNAL = /\b(send( message| email| now)?|^post\s+now$|publish|tweet|reply|submit (review|comment|post|application)|invite|apply now|book now|reserve|confirm booking)\b/i;
 const MEDIUM = /\b(checkout|sign ?in|log ?in|sign ?up|register|create (an )?account|save|submit|apply)\b/i;
 /** Generic confirm buttons: risky only when the surrounding dialog says what is being confirmed. */
 const GENERIC_CONFIRM = /^(yes|ok|okay|confirm|continue|proceed|i agree|agree|accept|done|submit|allow)\b[\s.!]*$/i;
