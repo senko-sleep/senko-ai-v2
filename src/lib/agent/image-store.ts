@@ -240,10 +240,11 @@ export async function inspectMediaBuffer(buf: Buffer): Promise<{
   animated: boolean;
 }> {
   const sniffed = sniffImageMime(buf);
-  let sharpFn: ((input: Buffer, opts?: { animated?: boolean }) => { metadata(): Promise<{ format?: string; width?: number; height?: number; pageHeight?: number; pages?: number }> }) | null = null;
+  type SharpFn = (input: Buffer, opts?: { animated?: boolean }) => { metadata(): Promise<{ format?: string; width?: number; height?: number; pageHeight?: number; pages?: number }> };
+  let sharpFn: SharpFn | null = null;
   try {
     const mod = await import("sharp");
-    sharpFn = (mod.default || mod) as typeof sharpFn;
+    sharpFn = ((mod.default || mod) as unknown) as SharpFn;
   } catch {
     sharpFn = null;
   }
