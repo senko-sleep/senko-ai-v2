@@ -20,13 +20,14 @@ import {
   Play,
   Plus,
   RotateCw,
+  ScanSearch,
   Square,
   Volume2,
   VolumeX,
   X,
 } from "lucide-react";
 import type { AgentStep, BrowserTabInfo, VerificationInfo } from "./lib";
-import { LiveView, type LiveBus, type UserInput } from "./live-view";
+import { LiveView, type LiveBus, type LiveEvent, type UserInput } from "./live-view";
 import { createLiveAudio, type LiveAudioState } from "./live-audio";
 import { ReaderView, type PageOp } from "./reader-view";
 import type { PageSnap } from "@/lib/agent/http-session";
@@ -90,6 +91,9 @@ export function BrowserPanel({
   onNav,
   onPageOp,
   pageBusy,
+  annotations = false,
+  onToggleAnnotations,
+  reconnecting = false,
 }: {
   chatId?: string | null;
   state: BrowserState;
@@ -120,7 +124,16 @@ export function BrowserPanel({
   onNav: (n: NavAction) => void;
   onPageOp: (op: PageOp) => void;
   pageBusy: boolean;
+  /** Outline the elements the agent can see. The browser session isn't affected. */
+  annotations?: boolean;
+  onToggleAnnotations?: () => void;
+  /** The live stream dropped and is coming back; the last picture stays up meanwhile. */
+  reconnecting?: boolean;
 }) {
+  const [nav, setNav] = useState<Extract<LiveEvent, { type: "nav" }> | null>(null);
+  useEffect(() => bus.subscribe((e) => { if (e.type === "nav") setNav(e); }), [bus]);
+  const blankTab = nav?.state === "blank";
+  const browserReady = tabs.length > 0;
   const logRef = useRef<HTMLDivElement>(null);
   const followLog = useRef(true);
   const rootRef = useRef<HTMLElement>(null);
@@ -306,13 +319,13 @@ export function BrowserPanel({
       {/* Navigation, Address, Control, and Sound Toolbar */}
       <div className="sk-browser-chrome sk-browser-toolbar flex h-10 shrink-0 items-center gap-1 border-b border-[var(--sk-line)] bg-[var(--sk-bg)] px-1.5">
         <div className="flex shrink-0 items-center" role="group" aria-label="Navigation">
-          <button type="button" onClick={() => onNav({ action: "back" })} disabled={!hasFrame} className={`${iconBtn} disabled:opacity-40`} aria-label="Back" title="Back">
+          <button type="button" onClick={() => onNav({ action: "back" })} disabled={!hasFrame && !browserReady} className={`${iconBtn} disabled:opacity-40`} aria-label="Back" title="Back">
             <ArrowLeft size={14} />
           </button>
-          <button type="button" onClick={() => onNav({ action: "forward" })} disabled={!hasFrame} className={`${iconBtn} hidden disabled:opacity-40 sm:inline-flex`} aria-label="Forward" title="Forward">
+          <button type="button" onClick={() => onNav({ action: "forward" })} disabled={!hasFrame && !browserReady} className={`${iconBtn} hidden disabled:opacity-40 sm:inline-flex`} aria-label="Forward" title="Forward">
             <ArrowRight size={14} />
           </button>
-          <button type="button" onClick={() => onNav({ action: "reload" })} disabled={!hasFrame} className={`${iconBtn} disabled:opacity-40`} aria-label="Reload" title="Reload">
+          <button type="button" onClick={() => onNav({ action: "reload" })} disabled={!hasFrame && !browserReady} className={`${iconBtn} disabled:opacity-40`} aria-label="Reload" title="Reload">
             <RotateCw size={12.5} />
           </button>
         </div>
@@ -343,7 +356,7 @@ export function BrowserPanel({
           <div className="flex h-7 min-w-0 flex-1 items-center gap-1 rounded-full bg-white/[0.05] pl-3 pr-1 transition-colors hover:bg-white/[0.08]">
             <button
               type="button"
-              disabled={!hasFrame}
+              disabled={!hasFrame && !browserReady}
               onClick={() => setEditingUrl(state.url === "about:blank" ? "" : state.url)}
               title={state.url || "Search or enter address"}
               className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[12px] text-[var(--sk-muted)] enabled:hover:text-[var(--sk-text)] disabled:cursor-default"
@@ -394,6 +407,18 @@ export function BrowserPanel({
           {paused && (
             <button type="button" onClick={onResume} className="sk-btn sk-primary h-7 shrink-0 rounded-md px-2 text-[11px] font-medium" title="Let Senko continue the task from this page">
               <Play size={10} fill="currentColor" aria-hidden /> Resume
+            </button>
+          )}
+          {onToggleAnnotations && (
+            <button
+              type="button"
+              onClick={onToggleAnnotations}
+              aria-pressed={annotations}
+              aria-label={annotations ? "Hide element annotations" : "Show element annotations"}
+              title={annotations ? "Hide what Senko can see" : "Show what Senko can see on this page"}
+              className={`${iconBtn} ${annotations ? "bg-[var(--sk-accent-soft)] text-[var(--sk-accent-ink)]" : ""}`}
+            >
+              <ScanSearch size={14} aria-hidden />
             </button>
           )}
           {hasFrame && !state.running && (
@@ -479,17 +504,23 @@ export function BrowserPanel({
 
       {/* The live page: fills all remaining space, edge to edge */}
       <div className="sk-browser-picture relative min-h-0 flex-1" inert={mini}>
-        <LiveView bus={bus} title={state.title} onHasFrame={onHasFrame} agentRunning={state.running && !paused && !controlling} agentThinking={activePhase === "observing" || activePhase === "verifying"} agentName={agentName} interactive={!mini && (!state.running || paused || controlling || isVerificationChallenge)} onInput={onInput} onViewport={mini ? undefined : onViewport} pageZoom={pageZoom / 100} />
+        <LiveView bus={bus} title={state.title} onHasFrame={onHasFrame} agentRunning={state.running && !paused && !controlling} agentThinking={activePhase === "observing" || activePhase === "verifying"} agentName={agentName} interactive={!mini && (!state.running || paused || controlling || isVerificationChallenge)} onInput={onInput} onViewport={mini ? undefined : onViewport} pageZoom={pageZoom / 100} annotations={annotations} />
+        {nav?.state === "loading" && <div className="sk-nav-progress" role="progressbar" aria-label="Page loading" />}
         {!hasFrame && state.page !== undefined && <ReaderView page={state.page} busy={pageBusy} onOp={onPageOp} />}
-        {!hasFrame && state.page === undefined && (
-          <div className={`absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center text-[12px] text-white/55 ${state.running ? "sk-scan" : ""}`}>
+        {(!hasFrame || blankTab) && state.page === undefined && (
+          <div className={`absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black p-4 text-center text-[12px] text-white/55 ${state.running ? "sk-scan" : ""}`}>
             {state.running || opening ? <Loader2 size={18} className="sk-spin text-[var(--sk-accent)]" aria-hidden /> : <MonitorPlay size={18} className="opacity-50" aria-hidden />}
-            <span>{state.running ? state.status || "Starting the browser…" : opening ? "Starting Chromium…" : "The live browser appears here."}</span>
-            {!state.running && (
+            <span>{state.running ? state.status || "Starting the browser…" : opening ? "Starting Chromium…" : blankTab ? "New tab. Enter an address above." : "The live browser appears here."}</span>
+            {!state.running && !blankTab && (
               <button type="button" onClick={onOpenBrowser} disabled={opening} className="sk-btn mt-1 h-7 rounded-md bg-[var(--sk-accent)] px-3 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-60">
                 {opening ? <Loader2 size={11} className="sk-spin" aria-hidden /> : <MonitorPlay size={11} aria-hidden />} Open live browser
               </button>
             )}
+          </div>
+        )}
+        {(reconnecting || nav?.state === "failed" || nav?.state === "empty") && (
+          <div role="status" className={`absolute left-1/2 top-2 z-[4] max-w-[85%] -translate-x-1/2 truncate rounded-full border border-white/10 bg-black/85 px-3 py-1 text-[11px] ${nav?.state === "failed" && !reconnecting ? "text-[#ff9d8a]" : "text-white/80"}`}>
+            {reconnecting ? "Reconnecting to the browser…" : nav?.state === "failed" ? nav.error || "The page couldn't be loaded." : "This page loaded with nothing to show."}
           </div>
         )}
 

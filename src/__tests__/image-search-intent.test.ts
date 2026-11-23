@@ -14,11 +14,14 @@ describe("imageSearchIntent", () => {
     ["image search umbreon", { query: "umbreon", engine: "google", simple: true }],
     ["search google images for eevee and click the second one", { query: "eevee", engine: "google", simple: false }],
     ["please search bing images for cute cats.", { query: "cute cats", engine: "bing", simple: true }],
+    ["Send 5 images of a tsundere", { query: "tsundere", engine: "google", simple: true }],
+    ["send me three pictures of red foxes", { query: "red foxes", engine: "google", simple: true }],
+    ["send me 4 eevee pics", { query: "eevee", engine: "google", simple: true }],
   ])("%s", (goal, want) => {
     expect(imageSearchIntent(goal)).toEqual(want);
   });
 
-  it.each(["open youtube and play lofi", "search for the best pizza near me", "what is this page about", "play the video"])("not an image search: %s", (goal) => {
+  it.each(["open youtube and play lofi", "search for the best pizza near me", "what is this page about", "play the video", "send an email with pictures of my dog", "send 3 photos of cats to jordan"])("not an image search: %s", (goal) => {
     expect(imageSearchIntent(goal)).toBeNull();
   });
 });

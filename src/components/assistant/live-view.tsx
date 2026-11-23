@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { createFrameDecoder } from "@/lib/live-frame";
 import { appendInput, pagePoint, type BrowserInput } from "@/lib/live-input";
+import { annotationStyle, pickLabels, type Annotation } from "@/lib/agent/annotations";
 
 // High-rate live events (frames, cursor) skip React state entirely: the stream pushes them
 // onto this tiny bus and the LiveView draws them straight to a canvas / moves the cursor.
@@ -9,7 +10,11 @@ export type LiveEvent =
   | { type: "cursor"; x: number; y: number; kind: "move" | "click"; box?: { x: number; y: number; w: number; h: number } | null; width: number; height: number; ms?: number }
   | { type: "pointer"; cursor: string }
   | { type: "audio"; id: string; seq?: number; data?: string; end?: boolean }
-  | { type: "reset"; epoch?: number };
+  | { type: "reset"; epoch?: number }
+  | { type: "nav"; state: "loading" | "painted" | "failed" | "blank" | "empty"; url: string; error?: string }
+  | { type: "annotations"; items: Annotation[]; width: number; height: number; scrollY: number; epoch: number }
+  | { type: "inspect"; on: boolean }
+  | { type: "scroll"; position: number; visible: number };
 
 export function createLiveBus() {
   const subs = new Set<(e: LiveEvent) => void>();
@@ -73,6 +78,7 @@ export const LiveView = memo(function LiveView({
   onInput,
   onViewport,
   pageZoom = 0.5,
+  annotations = false,
 }: {
   bus: LiveBus;
   title: string;
@@ -90,7 +96,17 @@ export const LiveView = memo(function LiveView({
   onViewport?: (size: { width: number; height: number }) => void;
   /** Scale the logical page into the panel. Smaller values show more of the page. */
   pageZoom?: number;
+  /** Outline the elements the agent can see and act on. */
+  annotations?: boolean;
 }) {
+  const overlayRef = useRef<HTMLCanvasElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const annotationsRef = useRef(annotations);
+  const redrawOverlayRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    annotationsRef.current = annotations;
+    redrawOverlayRef.current?.();
+  }, [annotations]);
   const wrapRef = useRef<HTMLDivElement>(null);
   const keyboardRef = useRef<HTMLTextAreaElement>(null);
   const geomRef = useRef<{ fit: Fit; vp: { w: number; h: number } }>({ fit: { x: 0, y: 0, w: 0, h: 0 }, vp: { w: 1280, h: 800 } });
@@ -158,6 +174,87 @@ export const LiveView = memo(function LiveView({
       // Frames normally match the panel's pixels exactly; when they don't (mid-resize), scale well.
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
+      drawOverlay();
+    };
+
+    // ---- annotations: real page geometry, drawn on one canvas above the picture -------------
+    const overlay = overlayRef.current!;
+    const overlayCtx = overlay.getContext("2d")!;
+    let snapshot: Extract<LiveEvent, { type: "annotations" }> | null = null;
+    let inspecting = false;
+    function drawOverlay() {
+      const W = Math.max(1, Math.round(size.w * size.dpr));
+      const H = Math.max(1, Math.round(size.h * size.dpr));
+      if (overlay.width !== W || overlay.height !== H) { overlay.width = W; overlay.height = H; }
+      const g = overlayCtx;
+      g.setTransform(size.dpr, 0, 0, size.dpr, 0, 0);
+      g.clearRect(0, 0, size.w, size.h);
+      if (!annotationsRef.current || !snapshot?.width || !snapshot.height) return;
+      const sx = fit.w / snapshot.width;
+      const sy = fit.h / snapshot.height;
+      const items = snapshot.items.map(i => ({ ...i, x: fit.x + i.x * sx, y: fit.y + i.y * sy, w: i.w * sx, h: i.h * sy }));
+      g.lineWidth = 1;
+      for (const item of items) {
+        const style = annotationStyle(item);
+        g.setLineDash(style.dashed ? [3, 3] : []);
+        g.strokeStyle = style.stroke;
+        g.fillStyle = style.fill;
+        g.beginPath();
+        g.roundRect(item.x + 0.5, item.y + 0.5, Math.max(1, item.w - 1), Math.max(1, item.h - 1), 2);
+        if (style.fill !== "transparent") g.fill();
+        g.stroke();
+        if (item.focused) {
+          g.setLineDash([]);
+          g.lineWidth = 2;
+          g.strokeStyle = "rgba(92,190,255,1)";
+          g.stroke();
+          g.lineWidth = 1;
+        }
+      }
+      g.setLineDash([]);
+      g.font = "600 10px ui-sans-serif, system-ui, sans-serif";
+      g.textBaseline = "middle";
+      for (const item of pickLabels(items)) {
+        const text = `${item.id ?? ""} ${item.label}`.trim();
+        const width = Math.min(150, g.measureText(text).width + 8);
+        const top = item.y >= 15 ? item.y - 15 : item.y;
+        g.fillStyle = "rgba(15,15,18,.86)";
+        g.beginPath();
+        g.roundRect(item.x, top, width, 14, 3);
+        g.fill();
+        g.fillStyle = item.kind === "input" ? "#9bd8ff" : "#ffc48a";
+        g.save();
+        g.beginPath();
+        g.rect(item.x, top, width - 3, 14);
+        g.clip();
+        g.fillText(text, item.x + 4, top + 7.5);
+        g.restore();
+      }
+      // The agent is reading this page right now: corner marks around the region it reads.
+      if (inspecting) {
+        const a = 16, m = 3, l = fit.x + m, t = fit.y + m, r = fit.x + fit.w - m, b = fit.y + fit.h - m;
+        g.strokeStyle = "rgba(255,138,31,.9)";
+        g.lineWidth = 2;
+        g.beginPath();
+        for (const [x, y, dx, dy] of [[l, t, 1, 1], [r, t, -1, 1], [l, b, 1, -1], [r, b, -1, -1]]) {
+          g.moveTo(x + a * dx, y);
+          g.lineTo(x, y);
+          g.lineTo(x, y + a * dy);
+        }
+        g.stroke();
+      }
+    }
+    redrawOverlayRef.current = drawOverlay;
+    let scrollTimer = 0;
+    const showScroll = (position: number, visible: number) => {
+      const el = scrollRef.current;
+      if (!el) return;
+      const height = Math.max(6, Math.min(100, visible * 100));
+      el.style.height = `${height}%`;
+      el.style.top = `${Math.max(0, Math.min(1, position)) * (100 - height)}%`;
+      el.style.opacity = "1";
+      clearTimeout(scrollTimer);
+      scrollTimer = window.setTimeout(() => { el.style.opacity = "0"; }, 900);
     };
 
     // Draw only confirmed browser frames. Translating the screenshot ahead of Chrome
@@ -275,10 +372,29 @@ export const LiveView = memo(function LiveView({
         paintDirty = false;
         clearTimeout(boxTimer);
         if (boxRef.current) boxRef.current.style.opacity = "0";
+        // Boxes describe the old document, so they go even though its picture stays.
+        snapshot = null;
+        inspecting = false;
+        drawOverlay();
         // Keep the last pixels and the pointer visible while the new document starts
         // producing frames. Clearing here creates a black flash on every nav/tab switch.
         return;
       }
+      if (e.type === "annotations") {
+        snapshot = e;
+        drawOverlay();
+        return;
+      }
+      if (e.type === "inspect") {
+        inspecting = e.on;
+        drawOverlay();
+        return;
+      }
+      if (e.type === "scroll") {
+        showScroll(e.position, e.visible);
+        return;
+      }
+      if (e.type === "nav") return;
       if (e.type === "frame") {
         if (document.hidden) latestHidden = e;
         else decoder.push(e);
@@ -344,6 +460,8 @@ export const LiveView = memo(function LiveView({
       decoder.dispose();
       clearTimeout(boxTimer);
       clearTimeout(reportTimer);
+      clearTimeout(scrollTimer);
+      redrawOverlayRef.current = null;
       reportViewportRef.current = null;
       bitmap?.close();
     };
@@ -547,6 +665,8 @@ export const LiveView = memo(function LiveView({
       tabIndex={interactive ? 0 : -1}
     >
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
+      <canvas ref={overlayRef} data-live-annotations={annotations ? "on" : "off"} className="pointer-events-none absolute inset-0 h-full w-full" hidden={!annotations} aria-hidden />
+      <div ref={scrollRef} className="sk-live-scroll pointer-events-none absolute right-0.5 w-[3px] rounded-full opacity-0" aria-hidden />
       <textarea ref={keyboardRef} tabIndex={-1} aria-label="Live browser keyboard" autoComplete="off" autoCapitalize="off" spellCheck={false} className="absolute left-0 top-0 h-px w-px opacity-0" />
       <div ref={boxRef} className="sk-target-box pointer-events-none absolute left-0 top-0 rounded-lg opacity-0" aria-hidden />
       <div ref={rippleLayerRef} className="pointer-events-none absolute inset-0" aria-hidden />

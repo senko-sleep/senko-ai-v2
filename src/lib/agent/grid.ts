@@ -205,7 +205,7 @@ export async function readGridImages(page: Page, opts: { goal: string; signal: A
 }
 
 /** A note for the agent's history listing the grid's direct URLs, or "" when there are none. */
-export async function describeGrid(page: Page, opts: { goal: string; signal: AbortSignal; onImages?: (images: GridImage[]) => void }): Promise<string> {
+export async function describeGrid(page: Page, opts: { goal: string; signal: AbortSignal; limit?: number; onImages?: (images: GridImage[]) => void }): Promise<string> {
   const images = await readGridImages(page, opts).catch(() => []);
   if (!images.length) return "";
   opts.onImages?.(images);

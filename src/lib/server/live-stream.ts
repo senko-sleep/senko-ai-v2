@@ -17,6 +17,8 @@ export function createLiveStream<T extends { type: string; data?: string }>(subs
   let ping: ReturnType<typeof setInterval> | undefined;
   let controller: ReadableStreamDefaultController<Uint8Array>;
   let frame: T | undefined;
+  // Overlay geometry is a full snapshot, so like a frame only the newest one matters.
+  let annotations: T | undefined;
   const reliable: T[] = [];
   let open = true;
   const cleanup = () => {
@@ -26,6 +28,7 @@ export function createLiveStream<T extends { type: string; data?: string }>(subs
     unsubscribe();
     signal.removeEventListener("abort", abort);
     frame = undefined;
+    annotations = undefined;
     reliable.length = 0;
   };
   const abort = () => { cleanup(); try { controller.close(); } catch { /* already closed */ } };
@@ -34,6 +37,7 @@ export function createLiveStream<T extends { type: string; data?: string }>(subs
     while ((controller.desiredSize ?? 0) > 0) {
       let next = reliable.shift();
       if (!next && frame) { next = frame; frame = undefined; }
+      if (!next && annotations) { next = annotations; annotations = undefined; }
       if (!next) break;
       controller.enqueue(encode(next));
     }
@@ -46,9 +50,11 @@ export function createLiveStream<T extends { type: string; data?: string }>(subs
       unsubscribe = subscribe(event => {
         if (!open) return;
         if (event.type === "frame") frame = event;
+        else if (event.type === "annotations") annotations = event;
         else {
           if (event.type === "reset") {
             frame = undefined;
+            annotations = undefined;
             // Discard pointer waypoints for a document that is no longer visible.
             for (let i = reliable.length - 1; i >= 0; i--) if (reliable[i].type === "cursor") reliable.splice(i, 1);
           }

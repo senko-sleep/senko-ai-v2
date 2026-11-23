@@ -15,6 +15,7 @@ import { isAdHost, isPrivateUrl } from "./safety";
 import { json, newId, q, q1, toBuffer } from "@/lib/server/db";
 import { INPUT_PROTOCOL_VERSION, type BrowserInput } from "@/lib/live-input";
 import { createFramePublisher } from "./frame-publisher";
+import { ANNOTATE_SCRIPT, type Annotation } from "./annotations";
 
 export type SessionStatus = "active" | "restoring" | "suspended" | "closed";
 
@@ -44,7 +45,17 @@ export type BusEvent =
   /** Sound from the active tab: Opus/WebM chunks of the playing media element (seq 0 starts a stream). */
   | { type: "audio"; id: string; seq?: number; data?: string; end?: boolean }
   /** The CSS cursor the page shows under your mouse (hand over links, I-beam over text). */
-  | { type: "pointer"; cursor: string };
+  | { type: "pointer"; cursor: string }
+  /** Real loading state of the active tab. "empty" = it finished loading with nothing to show. */
+  | { type: "nav"; state: NavState; url: string; error?: string }
+  /** What is on screen right now, sent only while annotations are on. */
+  | { type: "annotations"; items: Annotation[]; width: number; height: number; scrollY: number; epoch: number }
+  /** The agent is reading the page. */
+  | { type: "inspect"; on: boolean }
+  /** The page really scrolled to this position (0 to 1 of its scrollable height). */
+  | { type: "scroll"; position: number; visible: number };
+
+export type NavState = "loading" | "painted" | "failed" | "blank" | "empty";
 
 type AudioMessage = { id: string; seq?: number; data?: string; end?: boolean };
 
@@ -103,6 +114,13 @@ const QUALITY = () => Math.min(95, Math.max(20, Number(process.env.LIVE_QUALITY 
 // Live view size relative to the real screen. Smaller frames encode much faster on weak CPUs.
 const SCALE = () => Math.min(1, Math.max(0.3, Number(process.env.LIVE_SCALE || (smallHost() ? 0.75 : 1))));
 const CAST_IDLE_GRACE_MS = 5000;
+/** A new document's frames are held until it paints, so viewers keep the last real picture. */
+const PAINT_GATE_MS = 2500;
+/** Chrome sends no frame for a page that isn't changing, so a late viewer gets one on request. */
+const FIRST_FRAME_MS = 900;
+const CAST_RETRY_MS = [250, 750, 1500];
+const ANNOTATE_INTERVAL_MS = 180;
+const MAX_ANNOTATIONS = 90;
 // Each tab is a renderer process. Past this many, the least recently used background tab closes.
 const MAX_TABS = () => Math.max(2, Number(process.env.MAX_TABS_PER_SESSION || (isLowMemoryHost() ? 4 : 8)));
 // The active tab is probed this often; this many failed probes in a row means it is frozen.
@@ -390,7 +408,6 @@ export class BrowserSession {
       storageState: saved?.storage ? (saved.storage as never) : undefined,
     });
     // Every session (new, restored or reattached) gets the human checks you've already passed.
-    await this.seedClearance();
     if (existingContext) {
       // Reattach to the existing cloud Chrome after a Wasmer worker restart.
       // Keep its live tabs instead of replaying stale URLs into a second context.
@@ -400,18 +417,22 @@ export class BrowserSession {
     // Page loads pass their own longer timeouts.
     this.context.setDefaultTimeout(10_000);
     if (existingContext) await this.context.unrouteAll({ behavior: "wait" }).catch(() => {});
-    await this.context.addInitScript(INIT_SCRIPT);
-    await this.context
-      .exposeBinding("__senkoAudio", (source, m: AudioMessage) => this.onAudio(source.page, source.frame, m))
-      .catch(() => { /* already exposed on a reattached context */ });
-    await this.context.addInitScript(AUDIO_SCRIPT);
-    await this.context
-      .exposeBinding("__senkoCursor", (source, cursor: string) => {
-        if (source.page === this.pages[this.activeIndex] && typeof cursor === "string" && cursor.length < 40) this.emit({ type: "pointer", cursor });
-      })
-      .catch(() => {});
-    await this.context.addInitScript(POINTER_SCRIPT);
-    await this.context.addInitScript(SELECT_SCRIPT);
+    // Independent setup calls go out together: on a cloud browser each one is a network round trip.
+    await Promise.all([
+      this.seedClearance(),
+      this.context.addInitScript(INIT_SCRIPT),
+      this.context
+        .exposeBinding("__senkoAudio", (source, m: AudioMessage) => this.onAudio(source.page, source.frame, m))
+        .catch(() => { /* already exposed on a reattached context */ }),
+      this.context.addInitScript(AUDIO_SCRIPT),
+      this.context
+        .exposeBinding("__senkoCursor", (source, cursor: string) => {
+          if (source.page === this.pages[this.activeIndex] && typeof cursor === "string" && cursor.length < 40) this.emit({ type: "pointer", cursor });
+        })
+        .catch(() => {}),
+      this.context.addInitScript(POINTER_SCRIPT),
+      this.context.addInitScript(SELECT_SCRIPT),
+    ]);
     await this.context.route("**/*", (route) => {
       const req = route.request();
       const rtype = req.resourceType();
@@ -498,6 +519,7 @@ export class BrowserSession {
     this.detachBrowser();
     this.publisher?.dispose();
     this.publisher = null;
+    this.clearGate();
     this.cdp = null;
     this.castPage = null;
     this.emitStatus();
@@ -568,6 +590,8 @@ export class BrowserSession {
           await this.recoverPage(p, "stopped responding");
         }
       }
+      // A viewer is watching but the stream died: bring it back.
+      if (this.subs.size && !this.cdp && p && !p.isClosed()) void this.startCast().catch(() => {});
       // Low on memory: close the least recently used background tab (one per check).
       if (this.pages.length > 1 && freeMemoryMB() < LOW_MEMORY_MB) {
         await this.closeOldestBackgroundTab("the server is low on memory");
@@ -717,6 +741,18 @@ export class BrowserSession {
     p.on("download", (d) => {
       this.log(`Blocked a download (${d.suggestedFilename()})`, "warn");
       void d.cancel().catch(() => {});
+    });
+    p.on("requestfailed", (req) => {
+      try {
+        if (!req.isNavigationRequest() || req.frame() !== p.mainFrame() || this.pages[this.activeIndex] !== p) return;
+      } catch {
+        return; // the frame is already gone
+      }
+      const error = req.failure()?.errorText || "";
+      // Aborted = replaced by another navigation or a download, which isn't a load failure.
+      if (/ERR_ABORTED|BLOCKED_BY_CLIENT/i.test(error)) return;
+      this.openGate();
+      this.setNav({ type: "nav", state: "failed", url: req.url(), error: navError(error) });
     });
   }
 
@@ -908,9 +944,14 @@ export class BrowserSession {
     for (const l of this.logs.slice(-20)) fn(l);
     for (const e of this.replay) fn(e);
     if (this.lastFrame) fn({ type: "frame", ...this.lastFrame });
+    if (this.lastNav) fn(this.lastNav);
     // Show the agent's cursor where it was last, so it never "disappears" on reconnect.
     if (this.lastCursor) fn(this.lastCursor);
-    if (this.status === "active") void this.startCast();
+    if (this.status === "active") {
+      void this.startCast();
+      if (!this.lastFrame) this.requestFrameSoon();
+      if (this.annotating) this.scheduleAnnotations(0);
+    }
     // A new viewer needs the stream header, so playing media restarts its recording.
     if (this.audio) this.restartAudio();
     return () => {
@@ -1002,11 +1043,148 @@ export class BrowserSession {
   /** Coordinates queued for the previous document must never reach the next one. */
   private resetView() {
     this.controlGeneration++;
-    this.lastFrame = null;
+    // Keep the last real picture for a viewer who connects mid-navigation. It carries no epoch,
+    // so input can't be aimed at it: coordinates only apply once the new document has a frame.
+    if (this.lastFrame) this.lastFrame = { ...this.lastFrame, epoch: undefined };
     this.lastCursor = null;
     this.publisher?.reset();
     void this.releaseButtons();
     this.emit({ type: "reset", epoch: ++this.viewEpoch });
+    if (this.annotating) this.scheduleAnnotations(ANNOTATE_INTERVAL_MS);
+  }
+
+  // ---- what the viewer is told about loading ----------------------------------------------
+
+  private lastNav: Extract<BusEvent, { type: "nav" }> | null = null;
+  private gateOpen = true;
+  private gateTimer: ReturnType<typeof setTimeout> | undefined;
+  private heldFrame: Extract<BusEvent, { type: "frame" }> | null = null;
+  private emptyTimer: ReturnType<typeof setTimeout> | undefined;
+  private firstFrameTimer: ReturnType<typeof setTimeout> | undefined;
+
+  private setNav(e: Extract<BusEvent, { type: "nav" }>) {
+    this.lastNav = e;
+    this.emit(e);
+  }
+
+  private clearGate() {
+    clearTimeout(this.gateTimer);
+    clearTimeout(this.emptyTimer);
+    clearTimeout(this.firstFrameTimer);
+    this.gateTimer = this.emptyTimer = this.firstFrameTimer = undefined;
+    this.heldFrame = null;
+    this.gateOpen = true;
+  }
+
+  /** Hold frames for a document that hasn't painted. `ms` = 0 holds until something opens it. */
+  private closeGate(ms: number) {
+    clearTimeout(this.gateTimer);
+    this.gateTimer = undefined;
+    this.heldFrame = null;
+    this.gateOpen = false;
+    if (ms > 0) {
+      this.gateTimer = setTimeout(() => this.openGate(), ms);
+      this.gateTimer.unref?.();
+    }
+  }
+
+  private openGate() {
+    clearTimeout(this.gateTimer);
+    this.gateTimer = undefined;
+    if (this.gateOpen) return;
+    this.gateOpen = true;
+    const held = this.heldFrame;
+    this.heldFrame = null;
+    if (held) this.publisher?.push({ ...held, epoch: this.viewEpoch });
+  }
+
+  /** The new document painted (or finished): show it. */
+  private markPainted(p: Page) {
+    this.openGate();
+    if (this.lastNav?.state === "loading") this.setNav({ type: "nav", state: "painted", url: p.url() });
+  }
+
+  /** After load, a page with nothing on it gets a clear message instead of a bare white view. */
+  private checkEmptySoon(p: Page) {
+    clearTimeout(this.emptyTimer);
+    this.emptyTimer = setTimeout(async () => {
+      if (p !== this.pages[this.activeIndex] || p.isClosed()) return;
+      const empty = await withTimeout(
+        p.evaluate(() => !(document.body?.innerText || "").trim() && !document.querySelector("img, video, canvas, svg, iframe, object, embed, input, button")),
+        1500,
+        false,
+      );
+      if (empty && p === this.pages[this.activeIndex] && /^https?:/i.test(p.url())) this.setNav({ type: "nav", state: "empty", url: p.url() });
+    }, 1500);
+    this.emptyTimer.unref?.();
+  }
+
+  /** Chrome doesn't always send a frame for a static page: ask for one. */
+  private requestFrameSoon() {
+    clearTimeout(this.firstFrameTimer);
+    this.firstFrameTimer = setTimeout(async () => {
+      const cast = this.cdp;
+      const p = this.castPage;
+      if (!cast || !p || this.lastFrame || !this.subs.size || !this.gateOpen || p.url() === "about:blank") return;
+      const shot = await withTimeout(cast.send("Page.captureScreenshot", { format: "jpeg", quality: QUALITY() }), 3000, null).catch(() => null);
+      if (!shot?.data || this.cdp !== cast || this.lastFrame) return;
+      const size = p.viewportSize() || SCREEN;
+      this.publisher?.push({ type: "frame", data: shot.data, width: size.width, height: size.height, epoch: this.viewEpoch });
+    }, FIRST_FRAME_MS);
+    this.firstFrameTimer.unref?.();
+  }
+
+  // ---- annotations ---------------------------------------------------------------------------
+
+  annotating = false;
+  private annotateTimer: ReturnType<typeof setTimeout> | undefined;
+  private annotateBusy = false;
+  private annotateLast = 0;
+
+  /** Show or hide the element overlay. Off means no extra work in the page at all. */
+  setAnnotations(on: boolean) {
+    if (this.annotating === on) {
+      if (on) this.scheduleAnnotations(0);
+      return;
+    }
+    this.annotating = on;
+    clearTimeout(this.annotateTimer);
+    this.annotateTimer = undefined;
+    if (on) this.scheduleAnnotations(0);
+    else {
+      const size = this.viewport();
+      this.emit({ type: "annotations", items: [], width: size.width, height: size.height, scrollY: 0, epoch: this.viewEpoch });
+    }
+  }
+
+  private scheduleAnnotations(delay = ANNOTATE_INTERVAL_MS) {
+    if (!this.annotating || this.annotateTimer || !this.subs.size) return;
+    const wait = Math.max(delay, this.annotateLast + ANNOTATE_INTERVAL_MS - Date.now(), 0);
+    this.annotateTimer = setTimeout(() => {
+      this.annotateTimer = undefined;
+      void this.readAnnotations();
+    }, wait);
+    this.annotateTimer.unref?.();
+  }
+
+  private async readAnnotations() {
+    const p = this.pages[this.activeIndex];
+    if (!this.annotating || this.annotateBusy || !p || p.isClosed() || !this.subs.size || this.status !== "active") return;
+    this.annotateBusy = true;
+    this.annotateLast = Date.now();
+    const epoch = this.viewEpoch;
+    try {
+      const snap = p.url() === "about:blank" ? null : await withTimeout(p.evaluate(ANNOTATE_SCRIPT, MAX_ANNOTATIONS).catch(() => null), 1200, null);
+      // The page moved on while this was being read: its boxes would be in the wrong place.
+      if (snap && this.annotating && epoch === this.viewEpoch && p === this.pages[this.activeIndex]) this.emit({ type: "annotations", ...snap, epoch });
+    } finally {
+      this.annotateBusy = false;
+    }
+  }
+
+  /** The agent started or finished reading the page. */
+  markInspecting(on: boolean) {
+    if (this.annotating) this.emit({ type: "inspect", on });
   }
 
   private viewportOverride: { width: number; height: number } | null = null;
@@ -1074,11 +1252,56 @@ export class BrowserSession {
         this.emit(frame);
       }, () => Math.max(1, ...this.viewerRates.values()));
       this.publisher = publisher;
+      this.clearGate();
+      const tree = await orTimeout(cdp.send("Page.getFrameTree"), 5000, "starting the live view");
+      const mainFrame = tree.frameTree.frame.id;
+      const startUrl = p.url();
+      if (startUrl === "about:blank") {
+        // A blank tab has nothing to show; its white document must not reach the viewer.
+        this.closeGate(0);
+        this.lastFrame = null;
+        this.setNav({ type: "nav", state: "blank", url: startUrl });
+      } else if (this.lastNav?.state === "blank") {
+        this.setNav({ type: "nav", state: "painted", url: startUrl });
+      }
+      cdp.on("Page.frameStartedLoading", (e: { frameId: string }) => {
+        if (this.cdp !== cast || e.frameId !== mainFrame) return;
+        clearTimeout(this.emptyTimer);
+        this.setNav({ type: "nav", state: "loading", url: p.url() });
+      });
+      cdp.on("Page.frameNavigated", (e: { frame: { id: string; url: string; parentId?: string } }) => {
+        if (this.cdp !== cast || e.frame.id !== mainFrame) return;
+        if (e.frame.url === "about:blank") {
+          this.closeGate(0);
+          this.lastFrame = null;
+          this.setNav({ type: "nav", state: "blank", url: e.frame.url });
+        } else {
+          this.closeGate(PAINT_GATE_MS);
+          this.setNav({ type: "nav", state: "loading", url: e.frame.url });
+        }
+      });
+      cdp.on("Page.lifecycleEvent", (e: { frameId: string; name: string }) => {
+        if (this.cdp !== cast || e.frameId !== mainFrame) return;
+        // Content written into a blank tab paints without any navigation.
+        if (e.name === "firstContentfulPaint" || e.name === "firstMeaningfulPaint") this.markPainted(p);
+        else if (e.name === "load" && p.url() !== "about:blank") {
+          // A page that only paints backgrounds never reports a contentful paint.
+          const t = setTimeout(() => { if (this.cdp === cast) this.markPainted(p); }, 300);
+          t.unref?.();
+          this.checkEmptySoon(p);
+        }
+      });
+      await cdp.send("Page.enable");
+      await cdp.send("Page.setLifecycleEventsEnabled", { enabled: true });
       cdp.on("Page.screencastFrame", (f: { data: string; sessionId: number; metadata: { deviceWidth: number; deviceHeight: number; timestamp?: number } }) => {
         // Acknowledge immediately: delaying an ACK stalls Chrome's capture pipeline.
         void cast.send("Page.screencastFrameAck", { sessionId: f.sessionId }).catch(() => {});
         if (this.cdp !== cast || !this.subs.size) return;
-        publisher.push({ type: "frame", data: f.data, width: f.metadata.deviceWidth, height: f.metadata.deviceHeight, epoch: this.viewEpoch, capturedAt: f.metadata.timestamp === undefined ? undefined : Math.round(f.metadata.timestamp * 1000) });
+        this.castFailures = 0;
+        const frame = { type: "frame" as const, data: f.data, width: f.metadata.deviceWidth, height: f.metadata.deviceHeight, epoch: this.viewEpoch, capturedAt: f.metadata.timestamp === undefined ? undefined : Math.round(f.metadata.timestamp * 1000) };
+        if (!this.gateOpen) { this.heldFrame = frame; return; }
+        publisher.push(frame);
+        if (this.annotating) this.scheduleAnnotations();
       });
       await orTimeout(cdp.send("Page.startScreencast", {
         format: "jpeg",
@@ -1092,11 +1315,24 @@ export class BrowserSession {
         maxHeight: Math.round(Math.min(2160, Math.max(240, Number(process.env.LIVE_MAX_HEIGHT) || (smallHost() ? 800 : 1080))) * SCALE()),
         everyNthFrame: 1,
       }), 10_000, "starting the live view");
+      if (!this.lastFrame) this.requestFrameSoon();
     } catch {
-      if (this.cdp === cdp) { this.publisher?.dispose(); this.publisher = null; this.cdp = null; this.castPage = null; }
+      if (this.cdp === cdp) { this.publisher?.dispose(); this.publisher = null; this.clearGate(); this.cdp = null; this.castPage = null; }
       if (cdp) await withTimeout(cdp.detach(), 3000, undefined);
+      // A failed start used to leave the view frozen until something else restarted it.
+      const wait = CAST_RETRY_MS[this.castFailures++];
+      if (wait !== undefined && generation === this.castGeneration && this.subs.size && !p.isClosed()) {
+        const retry = setTimeout(() => {
+          if (generation === this.castGeneration && !this.cdp) void this.startCast().catch(() => {});
+        }, wait);
+        retry.unref?.();
+      } else if (wait === undefined && this.subs.size) {
+        this.log("The live view couldn't start. The task keeps running; reopen the panel to retry.", "warn");
+      }
     }
   }
+
+  private castFailures = 0;
 
   async stopCast() {
     clearTimeout(this.castIdleTimer);
@@ -1109,6 +1345,7 @@ export class BrowserSession {
   private async detachCast() {
     this.publisher?.dispose();
     this.publisher = null;
+    this.clearGate();
     const c = this.cdp;
     this.cdp = null;
     this.castPage = null;
@@ -1312,6 +1549,16 @@ function hostOf(url: string) {
   } catch {
     return "";
   }
+}
+
+/** Chromium's network error, in words. */
+export function navError(code: string): string {
+  if (/NAME_NOT_RESOLVED/.test(code)) return "That address doesn't exist.";
+  if (/TIMED_OUT/.test(code)) return "The site took too long to respond.";
+  if (/CONNECTION_(REFUSED|RESET|CLOSED)/.test(code)) return "The site refused the connection.";
+  if (/INTERNET_DISCONNECTED|NETWORK_CHANGED/.test(code)) return "The browser lost its connection.";
+  if (/CERT/.test(code)) return "The site's security certificate is invalid.";
+  return "The page couldn't be loaded.";
 }
 
 // ---- manager ------------------------------------------------------------------------------

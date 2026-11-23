@@ -339,6 +339,30 @@ export default function AssistantApp() {
   useEffect(() => {
     panelOpenRef.current = panelOpen;
   }, [panelOpen]);
+  const streamFailures = useRef(0);
+  const [liveReconnecting, setLiveReconnecting] = useState(false);
+  // Annotations are a viewing preference: remembered here, applied to whichever session is open.
+  const [annotationsOn, setAnnotationsOn] = useState(false);
+  const annotationsRef = useRef(false);
+  const annotatedSession = useRef<string | null>(null);
+  useEffect(() => {
+    try {
+      if (localStorage.getItem("senko.annotations") === "1") {
+        annotationsRef.current = true;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- localStorage isn't available during server render.
+        setAnnotationsOn(true);
+      }
+    } catch { /* storage unavailable: annotations just start off */ }
+  }, []);
+  const toggleAnnotations = useCallback(() => {
+    const on = !annotationsRef.current;
+    annotationsRef.current = on;
+    setAnnotationsOn(on);
+    try { localStorage.setItem("senko.annotations", on ? "1" : "0"); } catch { /* not persisted */ }
+    annotatedSession.current = on ? inputSession.current ?? null : null;
+    const chatId = activeRef.current;
+    if (chatId) void fetch(`/api/sessions/${chatId}/annotations`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on }) }).catch(() => {});
+  }, []);
   const closeStream = useCallback(() => {
     if (streamRetry.current) clearTimeout(streamRetry.current);
     streamRetry.current = null;
@@ -372,6 +396,8 @@ export default function AssistantApp() {
       if (restore) streamUrl.searchParams.set("restore", "1");
       const stream = connectLiveStream(streamUrl, e => {
         if (streamRef.current !== stream || activeRef.current !== chatId) return;
+        streamFailures.current = 0;
+        setLiveReconnecting(false);
         // Frames and cursor moves go straight to the live view (no React re-render per frame).
         if (e.type === "reset") {
           inputChannel.current?.channel.dispose();
@@ -384,7 +410,7 @@ export default function AssistantApp() {
           }
           inputEpoch.current = e.epoch;
         }
-        if (e.type === "frame" || e.type === "cursor" || e.type === "reset" || e.type === "pointer" || e.type === "audio") liveBus.emit(e as never);
+        if (e.type === "frame" || e.type === "cursor" || e.type === "reset" || e.type === "pointer" || e.type === "audio" || e.type === "nav" || e.type === "annotations" || e.type === "inspect" || e.type === "scroll") liveBus.emit(e as never);
         if (e.type === "status") {
           if (e.browserDisconnected && panelOpenRef.current) {
             closeStream();
@@ -409,6 +435,11 @@ export default function AssistantApp() {
             sizedSession.current = e.sessionId as string;
             const size = lastViewport.current;
             void fetch(`/api/sessions/${chatId}/viewport`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(size) }).catch(() => {});
+          }
+          // A new browser session starts with annotations off; carry the viewer's choice over.
+          if (e.status === "active" && annotationsRef.current && annotatedSession.current !== e.sessionId) {
+            annotatedSession.current = e.sessionId as string;
+            void fetch(`/api/sessions/${chatId}/annotations`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on: true }) }).catch(() => {});
           }
           if (typeof e.takeover === "boolean") setControlling(e.takeover);
           const tabs = (e.tabs as BrowserTabInfo[] | undefined) || [];
@@ -443,7 +474,13 @@ export default function AssistantApp() {
         if (direct) directLive.current.set(chatId, { url: null, until: Date.now() + 60_000 });
         // Keep the view live whenever you're watching it, not only while a task runs.
         if ((runningRef.current || panelOpenRef.current) && activeRef.current === chatId) {
-          streamRetry.current = setTimeout(() => attachStream(chatId, false, restore || panelOpenRef.current), runningRef.current ? 1500 : 4000);
+          // A task's session usually appears within moments, so the first retries are quick.
+          const attempt = streamFailures.current++;
+          if (attempt >= 2) setLiveReconnecting(true);
+          const wait = runningRef.current ? Math.min(1500, 120 * 2 ** attempt) : Math.min(4000, 400 * 2 ** attempt);
+          streamRetry.current = setTimeout(() => attachStream(chatId, false, restore || panelOpenRef.current), wait);
+        } else {
+          setLiveReconnecting(false);
         }
       });
       streamRef.current = stream;
@@ -1956,6 +1993,9 @@ export default function AssistantApp() {
               onResume={resumeAgent}
               onInput={sendInput}
               onViewport={sendViewport}
+              annotations={annotationsOn}
+              onToggleAnnotations={toggleAnnotations}
+              reconnecting={liveReconnecting}
               agentName={activeProvider?.label && !/^senko/i.test(activeProvider.label) ? `Senko · ${activeProvider.label}` : "Senko"}
               onNav={(n) => sendInput("url" in n ? { type: "goto", url: n.url } : { type: "nav", action: n.action })}
             />

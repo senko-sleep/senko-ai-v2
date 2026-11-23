@@ -18,6 +18,7 @@ import { isLeavingAction, pageMatchesGoal, pickPageMedia, preferPageMedia } from
 import { isCookieBanner, RecoveryLadder } from "./recovery-ladder";
 import { saveImage } from "@/lib/server/chats";
 import { searchAllowed } from "@/lib/server/search-reply";
+import { fetchUntil, rankGridImages } from "./direct-media";
 import { ImageFetchError, stashImage, listStash, clearStash, stashStats } from "./image-store";
 import { makeCollage } from "./collage";
 import type { PageSnap } from "./http-session";
@@ -706,10 +707,11 @@ export async function runAgent(opts: RunOptions): Promise<void> {
    */
   const observe = async (s: BrowserSession, wantShot: boolean | ((stateKey: string) => boolean), wantA11y = false): Promise<Observation> => {
     const p = s.active();
+    s.markInspecting(true);
     const dom = observeDom(p).catch(async () => {
       await p.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {});
       return observeDom(p).catch(() => EMPTY_DOM);
-    });
+    }).finally(() => s.markInspecting(false));
     const a11yJob = wantA11y
       ? observeAccessibilitySnapshot(p, 70).then(formatAccessibilitySnapshot).catch(() => undefined)
       : Promise.resolve(undefined);
@@ -744,6 +746,19 @@ export async function runAgent(opts: RunOptions): Promise<void> {
     return loaded.map(({ h, rows }) => memoryHints(rows, { host: h, elements: obs?.elements || [], goal })).filter(Boolean).join("\n\n");
   };
   const taskStart = Date.now();
+  // One log line per task showing where its time went.
+  const timing = {
+    marks: [] as string[],
+    last: performance.now(),
+    mark(name: string) {
+      const at = performance.now();
+      this.marks.push(`${name}=${Math.round(at - this.last)}ms`);
+      this.last = at;
+    },
+    report(note: string) {
+      console.log(`[agent:timing] ${this.marks.join(" ")} total=${Date.now() - taskStart}ms (${note})`);
+    },
+  };
 
   const makePlan = (startObs: Observation | null) =>
     ask(
@@ -787,11 +802,14 @@ export async function runAgent(opts: RunOptions): Promise<void> {
     session.beginAgent(signal);
     session.replay = [];
     session.emitStatus();
-    await session.startCast();
+    // The live view starts alongside the task; the first action never waits for it.
+    void session.startCast().catch(() => {});
     start.done(session.isActive() ? `Continuing on ${host(session.active().url())}` : "New browser session");
-    const voice = await agentVoice(ownerId).catch(() => "");
+    timing.mark("session");
+    // The voice only matters once a model is asked something.
+    const voiceJob = agentVoice(ownerId).catch(() => "");
     safeLevel = await safeSearchFor(ownerId).catch(() => "off" as SafeSearch);
-    const system = `${SYSTEM_PROMPT}\n\nASSISTANT'S VOICE (for the done answer):\n${voice}`;
+    let system = "";
 
     // 2. Plain media commands on a playing page: no AI needed at all ---------------------
     const mediaOp = ck ? null : parseMediaCommand(goal);
@@ -818,15 +836,75 @@ export async function runAgent(opts: RunOptions): Promise<void> {
 
     // 2b. "Google Images eevee": open the image results straight away (no AI call needed).
     if (imageIntent) {
-      const action = { action: "image_search" as const, query: imageIntent.query, engine: imageIntent.engine };
+      // Same limits as any other search, checked before this one is sent. If the check itself
+      // fails, images aren't delivered unreviewed: the normal, model-checked path takes over.
+      const check = await searchAllowed(imageIntent.query, signal).catch(() => null);
+      if (check && !check.allowed) {
+        step("Finished").done("Search limit");
+        await clearCheckpoint(chatId, progressLease);
+        emit({ type: "done", answer: check.reason || "I can't search for that.", imageIds });
+        return;
+      }
+      const direct = !!check && imageIntent.simple && mediaSpec.deliverToChat && !isExplicitMediaText(goal);
+      // Bing's results carry full-size URLs; Google's grid only exposes thumbnails.
+      const engine = direct && !/\bgoogle\b/i.test(goal) ? "bing" as const : imageIntent.engine;
+      // No model looks at these images before they reach the chat, so this path always filters.
+      const level: SafeSearch = direct ? "strict" : safeLevel;
+      const action = { action: "image_search" as const, query: imageIntent.query, engine };
       const st = step(describe(action, null));
-      const r = await runSearch(session, { query: imageIntent.query, kind: "images", engine: imageIntent.engine, level: safeLevel, signal, status: (text) => emit({ type: "status", text }) }).catch((e) => ({ ok: false, engine: imageIntent.engine, result: `Failed: ${friendlyError(e)}` }));
-      strategy.recordSearch(r.engine || imageIntent.engine, "images", imageIntent.query);
+      const r = await runSearch(session, { query: imageIntent.query, kind: "images", engine, level, signal, status: (text) => emit({ type: "status", text }) }).catch((e) => ({ ok: false, engine, result: `Failed: ${friendlyError(e)}` }));
+      strategy.recordSearch(r.engine || engine, "images", imageIntent.query);
       if (r.ok) st.done(r.result);
       else st.fail(r.result);
-      const gridNote = r.ok ? await describeGrid(session.active(), { goal, signal, onImages: (found) => { gridImages = found; gridUrl = curUrl() || ""; } }) : "";
+      timing.mark("search");
+      const readGrid = () => describeGrid(session!.active(), { goal, signal, limit: direct ? 30 : undefined, onImages: (found) => { gridImages = found; gridUrl = curUrl() || ""; } });
+      let gridNote = r.ok ? await readGrid() : "";
+      if (r.ok && direct && !gridImages.length) {
+        await settlePage(session.active(), { navigated: true, signal }).catch(() => {});
+        gridNote = await readGrid();
+      }
       history.push(historyLine(history.length + 1, action, r.result + gridNote));
       actionsTaken++;
+
+      if (direct && r.ok && gridImages.length) {
+        const wanted = mediaSpec.count ?? 4;
+        const fetchStep = step(`Fetching ${wanted} image${wanted === 1 ? "" : "s"}`);
+        const live = session;
+        const referer = curUrl();
+        const browserFetch = async (u: string, ref?: string) => {
+          const res = await live.context.request.get(u, { headers: ref ? { Referer: ref } : undefined, timeout: 15_000 });
+          const body = res.ok() ? Buffer.from(await res.body()) : Buffer.alloc(0);
+          return { ok: res.ok(), status: res.status(), contentType: res.headers()["content-type"] || "", data: body, retryAfter: res.headers()["retry-after"] };
+        };
+        const candidates = rankGridImages(gridImages, imageIntent.query).filter((c) => !strategy.failedUrlReason(c.url));
+        const fetched = await fetchUntil(candidates, wanted, (c) => stashImage(chatId, c.url, c.alt, referer, { requireAnimated: mediaSpec.requireAnimated, knownHashes: deliveredHashes, browserFetch }), {
+          concurrency: 6,
+          signal,
+          onError: (c, e) => { if (e instanceof ImageFetchError) strategy.recordFailedUrl(c.url, e.code === "too_large" || e.code === "invalid_url" ? "unsupported_format" : e.code, e.message, e.retryAfterMs); },
+        });
+        if (aborted()) return;
+        for (const image of fetched) {
+          const savedId = await saveImage(ownerId, image.mime, image.data);
+          deliveredStash.set(image.id, savedId);
+          imageIds.push(savedId);
+          deliveredMeta.push({ imageId: savedId, url: image.url, hash: image.hash, mime: image.mime, animated: image.animated });
+          deliveredHashes.add(image.hash);
+          emit({ type: "images", imageIds: [...imageIds] });
+        }
+        timing.mark("images");
+        fetchStep.done(`${fetched.length} of ${wanted} delivered`);
+        history.push(`${history.length + 1}. Delivered ${fetched.length} of ${wanted} verified images to the chat from the results grid.`);
+        actionsTaken++;
+        if (fetched.length >= wanted) {
+          step("Finished").done();
+          await clearCheckpoint(chatId, progressLease);
+          timing.report(`${fetched.length} images, no model calls`);
+          emit({ type: "done", answer: `Here ${wanted === 1 ? "is" : "are"} ${wanted} ${imageIntent.query} image${wanted === 1 ? "" : "s"}.`, url: curUrl(), imageIds });
+          return;
+        }
+        // Too few usable results: the agent looks for the rest.
+        void saveProgress();
+      }
     }
 
     // 3. Plan -----------------------------------------------------------------------
@@ -925,6 +1003,16 @@ export async function runAgent(opts: RunOptions): Promise<void> {
     for (let i = 0; MAX_STEPS === 0 || i < MAX_STEPS; i++) {
       if (aborted()) break;
       curStep = i;
+      // A plain "send N images" is finished the moment N verified images are in the chat. Waiting
+      // for a model to say so can take minutes when providers are rate-limited.
+      if (imageIntent?.simple && mediaSpec.deliverToChat && mediaSpec.count && (mediaSpec.requireAnimated ? deliveredMeta.filter((m) => m.animated).length : imageIds.length) >= mediaSpec.count) {
+        step("Finished").done();
+        await saveProgress();
+        await clearCheckpoint(chatId, progressLease);
+        timing.report(`${imageIds.length} images`);
+        emit({ type: "done", answer: `Here ${mediaSpec.count === 1 ? "is" : "are"} ${mediaSpec.count} ${imageIntent.query} image${mediaSpec.count === 1 ? "" : "s"}.`, url: curUrl(), imageIds, ...lastProvider });
+        return;
+      }
       // Decisions that were rejected before acting still cost a model call: stop the spiral.
       if (actionsTaken === idleMark) {
         if (++idleTurns >= MAX_IDLE_DECISIONS) recoverOrPause(`The last ${idleTurns} decisions were all rejected before doing anything`);
@@ -1027,6 +1115,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
         .filter(Boolean)
         .join("\n\n");
       const images: ImagePart[] = obs?.screenshot ? [{ mime: "image/jpeg", data: obs.screenshot.toString("base64") }] : [];
+      system ||= `${SYSTEM_PROMPT}\n\nASSISTANT'S VOICE (for the done answer):\n${await voiceJob}`;
       const raw = await ask([
         { role: "system", content: system },
         { role: "user", content: userText, images },
@@ -1819,32 +1908,32 @@ export async function runAgent(opts: RunOptions): Promise<void> {
                   };
                 }
               : undefined;
-            const stashedNow: Awaited<ReturnType<typeof stashImage>>[] = [];
             const failedNotes: string[] = [];
-            for (const imgUrl of rawUrls) {
-              if (aborted()) break;
+            const usable = rawUrls.filter((imgUrl) => {
               if (isSearchPageUrl(imgUrl)) {
                 strategy.recordFailedUrl(imgUrl, "search_page", "search result page URL");
                 failedNotes.push(`${shortUrl(imgUrl, 60)} [search_page]`);
-                continue;
+                return false;
               }
-              const alreadyFailed = strategy.failedUrlReason(imgUrl);
-              if (alreadyFailed) {
+              if (strategy.failedUrlReason(imgUrl)) {
                 failedNotes.push(`${shortUrl(imgUrl, 60)} [previously failed]`);
-                continue;
+                return false;
               }
               if (strategy.hostRateLimitRemainingMs(imgUrl) > 0) {
                 failedNotes.push(`${shortUrl(imgUrl, 60)} [host rate-limited]`);
-                continue;
+                return false;
               }
-              try {
-                const stashed = await stashImage(chatId, imgUrl, "", referer, {
-                  requireAnimated: mediaSpec.requireAnimated,
-                  knownHashes: deliveredHashes,
-                  browserFetch,
-                });
-                stashedNow.push(stashed);
-              } catch (e) {
+              return true;
+            });
+            // Downloads are independent, so one slow host no longer holds up the others.
+            const stashedNow = await fetchUntil(usable, usable.length, (imgUrl) => stashImage(chatId, imgUrl, "", referer, {
+              requireAnimated: mediaSpec.requireAnimated,
+              knownHashes: deliveredHashes,
+              browserFetch,
+            }), {
+              concurrency: 6,
+              signal,
+              onError: (imgUrl, e) => {
                 if (e instanceof ImageFetchError) {
                   const cat = e.code === "too_large" || e.code === "invalid_url" ? "unsupported_format" : e.code;
                   strategy.recordFailedUrl(imgUrl, cat, e.message, e.retryAfterMs);
@@ -1852,8 +1941,8 @@ export async function runAgent(opts: RunOptions): Promise<void> {
                 } else {
                   failedNotes.push(`${shortUrl(imgUrl, 60)} [error]`);
                 }
-              }
-            }
+              },
+            });
             const deliveredNow: string[] = [];
             if (d.send && stashedNow.length > 0) {
               for (const image of stashedNow) {
@@ -2176,6 +2265,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
             if (pos && obs?.state && pos[0] === obs.state.scrollY) effect = false;
             if (pos && obs?.state && pos[0] === obs.state.scrollY) result += scrolled === "down" ? " — the page didn't move (already at the end, or only an inner panel scrolls)" : " — the page didn't move (already at the top)";
             else if (pos) result += ` (now ${Math.min(100, Math.round(((pos[0] + pos[1]) / pos[2]) * 100))}% down the page)`;
+            if (pos && pos[2] > pos[1]) s.emit({ type: "scroll", position: pos[0] / (pos[2] - pos[1]), visible: pos[1] / pos[2] });
           }
         }
       } catch (e) {
