@@ -19,7 +19,7 @@ import { isCookieBanner, RecoveryLadder } from "./recovery-ladder";
 import { saveImage } from "@/lib/server/chats";
 import { searchAllowed } from "@/lib/server/search-reply";
 import { fetchUntil, rankGridImages } from "./direct-media";
-import { ImageFetchError, stashImage, listStash, clearStash, stashStats } from "./image-store";
+import { ImageFetchError, stashImage, listStash, clearStash, stashStats, type StashedImage } from "./image-store";
 import { makeCollage } from "./collage";
 import type { PageSnap } from "./http-session";
 import { describeRequirements, isModerationNote, onlyPolicyGaps, requirementsComplete, reviewRequirements, taskRequirements, updateRequirements } from "./requirements";
@@ -1891,7 +1891,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
           case "fetch_images": {
             const rawUrls = Array.isArray(d.urls) ? [...new Set(d.urls.map((u) => String(u || "").trim()).filter(Boolean))].slice(0, 12) : [];
             if (!rawUrls.length) { ok = false; result = "fetch_images requires a non-empty urls array"; break; }
-            const referer = obs?.url;
+            const referer: string | undefined = obs?.url;
             const browserFetch = s.context?.request
               ? async (u: string, ref?: string) => {
                   const res = await s.context.request.get(u, {
@@ -1926,7 +1926,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
               return true;
             });
             // Downloads are independent, so one slow host no longer holds up the others.
-            const stashedNow = await fetchUntil(usable, usable.length, (imgUrl) => stashImage(chatId, imgUrl, "", referer, {
+            const stashedNow: StashedImage[] = await fetchUntil(usable, usable.length, (imgUrl): Promise<StashedImage> => stashImage(chatId, imgUrl, "", referer, {
               requireAnimated: mediaSpec.requireAnimated,
               knownHashes: deliveredHashes,
               browserFetch,
