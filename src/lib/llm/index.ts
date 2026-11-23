@@ -499,7 +499,7 @@ async function connect(url: string, body: unknown, headers: Record<string, strin
     if (signal?.aborted) throw e;
     throw new ProviderError(`couldn't connect (${e instanceof Error ? e.message : e})`, 0, 30_000);
   } finally {
-    if (attempt) { attempt.responseHeadersMs = Date.now() - attempt.startedAt; attempt.status ??= 0; }
+    if (attempt) { attempt.responseHeadersMs = Date.now() - attempt.startedAt; attempt.status ??= 0; budget?.settle(attempt); }
     clearTimeout(timer);
   }
 }

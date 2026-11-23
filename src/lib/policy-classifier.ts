@@ -43,6 +43,11 @@ const MINOR_TERMS = /\b(?:loli|lolis|lolicon|shota|shotacon|child|children|kid|k
 /** Unambiguously explicit sexual/pornographic terms. */
 const EXPLICIT_SEXUAL_TERMS = /\b(?:r34|rule\s*34|hentai|porn|pornography|xxx|nsfw|nude|nudes|naked|explicit|erotic|lewd|topless|sexually\s+explicit|sexual\s+(?:content|images?|gifs?|videos?)|csam)\b/i;
 
+/** True when the text uses an unambiguously explicit sexual term. */
+export function isExplicitMediaText(text: string): boolean {
+  return EXPLICIT_SEXUAL_TERMS.test(text || "");
+}
+
 /** Everyday or ambiguous terms that must NOT trigger blanket refusals on their own. */
 const AMBIGUOUS_BENIGN_MEDIA_TERMS = /\b(?:cowgirl|cowboy|bikini|swimwear|lingerie|sexy|beach|western|rodeo|anatomy|sculpture|renaissance|statue)\b/i;
 

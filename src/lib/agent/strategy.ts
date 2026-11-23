@@ -393,6 +393,14 @@ export class StrategyMonitor {
     return null;
   }
 
+  /** A new approach starts: clear the loop counters but keep the memory of what already failed. */
+  clearStuck() {
+    for (const s of this.states.values()) s.fruitless = 1;
+    for (const u of this.visitedUrls.values()) u.fruitless = 1;
+    this.sinceNewState = 0;
+    this.scrollRun = 0;
+  }
+
   /** Serialize durable failure/search memory for checkpoints. */
   serialize(): StrategySnapshot {
     return {

@@ -17,14 +17,24 @@ export interface InferenceAttempt {
 export class InferenceRequestBudget {
   readonly attempts: InferenceAttempt[] = [];
   readonly limit: number;
-  constructor(limit: number) {
+  /** How many failed provider calls may be handed back; bounds retries during an outage. */
+  private readonly failedAllowance: number;
+  private refunded = 0;
+  constructor(limit: number, opts: { failedAllowance?: number } = {}) {
     if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
       throw new Error("Inference request limit must be an integer from 1 to 1000.");
     }
     this.limit = limit;
+    this.failedAllowance = Math.max(0, opts.failedAllowance ?? 0);
   }
-  get used() { return this.attempts.length; }
-  get remaining() { return this.limit - this.attempts.length; }
+  get used() { return this.attempts.length - this.refunded; }
+  get remaining() { return this.limit - this.used; }
+
+  /** A call that produced no answer (rate limit, server error, dropped connection) costs no budget. */
+  settle(attempt: InferenceAttempt) {
+    const status = attempt.status ?? 0;
+    if ((status === 0 || status === 408 || status === 429 || status >= 500) && this.refunded < this.failedAllowance) this.refunded++;
+  }
   get fractionRemaining() { return this.remaining / this.limit; }
   /** True when approaching exhaustion (<= 25% or <= 6 requests left). */
   get isLow() { return this.remaining <= Math.max(6, Math.floor(this.limit * 0.25)); }
