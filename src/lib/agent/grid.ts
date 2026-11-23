@@ -31,10 +31,19 @@ const MAX_SCANNED_IMAGES = 400;
 const MIN_GROUP = 3;
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
-const DIRECT_MEDIA = /\.(?:jpe?g|png|webp|gif|avif)(?:[?#]|$)/i;
+const DIRECT_MEDIA_PATH = /\.(?:jpe?g|png|webp|gif|avif)$/i;
 const THUMBNAIL = /\/\/(?:tse\d*\.mm\.bing\.net|th\.bing\.com|encrypted-tbn\d*\.gstatic\.com|external-content\.duckduckgo\.com)\/|\/(?:thumb|thumbs|thumbnail|thumbnails|preview|previews)\//i;
 const NOT_CONTENT = /\.svg(?:[?#]|$)|sprite|favicon|\/(?:logo|icon|icons|avatar|avatars|badge|badges)[/._-]/i;
 const WRAPPER_PARAMS = ["imgurl", "mediaurl", "img_url", "image_url", "image", "u", "url", "src", "file"];
+
+/** Judged by the path only, so a wrapper link with an image URL in its query doesn't count. */
+function isDirectMedia(url: string): boolean {
+  try {
+    return DIRECT_MEDIA_PATH.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
 
 /** Every URL a raw attribute value holds, including ones wrapped in JSON or query params. */
 function expandValue(value: string): { url: string; unwrapped: boolean }[] {
@@ -76,7 +85,7 @@ export function bestTileUrl(tile: RawGridTile): string {
   for (const c of tile.candidates) {
     for (const { url, unwrapped } of expandValue(c.value)) {
       if (THUMBNAIL.test(url) || NOT_CONTENT.test(url)) continue;
-      const direct = DIRECT_MEDIA.test(url);
+      const direct = isDirectMedia(url);
       if (!direct && !(c.kind === "image" && !unwrapped)) continue;
       const score = (direct ? 100 : 0) + (unwrapped || c.kind === "link" ? 50 : 0) + Math.min(40, (c.width || 0) / 100);
       if (score > bestScore) {
@@ -100,7 +109,7 @@ export function buildGrid(tiles: RawGridTile[], limit = MAX_GRID_URLS): GridImag
     out.push({
       url,
       alt: tile.alt.slice(0, 80),
-      source: /^https?:\/\//i.test(tile.href) && !DIRECT_MEDIA.test(tile.href) ? tile.href : "",
+      source: /^https?:\/\//i.test(tile.href) && !isDirectMedia(tile.href) ? tile.href : "",
     });
     if (out.length >= limit) break;
   }

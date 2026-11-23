@@ -14,6 +14,7 @@ import { ADULT_IMAGE_QUERY, detectCollageRequest, detectImageIntentQuery, extrac
 import { gatherLiveGroundingNote, gatherEntityGroundingNote, extractEntityQuery } from "./grounding";
 import { sanitizeYouTubeInReply, verifyYouTubeVideo } from "./youtube";
 import { onlyReachableImages, verifyGalleryImages } from "./gallery-images";
+import { hasChatLayoutImages, splitChatLayouts } from "@/lib/chat-layout";
 import { lastSubject, resolveSubject } from "./subject-context";
 import { checkAdultImageRequest } from "./adult-guard";
 import { personalityFor, safeSearchFor } from "./persona";
@@ -27,8 +28,9 @@ import { followContext } from "./turn-context";
 import { detectVoiceRequest, suggestedVoiceSeconds, VOICE_REPLY_NOTE } from "@/lib/voice/intent";
 import type { VoiceProgress } from "@/lib/voice/progress";
 import { prepareSpokenReply } from "@/lib/voice/reply";
-import { saveAudio, speechText, synthesizeVoice, type VoiceMeta } from "./voice";
-import { directPerformance } from "./voice-director";
+import { speechText, type VoiceMeta } from "./voice";
+import { runProduction } from "./voice-production";
+import { createProduction, type VoiceProduction } from "@/lib/voice/production";
 import { validateVoiceInput, voiceLimits, VoiceError } from "./voice-policy";
 import { extractCodeArtifacts } from "@/components/assistant/workspace-artifacts";
 import { stripCodeBlocks, wantsCodeJob } from "@/lib/code-intent";
@@ -73,6 +75,74 @@ type TraceStep = NonNullable<MessageMeta["thinking"]>["steps"][number];
 const THINK_STEP = 51;
 const WRITE_STEP = 52;
 const MAX_THOUGHTS = 16_000;
+
+const STORY_MODEL_WAIT_MS = 60_000;
+const STORY_CONTINUATIONS = 2;
+/** Below this, the model declined or failed rather than being cut off: don't push it to continue. */
+const STORY_MIN_FIRST_WORDS = 40;
+const wordsIn = (text: string) => (text.trim() ? text.trim().split(/\s+/).length : 0);
+
+/**
+ * Write the story as one normal generation; the voice pipeline splits it into sections afterwards.
+ * If a model is cut off partway, the next call continues from its last word, so nothing is rewritten.
+ */
+async function writeVoiceStory(opts: {
+  messages: LlmMessage[];
+  provider?: string;
+  signal?: AbortSignal;
+  simulateFail?: string[];
+  compactSystem: string;
+  minWords: number;
+  maxWords: number;
+  onThought?: (text: string) => void;
+  /** Told how long a real rate limit will hold up the next model call. */
+  onWait?: (ms: number) => void;
+  onWords?: (words: number) => void;
+}) {
+  const enough = Math.ceil(opts.minWords * 0.6);
+  let story = "";
+  let writer: { provider: string; providerLabel: string; model: string } | undefined;
+  for (let pass = 0; pass <= STORY_CONTINUATIONS && wordsIn(story) < opts.minWords; pass++) {
+    const remaining = Math.max(120, opts.maxWords - wordsIn(story));
+    const messages: LlmMessage[] = pass
+      ? [...opts.messages, { role: "assistant", content: story }, { role: "user", content: `Continue the story from the exact point it stopped, in the same voice. Don't repeat or recap anything. Write up to ${remaining} more words, finish the story, and put the single [STATUS:mood:feeling] tag at the very end.` }]
+      : opts.messages;
+    let piece = "";
+    let failure: unknown;
+    try {
+      // Go straight to the provider instead of waiting on local pacing estimates, with no
+      // duplicate backup request: a story is the largest call this app makes.
+      const opened = await openStream(messages, {
+        provider: opts.provider, signal: opts.signal, simulateFail: opts.simulateFail, compactSystem: opts.compactSystem,
+        eager: true, hedge: false, thinking: "off", onThought: opts.onThought, onWait: opts.onWait, maxWaitMs: STORY_MODEL_WAIT_MS,
+        maxTokens: Math.min(8000, Math.max(1500, Math.ceil(remaining * 1.8))),
+      });
+      writer = { provider: opened.provider, providerLabel: opened.providerLabel, model: opened.model };
+      for await (const chunk of opened.stream) {
+        piece += chunk;
+        opts.onWords?.(wordsIn(story) + wordsIn(piece));
+      }
+    } catch (error) {
+      if (opts.signal?.aborted) throw error;
+      failure = error;
+    }
+    if (piece.trim()) {
+      const kept = story.replace(/\[STATUS:[^\]\n]*\]\s*$/i, "").trimEnd();
+      story = kept ? `${kept}${/[.!?…"”'’)*]$/.test(kept) ? "\n\n" : " "}${piece.trim()}` : piece.trim();
+    }
+    if (failure && !piece.trim()) {
+      if (wordsIn(story) >= enough) break;
+      throw failure;
+    }
+    if (!pass && wordsIn(story) < Math.min(STORY_MIN_FIRST_WORDS, enough)) break;
+  }
+  const words = wordsIn(story);
+  if (!writer || words < enough) {
+    console.warn(`[voice] Story: ${writer?.providerLabel} (${writer?.model}) returned ${words} of the ${enough} words needed`);
+    throw new Error(`${writer?.providerLabel || "The model"} returned only ${words} of the ${enough} words needed, so no audio was made. It may have declined this request or cut off.`);
+  }
+  return { text: story, ...writer };
+}
 
 /** Records every step and thought of a reply so the dropdown can be shown again after a reload. */
 function traceReply(o: ReplyOptions) {
@@ -135,17 +205,19 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
   // "send me a voice message" / "say that out loud": the reply is spoken in Senko's voice.
   const lastReply = [...storedHistory.slice(0, -1)].reverse().find((m) => m.role === "assistant" && m.content.trim() && !m.meta?.error);
   const voiceAsk = o.imageIds?.length || o.simulateFail?.length ? null : detectVoiceRequest(o.content, !!lastReply);
-  if (voiceAsk) o.onVoiceProgress?.({ phase: "preparing", completed: 0, total: 0 });
+  const writeStartedAt = Date.now();
+  if (voiceAsk) o.onVoiceProgress?.({ phase: "preparing", completed: 0, total: 0, message: "Writing the narration" });
   if (voiceAsk?.mode === "repeat" && lastReply) {
     // Her last reply, as it was, now spoken: no new text to write.
     o.onStart?.({ userMessageId, assistantMessageId });
     trace.answered();
     const meta: MessageMeta = {};
     const spoken = speechText(lastReply.content);
-    const voice = await recordVoice(o, spoken, lastReply.meta?.mood, storedHistory);
+    const voice = await recordVoice(o, spoken, lastReply.meta?.mood);
     const content = spoken;
     if (voice.meta) meta.voice = voice.meta;
     if (voice.failure) meta.voiceError = voice.failure;
+    if (voice.production) meta.voiceProduction = voice.production;
     if (lastReply.meta?.mood) meta.mood = lastReply.meta.mood;
     meta.thinking = trace.meta();
     await addMessage(o.chatId, "assistant", content, [], meta, assistantMessageId, userMessageId);
@@ -154,7 +226,7 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
 
   // "search X" / "top 20 sites for X" / "fnf hentai": a real web search, shown as a results card.
   // "send me a manga of X": the in-chat reader (pick a site, pick from its top 20, read every page).
-  if (!o.imageIds?.length && !o.simulateFail?.length && !voiceAsk) {
+  if (!o.imageIds?.length && !o.simulateFail?.length && !voiceAsk && !detectImageIntentQuery(o.content)) {
     const safe = await safeSearchFor(o.ownerId).catch(() => "off" as const);
     const fail = (what: string) => (e: unknown) => ({
       content: `I couldn't ${what} (${e instanceof Error ? e.message : String(e)}). Try again?`,
@@ -308,7 +380,7 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
     if (imageQuery) {
       pageNote = [
         pageNote,
-        `IMAGE RESULTS: the app is fetching pictures for "${imageQuery}" and keeps a full gallery available. Compose the visible images and text yourself using chat-layout, with image indexes 0 through 3 and imageQuery "${imageQuery}" as fallback on each image. Choose placement, sizes, grouping and amount of prose to fit this request; you are not limited to a strip below the text. Don't invent image URLs or add an [[images: ...]] tag.`,
+        `IMAGE RESULTS: the app is fetching images using this broad request: "${imageQuery}". This is an image request, not a web-results request: do not produce search-result lists, source cards, or action tags. Interpret the user's complete request and fulfill each part. Design a responsive chat-layout around the subject and requested content; decide its structure, hierarchy, grouping, image count, proportions, captions, and prose yourself for this turn. Use available image indexes 0 through 3 where they fit. For any imageQuery fallback, extract a concise subject-only query from the user's request; omit instructions such as layout or explanation. If the user asks who or what the subject is, include a clear, accurate explanation alongside relevant images. Do not use a fixed template or thumbnail strip. Use supported chat-layout types and properties; don't invent image URLs or add an [[images: ...]] tag.`,
       ]
         .filter(Boolean)
         .join("\n\n");
@@ -375,7 +447,7 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
     // Told up front, so the words are written to be heard (no markdown, links or cards).
     const requestedSeconds = o.voiceDurationSeconds ?? voiceLimits().defaultSeconds;
     const story = !!suggestedVoiceSeconds(o.content);
-    const minWords = story && requestedSeconds >= 60 ? Math.min(450, Math.floor(requestedSeconds * 1.15)) : 0;
+    const minWords = story && requestedSeconds >= 60 ? Math.min(750, Math.floor(requestedSeconds * 1.25)) : 0;
     const maxWords = Math.max(5, Math.min(2400, Math.floor(requestedSeconds * (story ? 2.2 : 1.6))));
     const extra = [voiceAsk ? `${VOICE_REPLY_NOTE}\nSPEAKING BUDGET: write ${minWords ? `between ${minWords} and` : "at most"} ${maxWords} words for a ${requestedSeconds}-second maximum, including pauses. Use ${requestedSeconds <= 5 ? "one short sentence" : story && requestedSeconds >= 60 ? "multiple rich, unhurried paragraphs with atmospheric scene-setting, believable character chemistry, natural back-and-forth dialogue, and an earned emotional resolution; take earnest time so the story genuinely makes sense and feels like a real episode, never a rushed summary" : "two or three connected sentences"}. Keep the requested topic coherent. Never exceed ${voiceLimits().maxChars} characters.` : "", pageNote].filter(Boolean).join("\n\n");
     const [system, compactSystem] = await Promise.all([
@@ -402,6 +474,25 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
       text = generated.text;
       o.onPreview?.(text);
       o.onMiniAgentStep?.({ id: 1, label: "UI component schema validated", status: "done", detail: `${generated.nodeCount} component tree(s), ${generated.inferenceRequests} inference requests. Browser rendering is checked separately.` });
+    } else if (voiceAsk && story) {
+      o.onStart?.({ userMessageId, assistantMessageId });
+      o.onMiniAgentStep?.({ id: WRITE_STEP, label: "Writing the story", status: "running" });
+      let reportedWords = 0;
+      // The narration is the script for the recording. It's shown as a transcript under the
+      // player, so it is never streamed in as if the text were the finished answer.
+      const drafted = await writeVoiceStory({
+        messages, provider: o.provider, signal: o.signal, simulateFail: o.simulateFail, compactSystem, minWords, maxWords, onThought: o.onThought,
+        onWait: (ms) => o.onVoiceProgress?.({ phase: "preparing", completed: 0, total: 0, message: `Waiting for a model's rate limit (about ${Math.ceil(ms / 1000)}s)` }),
+        onWords: (words) => {
+          if (words - reportedWords < 25) return;
+          reportedWords = words;
+          o.onVoiceProgress?.({ phase: "preparing", completed: 0, total: 0, message: `Writing the narration · ${words} words` });
+        },
+      });
+      text = drafted.text;
+      Object.assign(meta, { provider: drafted.provider, providerLabel: drafted.providerLabel, model: drafted.model });
+      trace.answered();
+      o.onMiniAgentStep?.({ id: WRITE_STEP, label: "Wrote the story", status: "done", detail: drafted.providerLabel ? `${drafted.providerLabel} · ${drafted.model}` : undefined });
     } else {
       const opened = await openStream(messages, { provider: o.provider, signal: o.signal, simulateFail: o.simulateFail, compactSystem, onThought: o.onThought, thinking });
       Object.assign(meta, { provider: opened.provider, providerLabel: opened.providerLabel, model: opened.model });
@@ -418,13 +509,32 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
       }
       if (text) o.onMiniAgentStep?.({ id: WRITE_STEP, label: "Wrote the reply", status: "done", detail: opened.providerLabel ? `${opened.providerLabel} · ${opened.model}` : undefined });
     }
+    if (imageQuery && !hasChatLayoutImages(splitChatLayouts(text))) {
+      const correction = `The image-search reply is missing its visual composition. Rewrite it to follow the user's complete request, with at least one valid \u0060\u0060\u0060chat-layout JSON block containing relevant image nodes. Choose a fresh arrangement and concise subject-only imageQuery fallbacks from the user's request. Preserve useful facts and text from the draft.\n\nDRAFT:\n${text}`;
+      o.onMiniAgentStep?.({ id: WRITE_STEP + 1, label: "Designing the image layout", status: "running" });
+      const repaired = await openStream([...messages, { role: "assistant", content: text }, { role: "user", content: correction }], {
+        provider: o.provider, signal: o.signal, simulateFail: o.simulateFail,
+        compactSystem: `${compactSystem}\n\n${pageNote}`, thinking: "low", maxTokens: 6000,
+      });
+      let composed = "";
+      for await (const chunk of repaired.stream) composed += chunk;
+      if (hasChatLayoutImages(splitChatLayouts(composed))) {
+        text = composed;
+        Object.assign(meta, { provider: repaired.provider, providerLabel: repaired.providerLabel, model: repaired.model });
+        o.onPreview?.(text);
+        o.onMiniAgentStep?.({ id: WRITE_STEP + 1, label: "Designed the image layout", status: "done" });
+      } else {
+        o.onMiniAgentStep?.({ id: WRITE_STEP + 1, label: "Could not compose image layout", status: "error", detail: "The model did not return a valid image layout." });
+      }
+    }
     if (!text.trim()) throw new Error("The AI returned an empty reply. Try again.");
     if (voiceAsk && !o.signal?.aborted) {
       text = await prepareSpokenReply(
         text,
-        maxWords,
+        // A story may run slightly long; a rewrite would cost more than the extra seconds of audio.
+        story ? Math.min(Math.ceil(maxWords * 1.15), Math.floor(requestedSeconds * 2.4)) : maxWords,
         voiceLimits().maxChars,
-        async issue => {
+        async (issue) => {
           o.onMiniAgentStep?.({ id: WRITE_STEP, label: "Rewriting spoken transcript", status: "running", detail: issue });
           const correction = `${extra}\nREWRITE REQUIRED: ${issue} Answer the user's latest request directly with a complete, coherent spoken transcript that fits between ${minWords || 1} and ${maxWords} words (up to ${voiceLimits().maxChars} characters). Audio is attached by the server. Do not discuss your capabilities or offer a text alternative.`;
           const rewritten = await openStream([{ role: "system", content: `${system}\n\n${correction}` }, ...history], {
@@ -435,25 +545,9 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
           for await (const chunk of rewritten.stream) result += chunk;
           return result;
         },
-        minWords,
-        story && requestedSeconds >= 60 ? async (draft, instructions) => {
-          o.onMiniAgentStep?.({ id: WRITE_STEP + 1, label: "Polishing story & pacing", status: "running" });
-          const polishSystem = `${system}\n\n${instructions}\nKeep the polished story between ${minWords} and ${maxWords} words (maximum ${voiceLimits().maxChars} characters).`;
-          const polishedStream = await openStream([
-            { role: "system", content: polishSystem },
-            ...history,
-            { role: "assistant", content: draft },
-            { role: "user", content: "Now polish and deepen this story draft so the plot, character motivations, dialogue, and emotional arc feel completely natural, unhurried, and coherent when spoken aloud." },
-          ], {
-            provider: o.provider, signal: o.signal, compactSystem: `${compactSystem}\n\n${instructions}`, thinking: "low", maxTokens: 6000,
-          });
-          let polished = "";
-          for await (const chunk of polishedStream.stream) polished += chunk;
-          o.onMiniAgentStep?.({ id: WRITE_STEP + 1, label: "Polished story & pacing", status: "done" });
-          return polished;
-        } : undefined,
+        // The writer already enforced story length. No whole-story rewrite or polish pass here.
+        story ? 0 : minWords,
       );
-      o.onPreview?.(text);
     }
   } catch (e) {
     if (composedUI) o.onMiniAgentStep?.({ id: 1, label: "UI generation did not pass validation", status: "error", detail: e instanceof Error ? e.message : String(e) });
@@ -616,9 +710,10 @@ export async function reply(opts: ReplyOptions): Promise<StoredMessage> {
   const voiceTag = VOICE_TAG.test(clean);
   if (voiceTag) clean = clean.replace(VOICE_TAG_ALL, "").replace(/\n{3,}/g, "\n\n").trim();
   if ((voiceAsk || voiceTag) && clean && !meta.error && !o.signal?.aborted && !o.simulateFail?.length) {
-    const voice = await recordVoice(o, speechText(clean), meta.mood, storedHistory);
+    const voice = await recordVoice(o, speechText(clean), meta.mood, { provider: meta.providerLabel, model: meta.model, ms: Date.now() - writeStartedAt });
     if (voice.meta) meta.voice = voice.meta;
     if (voice.failure) meta.voiceError = voice.failure;
+    if (voice.production) meta.voiceProduction = voice.production;
   }
 
   meta.thinking = trace.meta();
@@ -633,7 +728,7 @@ const VOICE_TAG_ALL = /\[\[\s*voice\s*\]\]/gi;
  * Speak `text` in Senko's voice and store it. Returns the voice meta, or a plain sentence saying
  * why there's no audio (never a player for audio that doesn't exist).
  */
-async function recordVoice(o: ReplyOptions, text: string, mood?: string, recent: StoredMessage[] = []): Promise<{ meta?: VoiceMeta; error?: string; failure?: MessageMeta["voiceError"] }> {
+async function recordVoice(o: ReplyOptions, text: string, mood?: string, writer?: VoiceProduction["writer"]): Promise<{ meta?: VoiceMeta; error?: string; failure?: MessageMeta["voiceError"]; production?: VoiceProduction }> {
   const STEP = 60;
   let latest: VoiceProgress = { phase: "queued", completed: 0, total: 0 };
   o.onMiniAgentStep?.({ id: STEP, label: "Directing the performance", status: "running" });
@@ -641,22 +736,20 @@ async function recordVoice(o: ReplyOptions, text: string, mood?: string, recent:
     if (!text.trim()) throw new Error("the reply has nothing that can be spoken");
     const personality = await personalityFor(o.ownerId).catch(() => undefined);
     validateVoiceInput(text, o.voiceDurationSeconds);
-    // The director model decides who she is being and how each phrase is acted; no presets.
-    const plan = await directPerformance(text, {
-      request: o.content,
-      recent: recent.filter(m => m.content.trim() && !m.meta?.error).slice(-6).map(m => `${m.role === "user" ? "user" : "senko"}: ${m.content.replace(/\s+/g, " ").slice(0, 300)}`),
-      mood, personality, provider: o.provider, signal: o.signal,
+    const production = createProduction(text, writer);
+    const result = await runProduction({
+      ownerId: o.ownerId, production, request: o.content, mood, personality, provider: o.provider, signal: o.signal,
+      onProgress: progress => {
+        latest = progress;
+        o.onVoiceProgress?.(progress);
+      },
     });
-    o.onMiniAgentStep?.({ id: STEP, label: "Generating speech", status: "running", detail: plan.source === "director" ? plan.character : "neutral timing" });
-    const got = await synthesizeVoice({ text, plan, ownerId: o.ownerId, durationSeconds: o.voiceDurationSeconds, emotion: mood, personality, signal: o.signal, onProgress: progress => {
-      latest = progress;
-      o.onVoiceProgress?.(progress);
-    } });
-    o.onVoiceProgress?.({ ...latest, phase: "assembling", seconds: got.seconds });
-    const audioId = await saveAudio(o.ownerId, got.mime, got.audio);
-    o.onVoiceProgress?.({ phase: "ready", completed: got.segments || 1, total: got.segments || 1, seconds: got.seconds });
-    o.onMiniAgentStep?.({ id: STEP, label: "Recorded a voice message", status: "done", detail: got.engine === "custom" ? `${got.voice} · own voice model` : got.voice });
-    return { meta: { audioId, mime: got.mime, engine: got.engine, voice: got.voice, emotion: mood || undefined, seconds: got.seconds, segments: got.segments, model: got.model, modelKind: got.modelKind, modelFingerprint: got.modelFingerprint, character: got.character, performance: got.performance } };
+    if (result.failure) {
+      o.onMiniAgentStep?.({ id: STEP, label: "Couldn't finish the recording", status: "error", detail: result.failure.message });
+      return { failure: result.failure, production: result.production, error: result.failure.message };
+    }
+    o.onMiniAgentStep?.({ id: STEP, label: "Recorded a voice message", status: "done", detail: result.voice?.voice });
+    return { meta: result.voice, production: result.production };
   } catch (e) {
     const why = e instanceof VoiceError ? e.message : "Speech generation failed. Please try again later";
     o.onVoiceProgress?.({ ...latest, phase: "error", message: why });

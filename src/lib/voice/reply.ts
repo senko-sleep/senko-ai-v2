@@ -24,7 +24,7 @@ export async function prepareSpokenReply(
   text: string,
   maxWords: number,
   maxChars: number,
-  rewrite: (issue: string) => Promise<string>,
+  rewrite: (issue: string, draft?: string) => Promise<string>,
   minWords = 0,
   polish?: (draft: string, instructions: string) => Promise<string>,
 ): Promise<string> {
@@ -38,7 +38,7 @@ export async function prepareSpokenReply(
   }
   const issue = spokenDraftIssue(current, maxWords, maxChars, minWords);
   if (!issue) return current;
-  const revised = await rewrite(issue);
+  const revised = await rewrite(issue, current);
   const remaining = spokenDraftIssue(revised, maxWords, maxChars, minWords);
   if (remaining) throw new Error(`Could not prepare the audio reply: ${remaining}`);
   return revised;

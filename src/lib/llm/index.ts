@@ -441,6 +441,7 @@ function compatProvider(c: CompatConfig): Provider {
       return out.slice(0, (c.maxModels ?? 2) + (strong ? 2 : 0));
     },
     async open(cand, messages, opts) {
+      if (c.id === "gemini" && messages.some((m) => m.images?.length)) return openGeminiNative(c, cand, messages, opts);
       const body = {
         model: cand.model,
         stream: true,
@@ -475,6 +476,68 @@ function compatProvider(c: CompatConfig): Provider {
       return stripThink(sseContent(res.body!, opts.onThought), opts.onThought);
     },
   };
+}
+
+/** Gemini's native endpoint accepts inlineData parts for images and streams GenerateContentResponse SSE. */
+async function openGeminiNative(c: CompatConfig, cand: Candidate, messages: LlmMessage[], opts: LlmOptions): Promise<AsyncGenerator<string>> {
+  const system = messages.find((m) => m.role === "system")?.content;
+  const contents = messages.filter((m) => m.role !== "system").map((m) => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: [
+      ...(m.content ? [{ text: m.content }] : []),
+      ...(m.images || []).map((image) => ({ inlineData: { mimeType: image.mime, data: image.data } })),
+    ],
+  }));
+  const thinkingLevel = opts.thinking && opts.thinking !== "off" ? opts.thinking : undefined;
+  const body = {
+    ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
+    contents,
+    generationConfig: {
+      temperature: opts.temperature ?? 0.7,
+      maxOutputTokens: opts.maxTokens ?? c.budget().output,
+      ...(opts.json ? { responseMimeType: "application/json" } : {}),
+      ...(thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}),
+    },
+  };
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cand.model)}:streamGenerateContent?alt=sse`;
+  const res = await connect(url, body, { "x-goog-api-key": c.key() }, opts.signal, opts.requestBudget, c.id);
+  opts.onResponse?.(res.headers);
+  await throwIfBad(res, c.label, cand.model);
+  return geminiSseContent(res.body!, opts.onThought);
+}
+
+async function* geminiSseContent(body: ReadableStream<Uint8Array>, onThought?: (text: string) => void): AsyncGenerator<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  try {
+    while (true) {
+      const { done, value } = await readStreamChunk(reader);
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() || "";
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (!data) continue;
+        let chunk: { error?: { message?: string }; candidates?: { finishReason?: string; content?: { parts?: { text?: string; thought?: boolean }[] } }[] };
+        try { chunk = JSON.parse(data); } catch { continue; }
+        if (chunk.error) throw new ProviderError(`Gemini stream error: ${chunk.error.message || "unknown error"}`, 500);
+        const candidate = chunk.candidates?.[0];
+        if (candidate?.finishReason && /safety|block/i.test(candidate.finishReason)) throw new ProviderError("Gemini blocked the response with its safety filter", 422);
+        for (const part of candidate?.content?.parts || []) {
+          if (!part.text) continue;
+          if (part.thought) onThought?.(part.text);
+          else yield part.text;
+        }
+      }
+    }
+  } finally {
+    void reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
 }
 
 /** A provider's JSON mode rejected the model's own output. */
@@ -828,11 +891,11 @@ const PROVIDERS: Provider[] = [
     envVisionModel: () => env("OPENROUTER_VISION_MODEL"),
     // openai/gpt-oss-120b:free and minimax/minimax-m3.1-flash:free were retired (404) in Oct 2026.
     preferred: ["google/gemma-4-31b-it:free"],
-    preferredVision: ["google/gemma-4-31b-it:free", "nvidia/nemotron-3.5-super-vl:free", "google/gemma-4-26b-a4b-it:free"],
+    preferredVision: ["google/gemma-4-31b-it:free", "google/gemma-4-26b-a4b-it:free", "qwen/qwen3.8-27b:free"],
     // Only free models: never spend credit by surprise.
     filter: (m) => m.id.endsWith(":free") && !/safety|guard/i.test(m.id),
     headers: () => ({ "HTTP-Referer": "https://github.com/senko-sleep/senko-ai-v2", "X-Title": "Senko AI" }),
-    maxModels: 3,
+    maxModels: 4,
     missingDetail: "Add OPENROUTER_API_KEY (free at openrouter.ai/keys)",
     budget: () => ({ input: num("OPENROUTER_TOKEN_BUDGET", 24_000), output: 4096 }),
   }),
@@ -868,9 +931,9 @@ const PROVIDERS: Provider[] = [
     label: "Cloudflare Workers AI",
     baseUrl: () => `https://api.cloudflare.com/client/v4/accounts/${env("CLOUDFLARE_ACCOUNT_ID")}/ai/v1`,
     key: () => env("CLOUDFLARE_ACCOUNT_ID") && env("CLOUDFLARE_API_TOKEN"),
-    envModel: () => env("CLOUDFLARE_MODEL", "@cf/meta/llama-3.2-3b-instruct"),
+    envModel: () => env("CLOUDFLARE_MODEL", "@cf/google/gemma-4-26b-a4b-it"),
     envVisionModel: () => env("CLOUDFLARE_VISION_MODEL"),
-    preferred: ["@cf/meta/llama-3.2-3b-instruct"],
+    preferred: ["@cf/google/gemma-4-26b-a4b-it"],
     preferredVision: [],
     maxModels: 2,
     missingDetail: "Add CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN (Workers AI)",
@@ -1379,6 +1442,9 @@ export async function openStream(messages: LlmMessage[], opts: LlmOptions = {}):
         const backoff = status === 429 ? scheduler.onRateLimited(c.provider, c.model, pe?.retryMs ?? null) : 0;
         const ms =
           isTooLarge(e) ? 5_000 // not the provider's fault; a smaller request may work right away
+          : health.state === "unavailable" ? 24 * 60 * 60_000 // retired or removed model
+          : health.state === "configuration_error" && status !== 403 ? 60 * 60_000 // bad key, no credit, not on this plan
+          : health.state === "configuration_error" ? 6 * 60 * 60_000 // this model isn't allowed on this account
           : dailyOut ? 60 * 60_000
           : status === 429 ? (daily ? Math.max(backoff, 60 * 60_000) : backoff)
           : status === 402 ? 60 * 60_000 // out of credit
@@ -1479,6 +1545,13 @@ export async function complete(messages: LlmMessage[], opts: LlmOptions = {}): P
       coolDown(provider, model, health.state === "unavailable" ? 24 * 60 * 60_000 : Math.max(2000, (health.retryAt || Date.now() + 60_000) - Date.now()), health.reason, health.retryable);
       if (opts.model || attempt === 2) throw error;
       continue; // No partial response has reached the caller of this non-streaming helper.
+    }
+    // Blank output is a failed generation, whatever status the provider reported.
+    if (!text.trim()) {
+      const health = recordProviderFailure(provider, model, 422, "empty response");
+      coolDown(provider, model, 30_000, health.reason, false);
+      if (opts.model || attempt === 2) throw new ProviderError(`${providerLabel} (${model}): empty response`, 422, null);
+      continue;
     }
     recordProviderSuccess(provider, model);
     return { text, provider, providerLabel, model };

@@ -286,24 +286,27 @@ export async function synthesizeVoice(r: SynthRequest, engines = voiceEngines())
   if (!r.ownerId) throw new VoiceError(401, "unauthorized", "A signed-in device is required for voice generation.");
   const plan = r.plan ?? neutralPlan(r.text);
   r.onProgress?.({ phase: "queued", completed: 0, total: 0 });
-  return withVoiceBudget(r.ownerId, r.signal, async signal => {
-    if (!engines.length) throw new VoiceError(503, "engine_unavailable", "No compatible speech engine is available on this server.");
-    let last: unknown;
-    for (const engine of engines) {
-      signal.throwIfAborted();
-      try {
-        const result = await engine.synthesize({ ...r, plan, signal });
-        const verified = await verifyVoiceAudio(result.audio, seconds, signal);
-        return { ...result, ...verified, performance: plan.source, character: plan.source === "director" && !/^senko\.?$/i.test(plan.character) ? plan.character : undefined };
-      } catch (error) {
-        last = error;
-        if (signal.aborted || error instanceof VoiceError && [422, 429].includes(error.status)) throw error;
-        console.warn(`[voice] ${engine.id} generation failed`, error instanceof Error ? error.message : "unknown");
-      }
+  return withVoiceBudget(r.ownerId, r.signal, signal => renderWithEngines({ ...r, plan }, seconds, engines, signal));
+}
+
+/** Render and decode-verify one piece of speech. The caller holds the voice budget. */
+export async function renderWithEngines(r: SynthRequest & { plan: PerformancePlan }, seconds: number, engines: VoiceEngine[], signal: AbortSignal): Promise<SynthResult> {
+  if (!engines.length) throw new VoiceError(503, "engine_unavailable", "No compatible speech engine is available on this server.");
+  let last: unknown;
+  for (const engine of engines) {
+    signal.throwIfAborted();
+    try {
+      const result = await engine.synthesize({ ...r, signal });
+      const verified = await verifyVoiceAudio(result.audio, seconds, signal);
+      return { ...result, ...verified, performance: r.plan.source, character: r.plan.source === "director" && !/^senko\.?$/i.test(r.plan.character) ? r.plan.character : undefined };
+    } catch (error) {
+      last = error;
+      if (signal.aborted || error instanceof VoiceError && [422, 429].includes(error.status)) throw error;
+      console.warn(`[voice] ${engine.id} generation failed`, error instanceof Error ? error.message : "unknown");
     }
-    if (last instanceof VoiceError) throw last;
-    throw new VoiceError(502, "synthesis_failed", "Speech generation failed. Please try again later.");
-  });
+  }
+  if (last instanceof VoiceError) throw last;
+  throw new VoiceError(502, "synthesis_failed", "Speech generation failed. Please try again later.");
 }
 
 /** Store audio in the uploads table; /api/uploads/<id> serves it (with Range for seeking). */

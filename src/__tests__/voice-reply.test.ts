@@ -13,7 +13,7 @@ describe("spoken replies before synthesis", () => {
   it("rewrites a plot summary that is too short for a requested story", async () => {
     const rewrite = vi.fn(async () => "Aoi smiled. ".repeat(70));
     await expect(prepareSpokenReply("Aoi came out. The end.", 192, 15000, rewrite, 138)).resolves.toContain("Aoi smiled.");
-    expect(rewrite).toHaveBeenCalledWith(expect.stringContaining("too short"));
+    expect(rewrite).toHaveBeenCalledWith(expect.stringContaining("too short"), "Aoi came out. The end.");
   });
   it("runs an earnest narrative polish pass on story drafts before synthesis", async () => {
     const rewrite = vi.fn();

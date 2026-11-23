@@ -34,6 +34,8 @@ export interface MessageMeta {
   /** The reply as a voice message in Senko's voice (the content is its transcript). */
   voice?: import("./voice").VoiceMeta;
   voiceError?: { code: string; message: string; retryAfter?: number };
+  /** Per-section state of the recording: direction, audio, measured timings, errors. */
+  voiceProduction?: import("@/lib/voice/production").VoiceProduction;
   /** What Senko did and thought before answering (the "Thought for Ns" dropdown). */
   thinking?: {
     steps: { id: number; label: string; status: "running" | "done" | "error"; detail?: string; url?: string }[];

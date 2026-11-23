@@ -12,7 +12,13 @@ export interface ProviderHealth {
 const health = new Map<string, ProviderHealth>();
 const key = (provider: string, model: string) => `${provider}|${model}`;
 
-export function classifyProviderFailure(status: number): { state: ProviderHealthState; retryable: boolean } {
+const RETIRED = /\b(?:deprecated|decommissioned|retired|end[- ]of[- ]life|no longer (?:available|supported|exists?))\b/i;
+const NOT_ON_PLAN = /\b(?:not available (?:on|in|for) (?:the |your )?(?:current |free )?(?:plan|tier)|(?:requires?|upgrade(?: to)?) (?:a |an |your )?(?:paid|pro|higher|enterprise)\b|insufficient (?:credits?|balance|funds)|out of credits?)/i;
+
+/** The status code, refined by what the provider said: retired models and plan limits never heal on retry. */
+export function classifyProviderFailure(status: number, message = ""): { state: ProviderHealthState; retryable: boolean } {
+  if (status !== 429 && status < 500 && RETIRED.test(message)) return { state: "unavailable", retryable: false };
+  if (status !== 429 && status < 500 && NOT_ON_PLAN.test(message)) return { state: "configuration_error", retryable: false };
   if (status === 404 || status === 410) return { state: "unavailable", retryable: false };
   if (status === 401 || status === 402 || status === 403) return { state: "configuration_error", retryable: false };
   return { state: "transient_failure", retryable: status === 0 || status === 408 || status === 429 || status >= 500 };
@@ -25,7 +31,7 @@ export function recordProviderSuccess(provider: string, model: string): void {
 }
 export function recordProviderFailure(provider: string, model: string, status: number, reason: string, retryMs?: number | null): ProviderHealth {
   const previous = health.get(key(provider, model));
-  const classification = classifyProviderFailure(status);
+  const classification = classifyProviderFailure(status, reason);
   const failures = (previous?.failures || 0) + 1;
   const backoff = Math.max(retryMs || 0, Math.min(30_000, 1000 * 2 ** Math.min(failures - 1, 5)));
   const entry: ProviderHealth = { ...classification, checkedAt: Date.now(), status, reason: reason.slice(0, 350), failures,

@@ -1,13 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import dynamic from "next/dynamic";
 import { Bot, Code2, Compass, Cpu, Download, Globe, KeyRound, Loader2, MessageSquare, PanelLeftOpen, SquarePen } from "lucide-react";
 import { extractOpenTags, parseBrowserCommand } from "@/lib/browser-commands";
 import { extractDocumentFromFile } from "@/lib/document-extractor";
-import { MessageBubble } from "./message-bubble";
-import { BrowserPanel, type BrowserState } from "./browser-panel";
+import type { BrowserState } from "./browser-panel";
 import { ApprovalBar } from "./approval-bar";
-import { WorkspacePanel, type WorkspaceTab } from "./workspace-panel";
+import type { WorkspaceTab } from "./workspace-panel";
 import {
   deriveFollowUpActions,
   downloadTextFile,
@@ -19,7 +19,7 @@ import {
 import type { PageOp } from "./reader-view";
 import { Composer, type Attachment } from "./composer";
 import { Sidebar } from "./sidebar";
-import { SettingsDialog, type Theme } from "./settings-dialog";
+import type { Theme } from "./settings-dialog";
 import { Welcome } from "./welcome";
 import { FoxMark } from "./fox-mark";
 import { createLiveBus } from "./live-view";
@@ -45,6 +45,18 @@ import {
   type ApprovalInfo,
   type VoiceProgress,
 } from "./lib";
+
+// The heavy parts load on demand, so the welcome screen and composer appear first.
+const loadMessageBubble = () => import("./message-bubble");
+const PanelLoading = () => (
+  <div className="flex h-full min-h-24 items-center justify-center text-[var(--sk-faint)]">
+    <Loader2 className="sk-spin" size={18} aria-label="Loading" />
+  </div>
+);
+const MessageBubble = dynamic(() => loadMessageBubble().then((m) => m.MessageBubble), { ssr: false, loading: PanelLoading });
+const BrowserPanel = dynamic(() => import("./browser-panel").then((m) => m.BrowserPanel), { ssr: false, loading: PanelLoading });
+const WorkspacePanel = dynamic(() => import("./workspace-panel").then((m) => m.WorkspacePanel), { ssr: false, loading: PanelLoading });
+const SettingsDialog = dynamic(() => import("./settings-dialog").then((m) => m.SettingsDialog), { ssr: false });
 
 const EMPTY_BROWSER: BrowserState = { running: false, status: "", url: "", title: "", plan: [], steps: [], outcome: "idle" };
 const THEME_KEY = "senko.theme";
@@ -158,6 +170,7 @@ export default function AssistantApp() {
   const streamRef = useRef<ReturnType<typeof connectLiveStream> | null>(null);
   const streamRetry = useRef<ReturnType<typeof setTimeout> | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const pinnedRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesRef = useRef<Msg[]>([]);
   const activeRef = useRef<string | null>(null);
@@ -229,6 +242,18 @@ export default function AssistantApp() {
       .then((j) => setProviders(j.providers || []))
       .catch(() => setProviders([]));
   }, [boot]);
+
+  // Fetch the chat renderer once the page is idle, so the first reply never waits for it.
+  useEffect(() => {
+    if (conn !== "ready") return;
+    const preload = () => void loadMessageBubble().catch(() => {});
+    if (typeof window.requestIdleCallback !== "function") {
+      const timer = window.setTimeout(preload, 1200);
+      return () => window.clearTimeout(timer);
+    }
+    const idle = window.requestIdleCallback(preload, { timeout: 2500 });
+    return () => window.cancelIdleCallback(idle);
+  }, [conn]);
 
   // ---- theme -----------------------------------------------------------------
   const applyTheme = (t: Theme) => {
@@ -586,7 +611,7 @@ export default function AssistantApp() {
       setChatLoading(true);
       if (!window.matchMedia("(min-width: 1024px)").matches) setSidebarOpen(false);
       try {
-        const { messages: stored } = await API.getChat(id);
+        const [{ messages: stored }] = await Promise.all([API.getChat(id), loadMessageBubble().catch(() => null)]);
         if (activeRef.current !== id) return;
         setMessages(stored.map(fromStored));
         if (stored[stored.length - 1]?.meta?.agent?.status === "paused") {
@@ -614,7 +639,20 @@ export default function AssistantApp() {
         setHash(null);
       } finally {
         setChatLoading(false);
-        requestAnimationFrame(() => listRef.current?.scrollTo({ top: listRef.current.scrollHeight }));
+        pinnedRef.current = true;
+        requestAnimationFrame(() => {
+          const list = listRef.current;
+          if (!list) return;
+          list.scrollTo({ top: list.scrollHeight });
+          // Lazy content can grow after this frame: stay at the bottom unless the user scrolls up.
+          const content = list.firstElementChild;
+          if (!content || typeof ResizeObserver === "undefined") return;
+          const follow = new ResizeObserver(() => {
+            if (pinnedRef.current && activeRef.current === id) list.scrollTo({ top: list.scrollHeight });
+          });
+          follow.observe(content);
+          window.setTimeout(() => follow.disconnect(), 1500);
+        });
       }
     },
     [detach]
@@ -659,7 +697,6 @@ export default function AssistantApp() {
   // Follow new content while the reader is at the bottom. Whether they are is decided by their
   // own scrolling *before* the update: measuring after it would stop following whenever one
   // update adds a lot at once (an embed card or a gallery is 500px+).
-  const pinnedRef = useRef(true);
   const autoScrollUntil = useRef(0);
   const onListScroll = useCallback(() => {
     const el = listRef.current;
@@ -821,7 +858,7 @@ export default function AssistantApp() {
             const final = fromStored(e.message);
             if (thoughtRaf) { cancelAnimationFrame(thoughtRaf); flushThoughts(); }
             // The saved trace (steps, thoughts, duration) replaces the live one.
-            patch(replyId, (m) => ({ ...final, id: m.id, provider: final.provider || m.provider, voiceProgress: final.voiceProgress || m.voiceProgress, miniAgentSteps: final.miniAgentSteps || m.miniAgentSteps, thoughts: final.thoughts || m.thoughts, thinkingMs: final.thinkingMs, miniAgentRunning: false, miniAgentLabel: m.miniAgentLabel }));
+            patch(replyId, (m) => ({ ...final, id: m.id, serverId: final.id, provider: final.provider || m.provider, voiceProgress: final.voiceProgress || m.voiceProgress, miniAgentSteps: final.miniAgentSteps || m.miniAgentSteps, thoughts: final.thoughts || m.thoughts, thinkingMs: final.thinkingMs, miniAgentRunning: false, miniAgentLabel: m.miniAgentLabel }));
             if (final.actions?.[0]) openTab(final.actions[0].url); // may be blocked; the card stays
           } else if (e.type === "error") {
             if (rafId) {
@@ -2016,17 +2053,19 @@ export default function AssistantApp() {
         </div>
       )}
 
-      <SettingsDialog
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        personalized={personalized}
-        onPersonalized={changePersonalized}
-        theme={theme}
-        onTheme={applyTheme}
-        provider={provider}
-        providers={providers}
-        onProvider={changeProvider}
-      />
+      {settingsOpen && (
+        <SettingsDialog
+          open
+          onClose={() => setSettingsOpen(false)}
+          personalized={personalized}
+          onPersonalized={changePersonalized}
+          theme={theme}
+          onTheme={applyTheme}
+          provider={provider}
+          providers={providers}
+          onProvider={changeProvider}
+        />
+      )}
     </div>
   );
 }

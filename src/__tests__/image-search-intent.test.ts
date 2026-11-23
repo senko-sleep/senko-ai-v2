@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { imageSearchIntent } from "@/lib/agent/context";
+import { detectImageIntentQuery } from "@/lib/server/images";
+import { detectSearchRequest } from "@/lib/search/intent";
 
 describe("imageSearchIntent", () => {
   it.each([
@@ -18,6 +20,15 @@ describe("imageSearchIntent", () => {
 
   it.each(["open youtube and play lofi", "search for the best pizza near me", "what is this page about", "play the video"])("not an image search: %s", (goal) => {
     expect(imageSearchIntent(goal)).toBeNull();
+  });
+});
+
+describe("image requests stay out of web-results routing", () => {
+  it("recognizes an image request even when it also asks for an explanation and layout", () => {
+    const request = "look up images of Anya Forger make a dynamic layout explaining who she is";
+    expect(detectImageIntentQuery(request)).toBeTruthy();
+    // The general search parser also sees this as a search; reply routing must prioritize the image intent.
+    expect(detectSearchRequest(request)).toBeTruthy();
   });
 });
 

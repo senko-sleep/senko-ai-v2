@@ -10,7 +10,7 @@ export function voiceLimits() {
   const minSeconds = Math.min(maxSeconds, setting("MIN_SECONDS", 5, 1800));
   return {
     minSeconds, maxSeconds, defaultSeconds: Math.max(minSeconds, Math.min(maxSeconds, setting("DEFAULT_SECONDS", 60, 1800))),
-    maxChars: setting("MAX_CHARS", 15000, 15000), perMinute: setting("PER_MINUTE", 3), perHour: setting("PER_HOUR", 20),
+    maxChars: setting("MAX_CHARS", 25000, 25000), perMinute: setting("PER_MINUTE", 3), perHour: setting("PER_HOUR", 20),
     perUser: setting("PER_USER_CONCURRENT", 1, 8), global: setting("GLOBAL_CONCURRENT", 2, 32),
     queue: setting("QUEUE_PER_USER", 2, 10), globalQueue: setting("GLOBAL_QUEUE", 32, 128), timeoutMs: setting("TIMEOUT_MS", 600000, 900000),
   };
@@ -66,22 +66,24 @@ function delay(signal: AbortSignal) {
   });
 }
 /** Persistent rate history and expiring DB leases protect all app instances and survive restarts. */
-export async function withVoiceBudget<T>(ownerId: string, signal: AbortSignal | undefined, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+export async function withVoiceBudget<T>(ownerId: string, signal: AbortSignal | undefined, work: (signal: AbortSignal) => Promise<T>, longJobMs = 0): Promise<T> {
   const limits = voiceLimits();
+  // A long recording counts as one job, and may run past the default limit up to a hard cap.
+  const timeoutMs = Math.min(1_800_000, Math.max(limits.timeoutMs, longJobMs));
   const pending = waiting.get(ownerId) || 0;
   if (pending >= limits.perUser + limits.queue || [...waiting.values()].reduce((a, b) => a + b, 0) >= limits.global + limits.globalQueue) throw new VoiceError(429, "queue_full", "Voice queue is full. Try again shortly.", 2);
   waiting.set(ownerId, pending + 1);
   const token = newId("voice_");
-  const deadline = AbortSignal.timeout(limits.timeoutMs);
+  const deadline = AbortSignal.timeout(timeoutMs);
   const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
   try {
     combined.throwIfAborted();
-    if (!await lease(`queue:user:${ownerId}`, limits.perUser + limits.queue, token, limits.timeoutMs + 5000) || !await lease("queue:global", limits.global + limits.globalQueue, token, limits.timeoutMs + 5000)) throw new VoiceError(429, "queue_full", "Voice queue is full. Try again shortly.", 2);
+    if (!await lease(`queue:user:${ownerId}`, limits.perUser + limits.queue, token, timeoutMs + 5000) || !await lease("queue:global", limits.global + limits.globalQueue, token, timeoutMs + 5000)) throw new VoiceError(429, "queue_full", "Voice queue is full. Try again shortly.", 2);
     await rateLimit(ownerId); // Failed/abandoned attempts still consume quota; no free retry loops.
     while (true) {
       combined.throwIfAborted();
-      if (await lease(`user:${ownerId}`, limits.perUser, token, limits.timeoutMs + 5000)) {
-        if (await lease("global", limits.global, token, limits.timeoutMs + 5000)) break;
+      if (await lease(`user:${ownerId}`, limits.perUser, token, timeoutMs + 5000)) {
+        if (await lease("global", limits.global, token, timeoutMs + 5000)) break;
         await q("DELETE FROM voice_slots WHERE token = $1 AND slot NOT LIKE 'queue:%'", [token]);
       }
       await delay(combined);

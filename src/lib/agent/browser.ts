@@ -127,9 +127,18 @@ function managedRegion(provider: "browserbase" | "steel"): string | undefined {
     : undefined; // Steel now runs only in iad (Virginia); it rejects any other region.
 }
 
+// A provider that's down should cost seconds, not minutes, before the next one is tried.
+const SESSION_CREATE_TIMEOUT_MS = 12_000;
+const CDP_CONNECT_TIMEOUT_MS = 15_000;
+const CDP_RECONNECT_TIMEOUT_MS = 8_000;
+const LOCAL_LAUNCH_TIMEOUT_MS = 25_000;
+/** A provider that just failed is tried last for this long. */
+const PROVIDER_COOLDOWN_MS = 5 * 60_000;
+const providerDownUntil = new Map<string, number>();
+
 /** POST a session create with a region; if the provider rejects the option, create one without it. */
 async function createWithRegion(url: string, headers: Record<string, string>, body: Record<string, unknown>, region: string | undefined) {
-  const post = (b: Record<string, unknown>) => fetch(url, { method: "POST", headers, body: JSON.stringify(b), signal: AbortSignal.timeout(30_000) });
+  const post = (b: Record<string, unknown>) => fetch(url, { method: "POST", headers, body: JSON.stringify(b), signal: AbortSignal.timeout(SESSION_CREATE_TIMEOUT_MS) });
   const first = await post(region ? { ...body, region } : body);
   if (region && first.status >= 400 && first.status < 500 && first.status !== 401 && first.status !== 429) {
     console.warn(`[browser] ${new URL(url).hostname} rejected region "${region}" (HTTP ${first.status}); using its default region`);
@@ -153,7 +162,7 @@ async function connectBrowserbase(chromium: (typeof import("playwright"))["chrom
   if (reconnectSessionId) {
     const response = await fetch(`https://api.browserbase.com/v1/sessions/${encodeURIComponent(reconnectSessionId)}`, {
       headers: { "X-BB-API-Key": apiKey },
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(5_000),
     });
     if (!response.ok) throw new Error(`Browserbase reconnect returned HTTP ${response.status}`);
     const existing = (await response.json()) as { id?: string; status?: string; connectUrl?: string };
@@ -171,7 +180,7 @@ async function connectBrowserbase(chromium: (typeof import("playwright"))["chrom
   }
   if (!session.id || !session.connectUrl) throw new Error("Browserbase returned an incomplete session");
   try {
-    const browser = await chromium.connectOverCDP(session.connectUrl, { timeout: 30_000 });
+    const browser = await chromium.connectOverCDP(session.connectUrl, { timeout: reconnectSessionId ? CDP_RECONNECT_TIMEOUT_MS : CDP_CONNECT_TIMEOUT_MS });
     g.__browserbaseSessionId = session.id;
     return browser;
   } catch (error) {
@@ -192,13 +201,13 @@ async function connectBrowserless(chromium: (typeof import("playwright"))["chrom
   endpoint.searchParams.set("token", token);
   endpoint.searchParams.set("timeout", String(Math.max(60_000, Number(process.env.BROWSERLESS_TIMEOUT_MS) || 3_600_000)));
   try {
-    return await chromium.connectOverCDP(endpoint.toString(), { timeout: 30_000 });
+    return await chromium.connectOverCDP(endpoint.toString(), { timeout: CDP_CONNECT_TIMEOUT_MS });
   } catch (e) {
     // Plans cap the session length (the free plan at ~2 minutes) and answer 400 to longer ones.
     if (!/\b400 Bad Request\b/.test(String(e))) throw e;
     endpoint.searchParams.set("timeout", "120000");
     console.warn("[browser] Browserless refused a long session; using its plan's 2-minute limit");
-    return chromium.connectOverCDP(endpoint.toString(), { timeout: 30_000 });
+    return chromium.connectOverCDP(endpoint.toString(), { timeout: CDP_CONNECT_TIMEOUT_MS });
   }
 }
 
@@ -218,7 +227,7 @@ async function connectSteel(chromium: (typeof import("playwright"))["chromium"],
   endpoint.searchParams.set("apiKey", apiKey);
   endpoint.searchParams.set("sessionId", session.id);
   try {
-    const browser = await chromium.connectOverCDP(endpoint.toString(), { timeout: 30_000 });
+    const browser = await chromium.connectOverCDP(endpoint.toString(), { timeout: CDP_CONNECT_TIMEOUT_MS });
     steelSessionIdFromBrowser = session.id;
     return browser;
   } catch (error) {
@@ -297,12 +306,17 @@ async function launch(browserbaseSessionId?: string): Promise<Browser> {
         return existing;
       }
     }
-    for (const provider of providers) {
+    // Stable sort: providers that failed recently move to the back, otherwise the order holds.
+    const isDown = (name: string) => (providerDownUntil.get(name) ?? 0) > Date.now();
+    const ranked = [...providers].sort((a, b) => Number(isDown(a.name)) - Number(isDown(b.name)));
+    for (const provider of ranked) {
       try {
         const b = await provider.connect(provider.key!);
+        providerDownUntil.delete(provider.name);
         markRemoteBrowser(b, provider.name, provider.released?.(provider.key!));
         return b;
       } catch {
+        providerDownUntil.set(provider.name, Date.now() + PROVIDER_COOLDOWN_MS);
         failures.push(provider.name);
         console.warn(`[browser] ${provider.name} unavailable (${failures.length === 1 ? "connection failed" : "provider unavailable"}); trying the next browser provider`);
       }
@@ -349,13 +363,13 @@ async function launch(browserbaseSessionId?: string): Promise<Browser> {
   ];
   const attempts: [string, () => Promise<Browser>][] = [];
   if (process.env.BROWSER_PATH) {
-    attempts.push(["custom", () => chromium.launch({ headless: !headed, executablePath: process.env.BROWSER_PATH, args })]);
+    attempts.push(["custom", () => chromium.launch({ headless: !headed, executablePath: process.env.BROWSER_PATH, args, timeout: LOCAL_LAUNCH_TIMEOUT_MS })]);
   }
   attempts.push(
-    ["chrome", () => chromium.launch({ headless: !headed, channel: "chrome", args })], // real Google Chrome (codecs)
-    ["msedge", () => chromium.launch({ headless: !headed, channel: "msedge", args })],
-    ["chromium", () => chromium.launch({ headless: !headed, channel: "chromium", args })],
-    ["chromium-headless-shell", () => chromium.launch({ headless: true, args })]
+    ["chrome", () => chromium.launch({ headless: !headed, channel: "chrome", args, timeout: LOCAL_LAUNCH_TIMEOUT_MS })], // real Google Chrome (codecs)
+    ["msedge", () => chromium.launch({ headless: !headed, channel: "msedge", args, timeout: LOCAL_LAUNCH_TIMEOUT_MS })],
+    ["chromium", () => chromium.launch({ headless: !headed, channel: "chromium", args, timeout: LOCAL_LAUNCH_TIMEOUT_MS })],
+    ["chromium-headless-shell", () => chromium.launch({ headless: true, args, timeout: LOCAL_LAUNCH_TIMEOUT_MS })]
   );
   const errors: string[] = [];
   for (const [name, attempt] of attempts) {

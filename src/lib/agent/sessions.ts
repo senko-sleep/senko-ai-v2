@@ -86,6 +86,8 @@ async function browserContextId(context: BrowserContext): Promise<string | undef
 // Managed browser plans often cap concurrent sessions. Keep one live chat session
 // by default when any cloud provider is configured; paid users can raise the limit.
 const HAS_MANAGED_BROWSER = !!(process.env.BROWSERBASE_API_KEY || process.env.BROWSERLESS_TOKEN || process.env.STEEL_API_KEY);
+/** Longest a restored session waits for its active tab before the task starts anyway. */
+const RESTORE_WAIT_MS = 3000;
 const MAX_LIVE = Math.max(1, Number(process.env.MAX_LIVE_SESSIONS || (HAS_MANAGED_BROWSER || isLowMemoryHost() ? 1 : 3)));
 const LOW_MEMORY_MB = Number(process.env.LOW_MEMORY_MB || (isLowMemoryHost() ? 80 : 250));
 // A ceiling, not a timer that delays every captured frame. Viewers advertise their
@@ -436,22 +438,31 @@ export class BrowserSession {
       await this.front(this.pages[this.activeIndex]);
     } else if (tabs.length) {
       this.log(`Restoring ${tabs.length} tab${tabs.length > 1 ? "s" : ""} from the saved session…`);
+      // Tabs load side by side in the background, so one slow site can't hold up the task.
+      const loads: Promise<void>[] = [];
       for (const t of tabs) {
         const p = await this.newTabInternal();
-        await p.goto(t.url, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch((e) => this.log(`Couldn't reopen ${t.url}: ${String(e).split("\n")[0]}`, "warn"));
-        await p
-          .evaluate(
-            ({ y, v }) => {
-              if (y) window.scrollTo(0, y);
-              const vid = document.querySelector("video");
-              if (vid && v) vid.currentTime = v;
-            },
-            { y: t.scrollY || 0, v: t.videoTime || 0 }
+        loads.push(
+          p.goto(t.url, { waitUntil: "domcontentloaded", timeout: 30_000 }).then(
+            () =>
+              p
+                .evaluate(
+                  ({ y, v }) => {
+                    if (y) window.scrollTo(0, y);
+                    const vid = document.querySelector("video");
+                    if (vid && v) vid.currentTime = v;
+                  },
+                  { y: t.scrollY || 0, v: t.videoTime || 0 }
+                )
+                .then(() => undefined, () => undefined),
+            (e) => this.log(`Couldn't reopen ${t.url}: ${String(e).split("\n")[0]}`, "warn")
           )
-          .catch(() => {});
+        );
       }
       this.activeIndex = Math.min(saved?.activeIndex ?? 0, this.pages.length - 1);
       await this.front(this.pages[this.activeIndex]);
+      // Give the tab the agent will use a moment to arrive, without waiting on a slow site.
+      await withTimeout(loads[this.activeIndex] ?? Promise.resolve(), RESTORE_WAIT_MS, undefined);
     } else {
       await this.newTabInternal();
     }
@@ -459,7 +470,8 @@ export class BrowserSession {
       this.savedContextId = await withTimeout(browserContextId(this.context), 2000, undefined);
     }
     this.status = "active";
-    await this.persist();
+    // Saved in the background: reading cookies and storage can take seconds.
+    void this.persist().catch(() => {});
     this.saveTimer = setInterval(() => void this.persist().catch(() => {}), 60_000);
     this.saveTimer.unref?.();
     this.healthTimer = setInterval(() => void this.checkHealth(), HEALTH_INTERVAL_MS());

@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { CodeJobCard } from "./code-job-card";
 import { VoiceMessage } from "./voice-message";
+import { VoiceStudio } from "./voice-studio";
 import { VoiceGenerationProgress } from "./voice-progress";
 import { AlertTriangle, Bot, Check, CheckCircle2, Code2, Compass, Copy, Download, ExternalLink, Eye, GitBranch, Grid3X3, PauseCircle, PawPrint, Pencil, RotateCcw, Sparkles, Square } from "lucide-react";
 import { FoxMark } from "./fox-mark";
@@ -9,7 +10,7 @@ import { AgentTrail } from "./activity-trail";
 import { ImageGallery } from "../chat/image-gallery";
 import { RichMessageContent } from "../ui-renderer/dynamic-ui-renderer";
 import { ChatComposition } from "./chat-composition";
-import { hasChatLayoutImages, splitChatLayouts } from "@/lib/chat-layout";
+import { splitChatLayouts } from "@/lib/chat-layout";
 import { ThinkingPanel } from "./thinking-panel";
 import { ChatVideos } from "./chat-videos";
 import { ComicCardView } from "./comic-card";
@@ -40,59 +41,21 @@ function useCopy() {
   return { copied, copy };
 }
 
-/** Horizontal preview strip + "View all images" gallery button for chat-mode image results. */
+/** Full gallery access for scraped results; the inline images live in the response composition. */
 function ScrapedImageStrip({
   images,
   query,
-  galleryOnly = false,
 }: {
   images: NonNullable<Msg["scrapedImages"]>;
   query?: string;
-  galleryOnly?: boolean;
 }) {
   const [showGallery, setShowGallery] = useState(false);
-  const preview = images.slice(0, 4);
-
   return (
     <div className="mt-2 w-full">
-      {/* Mini horizontal strip (up to 4 thumbnails) */}
-      {!galleryOnly && <div className="flex gap-2 overflow-x-auto pb-1">
-        {preview.map((img, i) => (
-          <button
-            key={i}
-            type="button"
-            onClick={() => setShowGallery(true)}
-            className="shrink-0 rounded-lg overflow-hidden border border-[var(--sk-line)] hover:border-[var(--sk-accent-line)] transition-colors"
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={img.url}
-              alt={img.alt || ""}
-              loading="lazy"
-              referrerPolicy="no-referrer"
-              className="h-24 w-24 object-cover"
-              onError={(e) => {
-                (e.target as HTMLImageElement).style.display = "none";
-              }}
-            />
-          </button>
-        ))}
-        {images.length > 4 && (
-          <button
-            type="button"
-            onClick={() => setShowGallery(true)}
-            className="shrink-0 h-24 w-24 rounded-lg border border-[var(--sk-line)] bg-[var(--sk-surface)] flex items-center justify-center text-[11px] text-[var(--sk-muted)] hover:border-[var(--sk-accent-line)] hover:text-[var(--sk-text)] transition-colors"
-          >
-            +{images.length - 4} more
-          </button>
-        )}
-      </div>}
-
-      {/* "View all images" button */}
       <button
         type="button"
         onClick={() => setShowGallery(true)}
-        className="mt-2 flex items-center gap-1.5 text-[11.5px] text-[var(--sk-muted)] hover:text-[var(--sk-accent-ink)] transition-colors"
+        className="inline-flex items-center gap-1.5 rounded-full border border-[var(--sk-line)] bg-[var(--sk-surface)] px-2.5 py-1 text-[11px] text-[var(--sk-muted)] transition-colors hover:border-[var(--sk-accent-line)] hover:text-[var(--sk-accent-ink)]"
       >
         <Grid3X3 size={12} aria-hidden />
         View all {images.length} images
@@ -304,7 +267,6 @@ export const MessageBubble = memo(function MessageBubble({
   const hasTrail = !!agent && Boolean(agent.trail?.length || activitySources(agent.trail, finalUrl).length);
   const showMeta = !msg.pending && Boolean(msg.content || agent);
   const composition = splitChatLayouts(msg.content, streaming);
-  const composedImages = hasChatLayoutImages(composition);
 
   const metaContent = showMeta ? (
     <>
@@ -384,6 +346,8 @@ export const MessageBubble = memo(function MessageBubble({
     </>
   ) : null;
 
+  const voiceStudio = !!(msg.voiceProduction?.sections.length || msg.voiceProgress?.production || (msg.pending && msg.voiceProgress));
+
   return (
     <div className="sk-in group flex gap-2.5 sm:gap-3">
       <div className="mt-0.5 shrink-0">
@@ -417,10 +381,13 @@ export const MessageBubble = memo(function MessageBubble({
           />
         )}
 
-        {msg.voiceProgress && <VoiceGenerationProgress progress={msg.voiceProgress} pending={!!msg.pending} startedAt={msg.startedAt} />}
-        {msg.voice && !msg.pending && <VoiceMessage voice={msg.voice} />}
-        {msg.voiceError && <p role="alert" className="my-2 text-sm text-[var(--sk-danger)]">{msg.voiceError.code === "rate_limited" ? "Rate limited" : msg.voiceError.code === "duration_limit" ? "Duration limit reached" : "Generation failed"}: {msg.voiceError.message}</p>}
-        {msg.content && (
+        {voiceStudio ? <VoiceStudio msg={msg} chatId={chatId ?? null} /> : <>
+          {msg.voiceProgress && <VoiceGenerationProgress progress={msg.voiceProgress} pending={!!msg.pending} startedAt={msg.startedAt} />}
+          {msg.voice && !msg.pending && <VoiceMessage voice={msg.voice} />}
+          {msg.voiceError && <p role="alert" className="my-2 text-sm text-[var(--sk-danger)]">{msg.voiceError.code === "rate_limited" ? "Rate limited" : msg.voiceError.code === "duration_limit" ? "Duration limit reached" : "Generation failed"}: {msg.voiceError.message}</p>}
+        </>}
+        {/* A recording's narration lives in its transcript tab, not as a wall of text. */}
+        {msg.content && !voiceStudio && (
           <div>
             <ChatComposition
               messageId={msg.id}
@@ -447,7 +414,7 @@ export const MessageBubble = memo(function MessageBubble({
 
         {/* Scraped image strip + "View all images" button — shown for chat-mode image searches */}
         {msg.scrapedImages?.length ? (
-          <ScrapedImageStrip images={msg.scrapedImages} query={msg.imageQuery} galleryOnly={composedImages} />
+          <ScrapedImageStrip images={msg.scrapedImages} query={msg.imageQuery} />
         ) : null}
 
         {msg.error && (

@@ -11,8 +11,10 @@ and phoneme stress naturally across the utterance.
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import time
 
@@ -286,8 +288,8 @@ class SenkoHybrid:
         }
 
     def render(self, text, emotion="neutral", max_seconds=60, progress=None, plan=None):
-        if not isinstance(text, str) or not text.strip() or len(text) > 15000:
-            raise ValueError("Speech text must contain 1–15000 characters")
+        if not isinstance(text, str) or not text.strip() or len(text) > 25000:
+            raise ValueError("Speech text must contain 1–25000 characters")
         if not isinstance(max_seconds, (int, float)) or not 5 <= max_seconds <= 1800:
             raise ValueError("Voice duration must be 5–1800 seconds")
         mood = select_mood(emotion)
@@ -328,7 +330,77 @@ class SenkoHybrid:
         return audio, sample_rate, {"seconds": len(audio) / sample_rate, "segments": len(batches), "mood": mood, "model": self.config["id"], "baseModel": self.config["baseModel"], "modelKind": self.config["kind"], "fingerprint": self.fingerprint, "voice": "Senko (neural hybrid voice)", "textureCorrelation": float(np.corrcoef(dry, audio)[0, 1]), "executionProviders": self.session.get_providers()}
 
 
+def install_safe_espeak_cleanup():
+    """phonemizer deletes its private eSpeak DLL copy at exit; on Windows the DLL can still be
+    mapped (WinError 145). That is a shutdown error, never a synthesis failure, so it is retried
+    briefly and then left for the Node parent, which owns and removes this worker's temp folder."""
+    if sys.platform != "win32":
+        return
+    from phonemizer.backend.espeak.api import EspeakAPI
+    import _ctypes
+
+    def safe_delete(library, tempdir):
+        try:
+            library.espeak_Terminate()
+            _ctypes.FreeLibrary(library._handle)
+        except (AttributeError, OSError):
+            pass
+        for delay in (0, 0.05, 0.15, 0.4):
+            time.sleep(delay)
+            try:
+                shutil.rmtree(tempdir)
+                return
+            except FileNotFoundError:
+                return
+            except OSError:
+                continue
+
+    EspeakAPI._delete = staticmethod(safe_delete)
+
+
+def write_wav(output_file, audio, sample_rate):
+    """Write beside the target and rename, so a reader never sees a partial file."""
+    output = Path(output_file)
+    partial = output.with_name(f"{output.stem}.partial.wav")
+    sf.write(str(partial), audio, sample_rate, subtype="PCM_16")
+    os.replace(partial, output)
+
+
+def emit(value):
+    print(json.dumps(value), flush=True)
+
+
+def serve():
+    """Keep the model loaded and render one JSON request per stdin line until stdin closes."""
+    model = SenkoHybrid()
+    emit({"type": "ready"})
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        job_id = None
+        try:
+            request = json.loads(line)
+            job_id = request["id"]
+            start = time.monotonic()
+            audio, sample_rate, meta = model.render(
+                request["text"],
+                request.get("emotion", "neutral"),
+                request.get("durationSeconds", 60),
+                progress=lambda value: emit({"type": "progress", "id": job_id, "progress": value}),
+                plan=request.get("plan"),
+            )
+            write_wav(request["output"], audio, sample_rate)
+            meta["synthesisMs"] = round((time.monotonic() - start) * 1000)
+            emit({"type": "result", "id": job_id, "meta": meta})
+        except Exception as error:  # Reported per job: the loaded model stays usable.
+            emit({"type": "error", "id": job_id, "message": f"{type(error).__name__}: {error}"[:600], "recoverable": isinstance(error, OSError)})
+
+
 def main():
+    install_safe_espeak_cleanup()
+    if sys.argv[1:] == ["--serve"]:
+        serve()
+        return
     request_file, output_file = map(Path, sys.argv[1:3])
     request = json.loads(request_file.read_text(encoding="utf-8"))
     start = time.monotonic()
@@ -340,7 +412,7 @@ def main():
         progress=lambda value: print(json.dumps({"type": "progress", "progress": value}), flush=True),
         plan=request.get("plan"),
     )
-    sf.write(str(output_file), audio, sample_rate, subtype="PCM_16")
+    write_wav(output_file, audio, sample_rate)
     meta["synthesisMs"] = round((time.monotonic() - start) * 1000)
     print(json.dumps(meta), flush=True)
 

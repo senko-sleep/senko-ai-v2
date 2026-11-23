@@ -935,7 +935,7 @@ export function detectImageIntentQuery(userMessage: string): string | undefined 
       raw
     );
   const hasExplicitShow =
-    /^\s*(?:show\s+me|send\s+me|find\s+me|get\s+me|give\s+me|let\s+me\s+see|i\s+wanna\s+see|i\s+want\s+to\s+see|can\s+(?:i|you)\s+(?:see|show|send|find)|scrape|search\s+for)\b/i.test(
+    /^\s*(?:show\s+me|send\s+me|find\s+me|get\s+me|give\s+me|let\s+me\s+see|i\s+wanna\s+see|i\s+want\s+to\s+see|can\s+(?:i|you)\s+(?:see|show|send|find)|scrape|search\s+for|look\s+up)\b/i.test(
       raw
     );
 

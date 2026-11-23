@@ -4,7 +4,9 @@ import type { ComicCard } from "@/lib/comics/types";
 import type { SearchCard } from "@/lib/search/types";
 import type { SiteEmbedCard } from "@/lib/embed/types";
 import type { VoiceProgress } from "@/lib/voice/progress";
+import type { VoiceProduction } from "@/lib/voice/production";
 export type { VoiceProgress } from "@/lib/voice/progress";
+export type { VoiceProduction, VoiceSection, SectionDirection } from "@/lib/voice/production";
 
 export type Mode = "chat" | "agent";
 
@@ -26,6 +28,8 @@ export interface VoiceNote {
 
 export interface Msg {
   id: string;
+  /** The saved message's id, when the on-screen id is still the temporary one. */
+  serverId?: string;
   role: "user" | "assistant";
   content: string;
   /** True while waiting for / receiving the reply. */
@@ -54,6 +58,8 @@ export interface Msg {
   /** The reply as a voice message in Senko's voice (content is the transcript). */
   voice?: VoiceNote;
   voiceError?: { code: string; message: string; retryAfter?: number };
+  /** Per-section state of the recording (direction, audio, measured timings). */
+  voiceProduction?: VoiceProduction;
   /** Senko's mood line for this reply. */
   mood?: string;
   /** Images scraped from many engines for an image request (first batch). */
@@ -114,6 +120,7 @@ export interface StoredMessage {
     voice?: VoiceNote;
     voiceProgress?: VoiceProgress;
     voiceError?: { code: string; message: string; retryAfter?: number };
+    voiceProduction?: VoiceProduction;
     thinking?: { steps: AgentStep[]; thoughts?: string; ms?: number };
   };
 }
@@ -136,6 +143,7 @@ export function fromStored(m: StoredMessage): Msg {
     voice: meta.voice?.audioId ? meta.voice : undefined,
     voiceProgress: meta.voiceProgress || (meta.voice?.segments ? { phase: "ready", completed: meta.voice.segments, total: meta.voice.segments, seconds: meta.voice.seconds } : undefined),
     voiceError: meta.voiceError,
+    voiceProduction: meta.voiceProduction,
     error: meta.error && !m.content ? meta.error : undefined,
     actions: meta.actions,
     suggestAgent: meta.suggestAgent,
