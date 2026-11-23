@@ -13,8 +13,8 @@ import { agentVoice, safeSearchFor } from "@/lib/server/persona";
 import { looksLikeRefusal } from "@/lib/refusal";
 import { IMAGE_CLASSIFIER_NOTE, type SafeSearch } from "@/lib/content-policy";
 import { classifyContentRequest, describeSafeSearchState, isExplicitMediaText, normalizeProviderRefusal } from "@/lib/policy-classifier";
-import { ddgGridNote, type DdgGridImage } from "./ddg-grid";
-import { pickPageMedia, preferPageMedia } from "./page-first";
+import { describeGrid, readGridImages, type GridImage } from "./grid";
+import { isLeavingAction, pageMatchesGoal, pickPageMedia, preferPageMedia } from "./page-first";
 import { isCookieBanner, RecoveryLadder } from "./recovery-ladder";
 import { saveImage } from "@/lib/server/chats";
 import { searchAllowed } from "@/lib/server/search-reply";
@@ -527,8 +527,9 @@ export async function runAgent(opts: RunOptions): Promise<void> {
   const sentVideos: ChatVideo[] = [];
   const inferenceLimit = Math.min(200, Math.max(1, Number(process.env.AGENT_MAX_INFERENCE_REQUESTS) || 80));
   const requestBudget = new InferenceRequestBudget(inferenceLimit, { failedAllowance: inferenceLimit * 2 });
-  /** Full-size URLs from the latest DuckDuckGo grid. */
-  let gridImages: DdgGridImage[] = [];
+  /** Full-size URLs from the image grid on `gridUrl`. */
+  let gridImages: GridImage[] = [];
+  let gridUrl = "";
   const formatRecovery = new BrowserFormatRecovery();
   const modelRotator = new ModelRotator();
   /** Times a declined step has been handed to another model in this task. */
@@ -823,7 +824,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       strategy.recordSearch(r.engine || imageIntent.engine, "images", imageIntent.query);
       if (r.ok) st.done(r.result);
       else st.fail(r.result);
-      const gridNote = r.ok ? await ddgGridNote({ engine: r.engine, goal, query: imageIntent.query, signal, onImages: (found) => { gridImages = found; } }) : "";
+      const gridNote = r.ok ? await describeGrid(session.active(), { goal, signal, onImages: (found) => { gridImages = found; gridUrl = curUrl() || ""; } }) : "";
       history.push(historyLine(history.length + 1, action, r.result + gridNote));
       actionsTaken++;
     }
@@ -1044,8 +1045,13 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       }
       // The page already has usable media: collect it instead of clicking away or searching again.
       const stillNeeded = mediaSpec.count ? mediaSpec.count - deliveredValidCount - stashedUnsent.length : deliveredValidCount + stashedUnsent.length ? 0 : 1;
-      const pageMedia = obs && mediaSpec.deliverToChat && !isExplicitMediaText(goal)
-        ? pickPageMedia([...obs.images, ...gridImages], {
+      const usePageMedia = !!obs && mediaSpec.deliverToChat && stillNeeded > 0 && !isExplicitMediaText(goal) && isLeavingAction(parsed.action) && pageMatchesGoal(goal, obs.url, obs.title);
+      if (usePageMedia && gridUrl !== obs.url) {
+        gridImages = await readGridImages(page, { goal, signal }).catch(() => []);
+        gridUrl = obs.url;
+      }
+      const pageMedia = usePageMedia
+        ? pickPageMedia([...gridImages, ...obs.images], {
             needed: stillNeeded,
             requireAnimated: mediaSpec.requireAnimated,
             isUnusable: (u) => !!strategy.failedUrlReason(u) || strategy.hostRateLimitRemainingMs(u) > 0 || deliveredMeta.some((m) => m.url === u),
@@ -1337,7 +1343,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
             strategy.recordSearch(r.engine, kind, String(d.query));
             ok = r.ok;
             result = r.result;
-            if (r.ok && kind === "images") result += await ddgGridNote({ engine: r.engine, goal, query: String(d.query), signal, onImages: (found) => { gridImages = found; } });
+            if (r.ok && kind === "images") result += await describeGrid(s.active(), { goal, signal, onImages: (found) => { gridImages = found; gridUrl = s.active().url(); } });
             break;
           }
           case "goto": {

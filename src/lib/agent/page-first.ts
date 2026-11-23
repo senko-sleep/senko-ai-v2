@@ -13,6 +13,25 @@ const SPARE_CANDIDATES = 3;
 /** Actions that abandon or drill out of a page that may already hold the answer. */
 const LEAVING_ACTIONS = new Set(["goto", "search", "image_search", "new_tab", "open_fastest", "click"]);
 
+const NOT_SUBJECT = new Set("a an and any are at best can find for from get give good in into is it me my of on one or pic pics photo photos picture pictures image images gif gifs wallpaper wallpapers meme memes please post send share show some the them these this to two three four five six seven eight nine ten up us want with you".split(" "));
+
+export function isLeavingAction(action: string): boolean {
+  return LEAVING_ACTIONS.has(action);
+}
+
+/** True when the page's address or title names what the user asked for. */
+export function pageMatchesGoal(goal: string, url: string, title: string): boolean {
+  let address = url;
+  try {
+    address = decodeURIComponent(url);
+  } catch {
+    /* keep the raw URL */
+  }
+  const page = `${address} ${title}`.toLowerCase();
+  const subject = (goal.toLowerCase().match(/[\p{L}\p{N}]+/gu) || []).filter((w) => w.length > 1 && !/^\d+$/.test(w) && !NOT_SUBJECT.has(w));
+  return subject.some((w) => page.includes(w));
+}
+
 /** Direct, untried media URLs on the page, limited to what the task still needs. */
 export function pickPageMedia(
   candidates: PageMediaCandidate[],
